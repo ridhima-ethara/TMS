@@ -186,16 +186,20 @@ async function seedDb(db) {
   await db.collection('categories').insertMany(cats)
   await db.collection('locations').insertMany(LOCATIONS.map((l) => ({ id: uuidv4(), name: l, code: l })))
 
-  // IT tickets from CSV
+  // IT tickets from CSV (with realistic spread-out timestamps for SLA analytics)
   const itTickets = []
   const histDocs = []
+  const HOUR = 3600000
   for (const row of IT_SEED) {
     const [uname, cat, prio, desc, assignee, statusRaw] = row
     const status = mapStatus(statusRaw)
     const id = uuidv4()
     const hid = await humanId(db, 'IT')
-    const sla = slaDates('IT', prio)
     const assigneeUser = byName(assignee)
+    const createdAt = new Date(Date.now() - Math.floor(1 + Math.random() * 13) * 24 * HOUR - Math.floor(Math.random() * 10) * HOUR)
+    const ackAt = new Date(createdAt.getTime() + Math.floor(1 + Math.random() * 6) * HOUR)
+    const resolvedAt = new Date(ackAt.getTime() + Math.floor(2 + Math.random() * 40) * HOUR)
+    const m = (SLA['IT'][prio] || [8, 48])
     const t = {
       id, human_id: hid, department: 'IT', category: cat, subcategory: '',
       title: `${cat} - ${uname}`, description: desc, priority: prio, status,
@@ -203,13 +207,17 @@ async function seedDb(db) {
       employee_id: 'EMP-' + Math.floor(1000 + Math.random() * 9000), email: 'user@company.com',
       location: 'HQ1', assignee_id: assigneeUser?.id || null, assignee_name: assignee,
       approval_required: false, legacy_id: null,
-      ...sla, created_at: new Date(), updated_at: new Date(),
-      resolution: status === 'Resolved' ? { summary: 'Issue resolved', action_taken: 'Standard fix applied', root_cause: '', resolved_by: assignee, resolved_date: new Date() } : null,
+      sla_response_due: new Date(createdAt.getTime() + m[0] * HOUR),
+      sla_resolution_due: new Date(createdAt.getTime() + m[1] * HOUR),
+      created_at: createdAt, updated_at: resolvedAt,
+      first_response_at: ackAt,
+      resolution: status === 'Resolved' ? { summary: 'Issue resolved', action_taken: 'Standard fix applied', root_cause: '', resolved_by: assignee, resolved_date: resolvedAt } : null,
       confirmation: null,
     }
     itTickets.push(t)
-    histDocs.push({ id: uuidv4(), ticket_id: id, type: 'created', by_name: 'System Import', by_role: 'system', note: 'Imported from IT CSV', created_at: new Date() })
-    histDocs.push({ id: uuidv4(), ticket_id: id, type: 'status', to: status, by_name: assignee, by_role: 'it', note: '', created_at: new Date() })
+    histDocs.push({ id: uuidv4(), ticket_id: id, type: 'created', by_name: uname, by_role: 'employee', note: 'Ticket raised', created_at: createdAt })
+    histDocs.push({ id: uuidv4(), ticket_id: id, type: 'status', to: 'Acknowledged', by_name: assignee, by_role: 'it', note: '', created_at: ackAt })
+    if (status === 'Resolved') histDocs.push({ id: uuidv4(), ticket_id: id, type: 'status', to: status, by_name: assignee, by_role: 'it', note: '', created_at: resolvedAt })
   }
   await db.collection('tickets').insertMany(itTickets)
   if (histDocs.length) await db.collection('history').insertMany(histDocs)
@@ -252,6 +260,59 @@ async function seedDb(db) {
   })
   await db.collection('history').insertOne({ id: uuidv4(), ticket_id: aid, type: 'created', by_name: 'Emma Employee', by_role: 'employee', note: 'Ticket raised', created_at: new Date() })
 
+  // Extra Admin tickets for split-view / SLA / calendar richness
+  const ADMIN_TICKET_SEED = [
+    ['AC not working in meeting room', 'AC', 'High', 'Resolved'],
+    ['Housekeeping delay report', 'Housekeeping', 'Low', 'Resolved'],
+    ['Parking allocation for new joiner', 'Parking', 'Medium', 'In Progress'],
+    ['Stationery restock request', 'Stationery', 'Low', 'Resolved'],
+    ['Courier not delivered', 'Courier', 'Medium', 'Open'],
+    ['Water dispenser leaking', 'Water', 'High', 'Resolved'],
+    ['ID card replacement', 'ID/Access Cards', 'Medium', 'Resolved'],
+  ]
+  const adminTickets = []
+  const adminHist = []
+  for (const [title, cat, prio, status] of ADMIN_TICKET_SEED) {
+    const id = uuidv4()
+    const hid = await humanId(db, 'ADM')
+    const createdAt = new Date(Date.now() - Math.floor(1 + Math.random() * 12) * 24 * HOUR)
+    const ackAt = new Date(createdAt.getTime() + Math.floor(1 + Math.random() * 8) * HOUR)
+    const resolvedAt = new Date(ackAt.getTime() + Math.floor(3 + Math.random() * 50) * HOUR)
+    const m = (SLA['Admin'][prio] || [8, 48])
+    adminTickets.push({
+      id, human_id: hid, department: 'Admin', category: cat, subcategory: '',
+      title, description: title, priority: prio, status,
+      raised_by_id: employee.id, raised_by_name: 'Emma Employee', raised_for_name: 'Emma Employee',
+      employee_id: 'EMP-1001', email: 'employee@demo.com', location: LOCATIONS[Math.floor(Math.random() * 3)],
+      assignee_id: admin.id, assignee_name: admin.name, approval_required: false, legacy_id: null,
+      sla_response_due: new Date(createdAt.getTime() + m[0] * HOUR),
+      sla_resolution_due: new Date(createdAt.getTime() + m[1] * HOUR),
+      created_at: createdAt, updated_at: resolvedAt, first_response_at: ackAt,
+      resolution: status === 'Resolved' ? { summary: 'Handled', action_taken: 'Resolved by admin team', root_cause: '', resolved_by: admin.name, resolved_date: resolvedAt } : null,
+      confirmation: null,
+    })
+    adminHist.push({ id: uuidv4(), ticket_id: id, type: 'created', by_name: 'Emma Employee', by_role: 'employee', note: 'Ticket raised', created_at: createdAt })
+    adminHist.push({ id: uuidv4(), ticket_id: id, type: 'status', to: 'Acknowledged', by_name: admin.name, by_role: 'admin', created_at: ackAt })
+    if (status === 'Resolved') adminHist.push({ id: uuidv4(), ticket_id: id, type: 'status', to: 'Resolved', by_name: admin.name, by_role: 'admin', created_at: resolvedAt })
+  }
+  await db.collection('tickets').insertMany(adminTickets)
+  await db.collection('history').insertMany(adminHist)
+
+  // Per-member daily checklists (defined by Super Admin)
+  const superUser = byName('Sara Superadmin')
+  const memberChecklists = [
+    { member: byName('Ajeet Kumar'), title: 'IT Daily Ops Checklist', items: ['Verify server backups completed', 'Check network & Wi-Fi uptime', 'Respond to all pending tickets', 'Update asset & inventory register', 'Review security alerts'] },
+    { member: byName('Sunil Rathore'), title: 'IT Support Daily Checklist', items: ['Check printer & peripheral status', 'Process new laptop allocations', 'Verify biometric devices online', 'Clear helpdesk queue'] },
+    { member: byName('Rajeev Goyal'), title: 'Admin Daily Ops Checklist', items: ['Update expense summary', 'Check courier & inward register', 'Verify housekeeping done', 'Reconcile petty cash', 'Review vendor payments'] },
+  ]
+  const mcDocs = memberChecklists.filter((c) => c.member).map((c) => ({
+    id: uuidv4(), member_id: c.member.id, member_name: c.member.name, member_role: c.member.role,
+    title: c.title, frequency: 'daily', active: true,
+    items: c.items.map((label, i) => ({ key: `mc_${i}`, label })),
+    created_by: superUser?.name || 'Super Admin', created_at: new Date(),
+  }))
+  if (mcDocs.length) await db.collection('member_checklists').insertMany(mcDocs)
+
   return { seeded: true, users: users.map((u) => ({ email: u.email, role: u.role })) }
 }
 
@@ -273,8 +334,14 @@ async function handleRoute(request, { params }) {
     // health
     if (route === '/' || route === '/root') return json({ message: 'TicketFlow API' })
 
-    // seed (idempotent)
+    // seed (idempotent, supports ?force=true reset)
     if (route === '/seed' && method === 'POST') {
+      const force = new URL(request.url).searchParams.get('force') === 'true'
+      if (force) {
+        for (const c of ['users','categories','locations','tickets','history','comments','approvals','tasks','checklist_templates','checklist_executions','member_checklists','member_checklist_submissions','notifications','audit_logs','counters']) {
+          await db.collection(c).deleteMany({})
+        }
+      }
       const r = await seedDb(db)
       return json(r)
     }
@@ -326,10 +393,27 @@ async function handleRoute(request, { params }) {
 
     // ---- DASHBOARD ----
     if (route === '/dashboard' && method === 'GET') {
-      const filter = scopeFilter(session)
+      const deptParam = new URL(request.url).searchParams.get('department')
+      let filter = scopeFilter(session)
+      // super_admin may scope by department for split views
+      if (session.role === 'super_admin' && deptParam) filter = { department: deptParam }
       const tickets = await db.collection('tickets').find(filter).toArray()
       const count = (f) => tickets.filter(f).length
       const now = Date.now()
+      const HOUR = 3600000
+      // SLA timings
+      const respTimes = [], resTimes = []
+      let slaMet = 0, slaTotalResolved = 0
+      for (const t of tickets) {
+        if (t.first_response_at && t.created_at) respTimes.push((new Date(t.first_response_at) - new Date(t.created_at)) / HOUR)
+        if (t.resolution?.resolved_date && t.created_at) {
+          const rt = (new Date(t.resolution.resolved_date) - new Date(t.created_at)) / HOUR
+          resTimes.push(rt)
+          slaTotalResolved++
+          if (t.sla_resolution_due && new Date(t.resolution.resolved_date) <= new Date(t.sla_resolution_due)) slaMet++
+        }
+      }
+      const avg = (a) => a.length ? Math.round((a.reduce((x, y) => x + y, 0) / a.length) * 10) / 10 : 0
       const stats = {
         total: tickets.length,
         open: count((t) => t.status === 'Open'),
@@ -342,6 +426,9 @@ async function handleRoute(request, { params }) {
         resolved: count((t) => t.status === 'Resolved'),
         closed: count((t) => t.status === 'Closed'),
         overdue: count((t) => !['Resolved', 'Closed', 'Cancelled'].includes(t.status) && t.sla_resolution_due && new Date(t.sla_resolution_due).getTime() < now),
+        avg_response_hours: avg(respTimes),
+        avg_resolution_hours: avg(resTimes),
+        sla_compliance: slaTotalResolved ? Math.round((slaMet / slaTotalResolved) * 100) : 0,
         by_priority: ['Critical', 'High', 'Medium', 'Low'].map((p) => ({ name: p, value: count((t) => t.priority === p) })),
         by_status: STATUSES.map((s) => ({ name: s, value: count((t) => t.status === s) })).filter((x) => x.value > 0),
         by_category: Object.entries(tickets.reduce((a, t) => { a[t.category] = (a[t.category] || 0) + 1; return a }, {})).map(([name, value]) => ({ name, value })),
@@ -353,9 +440,43 @@ async function handleRoute(request, { params }) {
         stats.tasks_overdue = tasks.filter((t) => t.status !== 'Completed' && t.due_date && new Date(t.due_date).getTime() < now).length
         stats.tasks_in_progress = tasks.filter((t) => t.status === 'In Progress').length
       }
-      const recent = tickets.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 8)
+      const recent = [...tickets].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 8)
       stats.recent = clean(recent)
+      // calendar payload (lightweight, all scoped tickets)
+      stats.calendar = tickets.map((t) => ({ id: t.id, human_id: t.human_id, title: t.title, priority: t.priority, status: t.status, created_at: t.created_at }))
       return json(stats)
+    }
+
+    // ---- REPORTS: member SLA ----
+    if (route === '/reports/member-sla' && method === 'GET') {
+      if (session.role !== 'super_admin') return json({ error: 'Forbidden' }, 403)
+      const dept = new URL(request.url).searchParams.get('department') || 'IT'
+      const role = dept === 'Admin' ? 'admin' : 'it'
+      const members = await db.collection('users').find({ role }).toArray()
+      const tickets = await db.collection('tickets').find({ department: dept }).toArray()
+      const HOUR = 3600000
+      const avg = (a) => a.length ? Math.round((a.reduce((x, y) => x + y, 0) / a.length) * 10) / 10 : 0
+      const rows = members.map((mUser) => {
+        const mt = tickets.filter((t) => t.assignee_id === mUser.id)
+        const resp = [], res = []
+        let met = 0, resolvedCount = 0
+        for (const t of mt) {
+          if (t.first_response_at && t.created_at) resp.push((new Date(t.first_response_at) - new Date(t.created_at)) / HOUR)
+          if (t.resolution?.resolved_date && t.created_at) {
+            res.push((new Date(t.resolution.resolved_date) - new Date(t.created_at)) / HOUR)
+            resolvedCount++
+            if (t.sla_resolution_due && new Date(t.resolution.resolved_date) <= new Date(t.sla_resolution_due)) met++
+          }
+        }
+        const openCount = mt.filter((t) => !['Resolved', 'Closed', 'Cancelled'].includes(t.status)).length
+        return {
+          member_id: mUser.id, member_name: mUser.name, email: mUser.email, location: mUser.location,
+          assigned: mt.length, open: openCount, resolved: resolvedCount,
+          avg_response_hours: avg(resp), avg_resolution_hours: avg(res),
+          sla_compliance: resolvedCount ? Math.round((met / resolvedCount) * 100) : 0,
+        }
+      })
+      return json({ department: dept, members: rows })
     }
 
     // ---- TICKETS ----
@@ -525,9 +646,9 @@ async function handleRoute(request, { params }) {
         return json(clean(updated))
       }
 
-      // ---- APPROVAL: submit (admin) ----
+      // ---- APPROVAL: submit (IT or Admin, dept-scoped by object auth above) ----
       if (seg[2] === 'approval' && seg[3] === 'submit' && method === 'POST') {
-        if (session.role !== 'admin') return json({ error: 'Forbidden' }, 403)
+        if (!['it', 'admin'].includes(session.role)) return json({ error: 'Forbidden' }, 403)
         const b = await request.json()
         const existing = await db.collection('approvals').findOne({ ticket_id: ticketId })
         const apprData = {
@@ -671,6 +792,75 @@ async function handleRoute(request, { params }) {
       await addHistory(db, id, 'created', session, `Created from checklist item: ${b.item}`, null, 'Open')
       await audit(db, session, 'ticket.from_checklist', 'ticket', id, { item: b.item })
       return json(clean(t))
+    }
+
+    // ---- MEMBER CHECKLISTS (Super Admin defines; IT/Admin submit daily) ----
+    if (route === '/member-checklists' && method === 'GET') {
+      const today = new Date().toISOString().slice(0, 10)
+      let q = {}
+      if (session.role === 'super_admin') {
+        const mid = new URL(request.url).searchParams.get('member_id')
+        if (mid) q = { member_id: mid }
+      } else if (['it', 'admin'].includes(session.role)) {
+        q = { member_id: session.id }
+      } else {
+        return json({ error: 'Forbidden' }, 403)
+      }
+      const lists = await db.collection('member_checklists').find(q).toArray()
+      // attach today's submission for member view
+      const out = []
+      for (const l of lists) {
+        const sub = await db.collection('member_checklist_submissions').findOne({ checklist_id: l.id, date: today })
+        out.push({ ...clean(l), today_submission: sub ? clean(sub) : null })
+      }
+      return json(out)
+    }
+    if (route === '/member-checklists' && method === 'POST') {
+      if (session.role !== 'super_admin') return json({ error: 'Forbidden' }, 403)
+      const b = await request.json()
+      const member = await db.collection('users').findOne({ id: b.member_id })
+      if (!member) return json({ error: 'Member not found' }, 400)
+      const doc = {
+        id: uuidv4(), member_id: member.id, member_name: member.name, member_role: member.role,
+        title: b.title || 'Daily Checklist', frequency: b.frequency || 'daily', active: true,
+        items: (b.items || []).filter(Boolean).map((label, i) => ({ key: `mc_${i}`, label })),
+        created_by: session.name, created_at: new Date(),
+      }
+      await db.collection('member_checklists').insertOne(doc)
+      await audit(db, session, 'member_checklist.create', 'member_checklist', doc.id, { member: member.name })
+      await notify(db, member.id, `New daily checklist assigned: ${doc.title}`, null)
+      return json(clean(doc))
+    }
+    if (seg[0] === 'member-checklists' && seg[1] && seg[2] === 'submit' && method === 'POST') {
+      if (!['it', 'admin'].includes(session.role)) return json({ error: 'Forbidden' }, 403)
+      const list = await db.collection('member_checklists').findOne({ id: seg[1] })
+      if (!list) return json({ error: 'Not found' }, 404)
+      if (list.member_id !== session.id) return json({ error: 'Forbidden' }, 403)
+      const b = await request.json()
+      const date = b.date || new Date().toISOString().slice(0, 10)
+      const responses = b.responses || []
+      const doneCount = responses.filter((r) => r.done).length
+      const status = doneCount === responses.length && responses.length > 0 ? 'Completed' : 'Partial'
+      const existing = await db.collection('member_checklist_submissions').findOne({ checklist_id: list.id, date })
+      const payload = { checklist_id: list.id, checklist_title: list.title, member_id: session.id, member_name: session.name, date, responses, done_count: doneCount, total: responses.length, status, submitted_at: new Date() }
+      if (existing) await db.collection('member_checklist_submissions').updateOne({ id: existing.id }, { $set: payload })
+      else await db.collection('member_checklist_submissions').insertOne({ id: uuidv4(), ...payload, created_at: new Date() })
+      await audit(db, session, 'member_checklist.submit', 'member_checklist', list.id, { date, status })
+      return json({ ok: true, status, done_count: doneCount, total: responses.length })
+    }
+    if (seg[0] === 'member-checklists' && seg[1] && method === 'DELETE') {
+      if (session.role !== 'super_admin') return json({ error: 'Forbidden' }, 403)
+      await db.collection('member_checklists').deleteOne({ id: seg[1] })
+      return json({ ok: true })
+    }
+    if (route === '/member-checklist-submissions' && method === 'GET') {
+      if (session.role !== 'super_admin') return json({ error: 'Forbidden' }, 403)
+      const p = new URL(request.url).searchParams
+      const q = {}
+      if (p.get('member_id')) q.member_id = p.get('member_id')
+      if (p.get('date')) q.date = p.get('date')
+      const items = await db.collection('member_checklist_submissions').find(q).sort({ date: -1, submitted_at: -1 }).limit(200).toArray()
+      return json(clean(items))
     }
 
     // ---- NOTIFICATIONS ----

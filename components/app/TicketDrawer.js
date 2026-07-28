@@ -281,8 +281,8 @@ function ApprovalSection({ t, user, onChanged }) {
     catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
 
-  // Admin: prepare & submit (when no approval or clarification required)
-  const canPrepare = user.role === 'admin' && t.department === 'Admin' && (!a || a.status === 'Clarification' || a.status === 'Rejected')
+  // IT/Admin: prepare & submit (dept-scoped; when no approval or clarification/rejected)
+  const canPrepare = ((user.role === 'admin' && t.department === 'Admin') || (user.role === 'it' && t.department === 'IT')) && (!a || a.status === 'Clarification' || a.status === 'Rejected')
   // Super admin decision
   const canDecide = user.role === 'super_admin' && a && a.status === 'Pending'
 

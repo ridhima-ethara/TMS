@@ -6,6 +6,8 @@ import Dashboard from '@/components/app/Dashboard'
 import TicketsView from '@/components/app/TicketsView'
 import TasksView from '@/components/app/TasksView'
 import ChecklistsView from '@/components/app/ChecklistsView'
+import MyChecklist from '@/components/app/MyChecklist'
+import MemberChecklists from '@/components/app/MemberChecklists'
 import AuditView from '@/components/app/AuditView'
 import TicketDrawer from '@/components/app/TicketDrawer'
 import { Toaster } from '@/components/ui/sonner'
@@ -16,17 +18,23 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
-import { Ticket, LayoutDashboard, FileCheck2, ListChecks, ClipboardList, ScrollText, Bell, LogOut, Loader2, Menu } from 'lucide-react'
+import { Ticket, LayoutDashboard, FileCheck2, ListChecks, ClipboardList, ClipboardCheck, ScrollText, Bell, LogOut, Loader2, Menu, Users } from 'lucide-react'
 
 const NAV = {
   employee: [{ k: 'dashboard', label: 'Dashboard', icon: LayoutDashboard }, { k: 'tickets', label: 'My Tickets', icon: Ticket }],
-  it: [{ k: 'dashboard', label: 'Dashboard', icon: LayoutDashboard }, { k: 'tickets', label: 'IT Tickets', icon: Ticket }],
+  it: [
+    { k: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { k: 'tickets', label: 'IT Tickets', icon: Ticket },
+    { k: 'approvals', label: 'Approvals', icon: FileCheck2 },
+    { k: 'mychecklist', label: 'My Checklist', icon: ClipboardCheck },
+  ],
   admin: [
     { k: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { k: 'tickets', label: 'Admin Tickets', icon: Ticket },
     { k: 'approvals', label: 'Approvals', icon: FileCheck2 },
     { k: 'tasks', label: 'Operational Tasks', icon: ListChecks },
     { k: 'checklists', label: 'Checklists', icon: ClipboardList },
+    { k: 'mychecklist', label: 'My Checklist', icon: ClipboardCheck },
   ],
   super_admin: [
     { k: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -34,6 +42,7 @@ const NAV = {
     { k: 'approvals', label: 'Approval Inbox', icon: FileCheck2 },
     { k: 'tasks', label: 'Operational Tasks', icon: ListChecks },
     { k: 'checklists', label: 'Checklists', icon: ClipboardList },
+    { k: 'member-checklists', label: 'Member Checklists', icon: Users },
     { k: 'audit', label: 'Audit Logs', icon: ScrollText },
   ],
 }
@@ -74,7 +83,7 @@ export default function App() {
 
   const nav = NAV[user.role] || NAV.employee
   const unread = notifs.filter((n) => !n.read).length
-  const titleMap = { dashboard: 'Dashboard', tickets: nav.find((n) => n.k === 'tickets')?.label, approvals: 'Approvals', tasks: 'Operational Tasks', checklists: 'Checklists', audit: 'Audit Logs' }
+  const titleMap = { dashboard: 'Dashboard', tickets: nav.find((n) => n.k === 'tickets')?.label, approvals: 'Approvals', tasks: 'Operational Tasks', checklists: 'Checklists', mychecklist: 'My Daily Checklist', 'member-checklists': 'Member Checklists', audit: 'Audit Logs' }
 
   const Sidebar = () => (
     <aside className="w-60 shrink-0 border-r bg-slate-900 text-slate-200 flex flex-col">
@@ -144,6 +153,8 @@ export default function App() {
           {view === 'approvals' && <TicketsView user={user} onOpenTicket={setOpenTicketId} refresh={refresh} onRefresh={doRefresh} preset="approvals" />}
           {view === 'tasks' && <TasksView user={user} />}
           {view === 'checklists' && <ChecklistsView user={user} onRefresh={doRefresh} />}
+          {view === 'mychecklist' && <MyChecklist />}
+          {view === 'member-checklists' && <MemberChecklists />}
           {view === 'audit' && <AuditView />}
         </main>
       </div>

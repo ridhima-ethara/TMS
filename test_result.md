@@ -189,6 +189,62 @@ backend:
         - working: true
           agent: "testing"
           comment: "Tested 13 scenarios: (1) GET /tasks as admin returns 13 seeded tasks, (2) GET /tasks as employee returns 403, (3) POST /tasks creates task with human_id ATSK-..., (4) PATCH /tasks updates status, (5) GET /checklists/templates returns templates, (6) POST /checklists/executions creates execution with human_id CHK-{LOCATION}-..., (7) POST /checklists/to-ticket creates Admin ticket, (8) GET /notifications returns notifications, (9) POST /notifications/read marks read, (10) GET /audit as super_admin returns audit entries, (11) GET /audit as admin returns 403, (12) GET /dashboard returns role-scoped stats. All endpoints working correctly with proper RBAC."
+  - task: "Dashboard department scoping"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "GET /dashboard?department=IT/Admin as superadmin returns dept-scoped stats with avg_response_hours, avg_resolution_hours, sla_compliance, calendar[]. Non-super users: department param ignored (stays own scope)."
+        - working: true
+          agent: "testing"
+          comment: "Tested 3 scenarios: (1) Super admin GET /dashboard?department=IT returns IT-scoped stats with all required fields (avg_response_hours, avg_resolution_hours, sla_compliance, calendar[] with id/human_id/priority/created_at), (2) Super admin GET /dashboard?department=Admin returns Admin-scoped stats with required fields, (3) IT user GET /dashboard?department=Admin is IGNORED - returns IT scope (verified totals match and all calendar tickets are IT department). All tests passed."
+  - task: "Member SLA report"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "GET /reports/member-sla?department=IT/Admin as superadmin returns {department, members:[]} with member_name, assigned, open, resolved, avg_response_hours, avg_resolution_hours, sla_compliance. IT/Admin/Employee: 403."
+        - working: true
+          agent: "testing"
+          comment: "Tested 5 scenarios: (1) Super admin GET /reports/member-sla?department=IT returns IT members (Ajeet Kumar, Sunil Rathore) with all required fields, (2) Super admin GET /reports/member-sla?department=Admin returns Rajeev Goyal, (3) IT user returns 403, (4) Admin user returns 403, (5) Employee user returns 403. All RBAC and data structure tests passed."
+  - task: "IT approval submit"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "IT role can now POST /tickets/{id}/approval/submit (previously admin-only). Submits approval with justification/requested_amount/vendor -> status 'Pending Super Admin Approval', creates APR- human_id. Employee: 403. Super admin decision flow unchanged."
+        - working: true
+          agent: "testing"
+          comment: "Tested 3 scenarios: (1) IT user POST /tickets/{IT ticket id}/approval/submit succeeds - ticket status changes to 'Pending Super Admin Approval', approval object created with APR- human_id, (2) Employee POST /tickets/{own ticket}/approval/submit returns 403, (3) Super admin POST /tickets/{IT ticket}/approval/decision approve changes status to 'Approved - Ready for Action'. All tests passed."
+  - task: "Member checklists (define/submit/tracking)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Super admin: GET /member-checklists (all), POST /member-checklists {member_id,title,items:[]} creates. IT/Admin: GET /member-checklists (own only, each with today_submission field), POST /member-checklists/{ownId}/submit {responses:[{item,done,remark}]} returns {ok,status,done_count,total}, persists submission. Cannot submit another member's checklist (403). GET /member-checklist-submissions: super admin only (403 for others)."
+        - working: true
+          agent: "testing"
+          comment: "Tested 8 scenarios: (1) Super admin GET /member-checklists returns >=3 seeded checklists, (2) Super admin POST /member-checklists creates checklist with 2 items, (3) IT user GET /member-checklists returns only own checklists with today_submission field, (4) IT user POST /member-checklists/{own id}/submit succeeds with {ok, status, done_count, total}, (5) IT user GET /member-checklists after submit shows today_submission with responses, (6) IT user POST /member-checklists/{another member's id}/submit returns 403, (7) IT user GET /member-checklist-submissions returns 403, (8) Super admin GET /member-checklist-submissions returns submissions. All tests passed."
 
 frontend:
   - task: "Full UI (login, dashboards, tickets, drawer, approvals, tasks, checklists, audit)"
@@ -206,7 +262,7 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 1
+  test_sequence: 2
   run_ui: false
 
 test_plan:
@@ -217,6 +273,8 @@ test_plan:
 
 agent_communication:
     - agent: "main"
-      message: "Built full-stack TicketFlow on Next.js API routes + MongoDB. Please test backend end-to-end. Use demo users (password Passw0rd!): employee@demo.com, it@demo.com, admin@demo.com, superadmin@demo.com. Auth uses httpOnly cookie tf_token - persist cookies across requests. Key flow to validate: (1) login all roles, (2) RBAC scoping + IDOR (employee cannot access others/IT/Admin tickets => 403), (3) employee raise ticket, IT assign/status/resolve, employee confirm+rating, (4) Admin approval: submit on the seeded 'New printer procurement for HQ2' ADM ticket then Super Admin decision -> status transitions, (5) execution locked before approval, (6) notifications + audit (super admin only). Base path is /api."
+      message: "Enhancement round. NEW endpoints to test (base /api, cookie tf_token, password Passw0rd!): (1) GET /dashboard?department=IT and =Admin as superadmin returns dept-scoped stats incl avg_response_hours/avg_resolution_hours/sla_compliance/calendar[]; as it/admin the department param must be IGNORED (stays own scope). (2) GET /reports/member-sla?department=IT as superadmin returns members[] with assigned/open/resolved/avg_response_hours/avg_resolution_hours/sla_compliance; as it/admin/employee returns 403. (3) IT approval: as it, POST /tickets/{an IT ticket id}/approval/submit {justification,requested_amount} succeeds -> ticket status 'Pending Super Admin Approval'; as employee 403. (4) Member checklists: as superadmin GET /member-checklists returns 3 seeded; POST /member-checklists {member_id,title,items:[...]} creates; as it GET /member-checklists returns only own each with today_submission field; as it POST /member-checklists/{ownId}/submit {responses:[{item,done,remark}]} returns {status,done_count,total} and persists (re-GET shows today_submission not null); it CANNOT submit another member's checklist (403); GET /member-checklist-submissions as superadmin returns the submission; as it returns 403. Data was force-reseeded. Skip re-testing previously passing flows."
     - agent: "testing"
-      message: "Backend testing complete. All 49 tests passed (0 failures). Tested: (1) Auth - login/logout/me with JWT cookie, (2) RBAC scoping - employee/IT/admin/super_admin ticket access, (3) IDOR protection - cross-role access blocked with 403, (4) Ticket lifecycle - create/assign/priority/status/resolve/confirm/reopen, (5) Comments - internal/public with proper visibility, (6) Admin approval workflow - submit/decision/clarify/partial approval with execution blocking, (7) Tasks/Checklists/Notifications/Audit/Dashboard with proper RBAC. All endpoints working correctly. Backend is production-ready."
+      message: "Backend testing complete. All 49 tests passed (0 failures)."
+    - agent: "testing"
+      message: "Enhancement round testing complete. All 19 NEW endpoint tests passed (0 failures). Tested: (1) Dashboard department scoping - super admin can scope by department param, non-super users have param ignored, (2) Member SLA report - super admin only, returns member stats with SLA metrics, (3) IT approval submit - IT users can now submit approvals (previously admin-only), (4) Member checklists - super admin defines, IT/admin submit daily, proper RBAC enforcement. All endpoints working correctly with proper data structures and RBAC."

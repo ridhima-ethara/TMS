@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Skeleton } from '@/components/ui/skeleton'
 import { toast } from 'sonner'
 import { Plus, Search, Download, Inbox } from 'lucide-react'
@@ -25,7 +26,15 @@ function exportCsv(rows) {
 export default function TicketsView({ user, onOpenTicket, refresh, onRefresh, preset }) {
   const [data, setData] = useState({ items: [], total: 0, page: 1, pages: 1 })
   const [loading, setLoading] = useState(true)
-  const [filters, setFilters] = useState({ search: '', status: 'all', priority: 'all', department: 'all', page: 1 })
+  const [cats, setCats] = useState([])
+  const isSuper = user.role === 'super_admin'
+  const [filters, setFilters] = useState({ search: '', status: 'all', priority: 'all', category: 'all', department: isSuper ? 'IT' : 'all', page: 1 })
+
+  // load categories for the active department
+  useEffect(() => {
+    const dept = filters.department !== 'all' ? `?department=${filters.department}` : ''
+    api(`/categories${dept}`).then((c) => setCats([...new Set(c.map((x) => x.name))])).catch(() => {})
+  }, [filters.department])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -34,6 +43,7 @@ export default function TicketsView({ user, onOpenTicket, refresh, onRefresh, pr
       if (filters.search) p.set('search', filters.search)
       if (filters.status !== 'all') p.set('status', filters.status)
       if (filters.priority !== 'all') p.set('priority', filters.priority)
+      if (filters.category !== 'all') p.set('category', filters.category)
       if (filters.department !== 'all') p.set('department', filters.department)
       p.set('page', String(filters.page)); p.set('limit', '15')
       let items = await api(`/tickets?${p.toString()}`)
@@ -49,6 +59,14 @@ export default function TicketsView({ user, onOpenTicket, refresh, onRefresh, pr
 
   return (
     <div className="space-y-4">
+      {isSuper && (
+        <Tabs value={filters.department} onValueChange={(v) => setFilters({ ...filters, department: v, category: 'all', page: 1 })}>
+          <TabsList>
+            <TabsTrigger value="IT">IT Department</TabsTrigger>
+            <TabsTrigger value="Admin">Admin Department</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      )}
       <div className="flex flex-wrap items-center gap-2 justify-between">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative">
@@ -63,12 +81,10 @@ export default function TicketsView({ user, onOpenTicket, refresh, onRefresh, pr
             <SelectTrigger className="w-32 h-9"><SelectValue placeholder="Priority" /></SelectTrigger>
             <SelectContent><SelectItem value="all">All priority</SelectItem>{PRIORITIES.map((p) => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
           </Select>
-          {(user.role === 'super_admin') && (
-            <Select value={filters.department} onValueChange={(v) => setFilters({ ...filters, department: v, page: 1 })}>
-              <SelectTrigger className="w-32 h-9"><SelectValue placeholder="Dept" /></SelectTrigger>
-              <SelectContent><SelectItem value="all">All depts</SelectItem><SelectItem value="IT">IT</SelectItem><SelectItem value="Admin">Admin</SelectItem></SelectContent>
-            </Select>
-          )}
+          <Select value={filters.category} onValueChange={(v) => setFilters({ ...filters, category: v, page: 1 })}>
+            <SelectTrigger className="w-44 h-9"><SelectValue placeholder="Category" /></SelectTrigger>
+            <SelectContent><SelectItem value="all">All categories</SelectItem>{cats.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+          </Select>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => exportCsv(data.items)}><Download className="h-4 w-4 mr-1" />Export</Button>
