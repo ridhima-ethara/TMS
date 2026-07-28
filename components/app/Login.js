@@ -9,10 +9,12 @@ import { toast } from 'sonner'
 import { Ticket, ShieldCheck, Loader2 } from 'lucide-react'
 
 const DEMO = [
-  { email: 'employee@demo.com', role: 'employee' },
-  { email: 'it@demo.com', role: 'it' },
-  { email: 'admin@demo.com', role: 'admin' },
-  { email: 'superadmin@demo.com', role: 'super_admin' },
+  { email: 'employee@demo.com', label: 'Employee' },
+  { email: 'it@demo.com', label: 'IT · Ajeet' },
+  { email: 'it2@demo.com', label: 'IT · Sunil' },
+  { email: 'admin@demo.com', label: 'Admin · Rajeev' },
+  { email: 'admin2@demo.com', label: 'Admin · Neha' },
+  { email: 'superadmin@demo.com', label: 'Super Admin' },
 ]
 
 export default function Login({ onLogin }) {
@@ -87,7 +89,7 @@ export default function Login({ onLogin }) {
               <div className="grid grid-cols-2 gap-2">
                 {DEMO.map((d) => (
                   <Button key={d.email} variant="outline" size="sm" onClick={() => quick(d.email)} disabled={loading}>
-                    {ROLE_LABEL[d.role]}
+                    {d.label}
                   </Button>
                 ))}
               </div>

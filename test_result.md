@@ -245,6 +245,62 @@ backend:
         - working: true
           agent: "testing"
           comment: "Tested 8 scenarios: (1) Super admin GET /member-checklists returns >=3 seeded checklists, (2) Super admin POST /member-checklists creates checklist with 2 items, (3) IT user GET /member-checklists returns only own checklists with today_submission field, (4) IT user POST /member-checklists/{own id}/submit succeeds with {ok, status, done_count, total}, (5) IT user GET /member-checklists after submit shows today_submission with responses, (6) IT user POST /member-checklists/{another member's id}/submit returns 403, (7) IT user GET /member-checklist-submissions returns 403, (8) Super admin GET /member-checklist-submissions returns submissions. All tests passed."
+  - task: "Locations endpoint"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "GET /locations (any auth) returns exactly 6 objects, each with name, building, code. Buildings should be 'Tulip' (4 floors) and 'Lotus' (Bullpen, Labs)."
+        - working: true
+          agent: "testing"
+          comment: "Tested GET /api/locations: Returns exactly 6 objects with name, building, code. Verified Tulip has 4 floors (Ground, First, Second, Third) and Lotus has 2 areas (Bullpen, Labs). All structure requirements met."
+  - task: "Daily KRA compliance report"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "As superadmin: GET /reports/daily-kra returns {date, members:[...]} where each member has member_name, member_role, total_items, done_items, submitted_lists, total_lists, status ('Completed'|'Partial'|'Not Submitted'), compliant (bool), pct (0-100). Expect 4 members (Ajeet, Sunil IT; Rajeev, Neha Admin). As it/admin/employee: returns 403."
+        - working: true
+          agent: "testing"
+          comment: "Tested 5 scenarios: (1) Superadmin GET /reports/daily-kra returns proper structure with date and members array containing 4 members (Ajeet Kumar, Sunil Rathore IT; Rajeev Goyal, Neha Sharma Admin) with all required fields (member_name, member_role, total_items, done_items, submitted_lists, total_lists, status, compliant, pct), (2) IT user returns 403, (3) Admin user returns 403, (4) Employee user returns 403, (5) Verified status values are valid ('Completed'|'Partial'|'Not Submitted'), compliant is boolean, pct is 0-100. All tests passed."
+  - task: "Member checklist submissions access (IT/Admin see own)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "GET /member-checklist-submissions as it/admin returns ONLY their own submissions (list, not 403). As superadmin returns all submissions (filterable). As employee returns 403."
+        - working: true
+          agent: "testing"
+          comment: "Tested 5 scenarios: (1) IT (Ajeet) GET /member-checklists returns own checklists, (2) IT (Ajeet) POST /member-checklists/{id}/submit succeeds with proper response {ok, status, done_count, total}, (3) IT (Ajeet) GET /member-checklist-submissions returns ONLY own submissions - verified all submissions have member_name == 'Ajeet Kumar', (4) Employee GET /member-checklist-submissions returns 403, (5) Superadmin GET /member-checklist-submissions returns submissions across members (includes Ajeet's). Verified daily-kra report reflects Ajeet's submission (status=Partial, done_items=2). All tests passed."
+  - task: "Raise request flow (IT approval submit)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "As it: POST /tickets {department:'IT', category:'Software', title:'Need paid IDE license', priority:'High', location:'Tulip - First Floor'} returns ticket with human_id IT-... and location exactly 'Tulip - First Floor'. Then POST /tickets/{id}/approval/submit {justification, requested_amount, vendor, required_by} returns 200, ticket status changes to 'Pending Super Admin Approval', approval.human_id starts with 'APR-'. Superadmin can filter: GET /tickets?department=IT&status=Pending%20Super%20Admin%20Approval includes this ticket."
+        - working: true
+          agent: "testing"
+          comment: "Tested 3 scenarios: (1) IT user POST /tickets creates ticket with human_id IT-280726-000013 and location 'Tulip - First Floor' exactly as specified, (2) IT user POST /tickets/{id}/approval/submit succeeds - ticket status changes to 'Pending Super Admin Approval', approval object created with human_id APR-280726-000001, (3) Superadmin GET /tickets?department=IT&status=Pending Super Admin Approval includes the IT ticket in results. All tests passed."
 
 frontend:
   - task: "Full UI (login, dashboards, tickets, drawer, approvals, tasks, checklists, audit)"
@@ -262,7 +318,7 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 2
+  test_sequence: 3
   run_ui: false
 
 test_plan:
@@ -273,8 +329,10 @@ test_plan:
 
 agent_communication:
     - agent: "main"
-      message: "Enhancement round. NEW endpoints to test (base /api, cookie tf_token, password Passw0rd!): (1) GET /dashboard?department=IT and =Admin as superadmin returns dept-scoped stats incl avg_response_hours/avg_resolution_hours/sla_compliance/calendar[]; as it/admin the department param must be IGNORED (stays own scope). (2) GET /reports/member-sla?department=IT as superadmin returns members[] with assigned/open/resolved/avg_response_hours/avg_resolution_hours/sla_compliance; as it/admin/employee returns 403. (3) IT approval: as it, POST /tickets/{an IT ticket id}/approval/submit {justification,requested_amount} succeeds -> ticket status 'Pending Super Admin Approval'; as employee 403. (4) Member checklists: as superadmin GET /member-checklists returns 3 seeded; POST /member-checklists {member_id,title,items:[...]} creates; as it GET /member-checklists returns only own each with today_submission field; as it POST /member-checklists/{ownId}/submit {responses:[{item,done,remark}]} returns {status,done_count,total} and persists (re-GET shows today_submission not null); it CANNOT submit another member's checklist (403); GET /member-checklist-submissions as superadmin returns the submission; as it returns 403. Data was force-reseeded. Skip re-testing previously passing flows."
+      message: "Round 3 enhancements. Test NEW/CHANGED backend (base /api, cookie tf_token, password Passw0rd!). Users now include admin2@demo.com (Neha, admin). (1) GET /locations returns 6 objects each {name,building,code} grouped Tulip/Lotus. (2) GET /reports/daily-kra as superadmin returns {date, members:[{member_name,member_role,total_items,done_items,submitted_lists,total_lists,status,compliant,pct}]}; status is 'Completed'|'Partial'|'Not Submitted'; as it/admin/employee -> 403. (3) GET /member-checklist-submissions as it/admin returns ONLY their own submissions (no 403 now); as superadmin returns all/filterable; employee 403. (4) Raise Request flow: as it, POST /tickets {department:'IT',category,title,priority,location} then POST /tickets/{id}/approval/submit -> ticket status 'Pending Super Admin Approval'. (5) Regression: member-checklists submit still works and daily-kra reflects it. Data force-reseeded. Skip re-testing old passing flows."
     - agent: "testing"
-      message: "Backend testing complete. All 49 tests passed (0 failures)."
+      message: "Round 1+2 backend: all passed (49 + 19)."
     - agent: "testing"
       message: "Enhancement round testing complete. All 19 NEW endpoint tests passed (0 failures). Tested: (1) Dashboard department scoping - super admin can scope by department param, non-super users have param ignored, (2) Member SLA report - super admin only, returns member stats with SLA metrics, (3) IT approval submit - IT users can now submit approvals (previously admin-only), (4) Member checklists - super admin defines, IT/admin submit daily, proper RBAC enforcement. All endpoints working correctly with proper data structures and RBAC."
+    - agent: "testing"
+      message: "Round 3 backend testing complete. All 14 NEW/CHANGED endpoint tests passed (0 failures). Tested: (1) GET /api/locations - returns exactly 6 objects with name, building, code (Tulip: 4 floors, Lotus: 2 areas), (2) GET /api/reports/daily-kra - super admin only with proper structure (4 members: Ajeet, Sunil IT; Rajeev, Neha Admin), IT/Admin/Employee return 403, (3) GET /api/member-checklist-submissions - IT/Admin see ONLY own submissions (verified Ajeet sees only his), Employee returns 403, Superadmin sees all, (4) Raise Request flow - IT creates ticket with specific location 'Tulip - First Floor', submits approval (status->Pending Super Admin Approval, APR- human_id created), Superadmin can filter pending approvals. Daily KRA correctly reflects member submissions. All endpoints working correctly with proper RBAC and data structures."

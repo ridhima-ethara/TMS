@@ -26,7 +26,7 @@ const NAV = {
     { k: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { k: 'tickets', label: 'IT Tickets', icon: Ticket },
     { k: 'approvals', label: 'Approvals', icon: FileCheck2 },
-    { k: 'mychecklist', label: 'My Checklist', icon: ClipboardCheck },
+    { k: 'mychecklist', label: 'My KRA / Tasks', icon: ClipboardCheck },
   ],
   admin: [
     { k: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -34,7 +34,7 @@ const NAV = {
     { k: 'approvals', label: 'Approvals', icon: FileCheck2 },
     { k: 'tasks', label: 'Operational Tasks', icon: ListChecks },
     { k: 'checklists', label: 'Checklists', icon: ClipboardList },
-    { k: 'mychecklist', label: 'My Checklist', icon: ClipboardCheck },
+    { k: 'mychecklist', label: 'My KRA / Tasks', icon: ClipboardCheck },
   ],
   super_admin: [
     { k: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -42,7 +42,7 @@ const NAV = {
     { k: 'approvals', label: 'Approval Inbox', icon: FileCheck2 },
     { k: 'tasks', label: 'Operational Tasks', icon: ListChecks },
     { k: 'checklists', label: 'Checklists', icon: ClipboardList },
-    { k: 'member-checklists', label: 'Member Checklists', icon: Users },
+    { k: 'member-checklists', label: 'Member KRA', icon: Users },
     { k: 'audit', label: 'Audit Logs', icon: ScrollText },
   ],
 }
@@ -83,7 +83,7 @@ export default function App() {
 
   const nav = NAV[user.role] || NAV.employee
   const unread = notifs.filter((n) => !n.read).length
-  const titleMap = { dashboard: 'Dashboard', tickets: nav.find((n) => n.k === 'tickets')?.label, approvals: 'Approvals', tasks: 'Operational Tasks', checklists: 'Checklists', mychecklist: 'My Daily Checklist', 'member-checklists': 'Member Checklists', audit: 'Audit Logs' }
+  const titleMap = { dashboard: 'Dashboard', tickets: nav.find((n) => n.k === 'tickets')?.label, approvals: 'Approvals', tasks: 'Operational Tasks', checklists: 'Checklists', mychecklist: 'My KRA / Daily Tasks', 'member-checklists': 'Member KRA', audit: 'Audit Logs' }
 
   const Sidebar = () => (
     <aside className="w-60 shrink-0 border-r bg-slate-900 text-slate-200 flex flex-col">

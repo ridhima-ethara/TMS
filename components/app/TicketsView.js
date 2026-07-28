@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectGroup, SelectLabel } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -88,7 +88,9 @@ export default function TicketsView({ user, onOpenTicket, refresh, onRefresh, pr
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => exportCsv(data.items)}><Download className="h-4 w-4 mr-1" />Export</Button>
-          <RaiseTicket user={user} onCreated={() => { onRefresh?.(); load() }} />
+          {preset === 'approvals'
+            ? (['it', 'admin'].includes(user.role) && <RaiseRequest user={user} onCreated={() => { onRefresh?.(); load() }} />)
+            : <RaiseTicket user={user} onCreated={() => { onRefresh?.(); load() }} />}
         </div>
       </div>
 
@@ -138,17 +140,34 @@ export default function TicketsView({ user, onOpenTicket, refresh, onRefresh, pr
   )
 }
 
+function LocationSelect({ value, onChange, locs }) {
+  const groups = locs.reduce((a, l) => { (a[l.building || 'Other'] = a[l.building || 'Other'] || []).push(l); return a }, {})
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger className="h-9"><SelectValue placeholder="Select location" /></SelectTrigger>
+      <SelectContent>
+        {Object.entries(groups).map(([building, items]) => (
+          <SelectGroup key={building}>
+            <SelectLabel>{building}</SelectLabel>
+            {items.map((l) => <SelectItem key={l.name} value={l.name}>{l.name}</SelectItem>)}
+          </SelectGroup>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
 function RaiseTicket({ user, onCreated }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [cats, setCats] = useState([])
   const [locs, setLocs] = useState([])
-  const [f, setF] = useState({ department: 'IT', category: '', title: '', description: '', priority: 'Medium', location: 'HQ1', raised_for_name: '', employee_id: '', email: '' })
+  const [f, setF] = useState({ department: 'IT', category: '', title: '', description: '', priority: 'Medium', location: 'Tulip - Ground Floor', raised_for_name: '', employee_id: '', email: '' })
 
   useEffect(() => {
     if (!open) return
     api(`/categories?department=${f.department}`).then((c) => setCats(c.map((x) => x.name))).catch(() => {})
-    api('/locations').then((l) => setLocs(l.map((x) => x.name))).catch(() => {})
+    api('/locations').then(setLocs).catch(() => {})
   }, [open, f.department])
 
   const submit = async () => {
@@ -188,10 +207,7 @@ function RaiseTicket({ user, onCreated }) {
               </Select>
             </div>
             <div className="space-y-1"><Label className="text-xs">Location</Label>
-              <Select value={f.location} onValueChange={(v) => setF({ ...f, location: v })}>
-                <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-                <SelectContent>{locs.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}</SelectContent>
-              </Select>
+              <LocationSelect value={f.location} onChange={(v) => setF({ ...f, location: v })} locs={locs} />
             </div>
           </div>
           <div className="space-y-1"><Label className="text-xs">Title</Label><Input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} placeholder="Brief summary" /></div>
@@ -205,6 +221,71 @@ function RaiseTicket({ user, onCreated }) {
           )}
         </div>
         <DialogFooter><Button onClick={submit} disabled={busy}>Submit</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function RaiseRequest({ user, onCreated }) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [cats, setCats] = useState([])
+  const [locs, setLocs] = useState([])
+  const dept = user.role === 'admin' ? 'Admin' : 'IT'
+  const [f, setF] = useState({ category: '', title: '', description: '', priority: 'High', location: 'Tulip - Ground Floor', justification: '', requested_amount: '', vendor: '', required_by: '' })
+
+  useEffect(() => {
+    if (!open) return
+    api(`/categories?department=${dept}`).then((c) => setCats(c.map((x) => x.name))).catch(() => {})
+    api('/locations').then(setLocs).catch(() => {})
+  }, [open])
+
+  const submit = async () => {
+    if (!f.title || !f.justification) return toast.error('Title and justification are required')
+    setBusy(true)
+    try {
+      const t = await api('/tickets', { method: 'POST', body: { department: dept, category: f.category, title: f.title, description: f.description, priority: f.priority, location: f.location } })
+      await api(`/tickets/${t.id}/approval/submit`, { method: 'POST', body: { justification: f.justification, requested_amount: Number(f.requested_amount) || 0, vendor: f.vendor, required_by: f.required_by } })
+      toast.success(`Request ${t.human_id} sent to Super Admin`)
+      setOpen(false)
+      setF({ ...f, title: '', description: '', justification: '', requested_amount: '', vendor: '' })
+      onCreated()
+    } catch (e) { toast.error(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild><Button size="sm"><Plus className="h-4 w-4 mr-1" />Raise Request</Button></DialogTrigger>
+      <DialogContent className="max-w-lg">
+        <DialogHeader><DialogTitle>Raise Approval Request ({dept})</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">This request will be submitted to the Super Admin for approval before any execution.</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1"><Label className="text-xs">Category</Label>
+              <Select value={f.category} onValueChange={(v) => setF({ ...f, category: v })}>
+                <SelectTrigger className="h-9"><SelectValue placeholder="Select" /></SelectTrigger>
+                <SelectContent>{cats.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1"><Label className="text-xs">Priority</Label>
+              <Select value={f.priority} onValueChange={(v) => setF({ ...f, priority: v })}>
+                <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                <SelectContent>{PRIORITIES.map((p) => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="space-y-1"><Label className="text-xs">Location</Label>
+            <LocationSelect value={f.location} onChange={(v) => setF({ ...f, location: v })} locs={locs} />
+          </div>
+          <div className="space-y-1"><Label className="text-xs">Title</Label><Input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} placeholder="What is being requested" /></div>
+          <div className="space-y-1"><Label className="text-xs">Justification</Label><Textarea rows={2} value={f.justification} onChange={(e) => setF({ ...f, justification: e.target.value })} placeholder="Why is this needed" /></div>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="space-y-1"><Label className="text-xs">Amount (₹)</Label><Input type="number" value={f.requested_amount} onChange={(e) => setF({ ...f, requested_amount: e.target.value })} /></div>
+            <div className="space-y-1"><Label className="text-xs">Vendor</Label><Input value={f.vendor} onChange={(e) => setF({ ...f, vendor: e.target.value })} /></div>
+            <div className="space-y-1"><Label className="text-xs">Required by</Label><Input type="date" value={f.required_by} onChange={(e) => setF({ ...f, required_by: e.target.value })} /></div>
+          </div>
+        </div>
+        <DialogFooter><Button onClick={submit} disabled={busy}>Submit to Super Admin</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   )

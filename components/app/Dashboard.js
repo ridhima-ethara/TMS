@@ -7,7 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 import TicketCalendar from '@/components/app/TicketCalendar'
-import { Ticket, AlertTriangle, CheckCircle2, Clock, FileCheck2, Timer, Gauge, Server, Building2, Users } from 'lucide-react'
+import { Ticket, AlertTriangle, CheckCircle2, Clock, FileCheck2, Timer, Gauge, Server, Building2, Users, ClipboardCheck, XCircle, CircleAlert } from 'lucide-react'
 
 const PIE_COLORS = { Critical: '#991b1b', High: '#f97316', Medium: '#facc15', Low: '#10b981' }
 
@@ -146,11 +146,101 @@ function DeptPanel({ department, onOpenTicket, refresh }) {
   )
 }
 
+function DailyKra({ refresh }) {
+  const [data, setData] = useState(null)
+  useEffect(() => { api('/reports/daily-kra').then(setData).catch(() => {}) }, [refresh])
+  const meta = {
+    Completed: { cls: 'border-green-300 bg-green-50', badge: 'bg-green-100 text-green-700', icon: CheckCircle2, tone: 'text-green-600' },
+    Partial: { cls: 'border-amber-300 bg-amber-50', badge: 'bg-amber-100 text-amber-700', icon: CircleAlert, tone: 'text-amber-600' },
+    'Not Submitted': { cls: 'border-red-300 bg-red-50', badge: 'bg-red-100 text-red-700', icon: XCircle, tone: 'text-red-600' },
+  }
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-teal-600" />Daily KRA Compliance
+          <span className="text-xs font-normal text-muted-foreground ml-1">{data?.date}</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {(data?.members || []).map((m) => {
+            const mt = meta[m.status] || meta['Not Submitted']
+            const Icon = mt.icon
+            return (
+              <div key={m.member_id} className={`rounded-lg border p-3 ${mt.cls}`}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-sm">{m.member_name}</p>
+                    <p className="text-[11px] text-muted-foreground uppercase">{m.member_role === 'it' ? 'IT Team' : 'Admin Team'}</p>
+                  </div>
+                  <Icon className={`h-5 w-5 ${mt.tone}`} />
+                </div>
+                <div className="mt-2 flex items-center justify-between">
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${mt.badge}`}>{m.status}</span>
+                  <span className="text-xs text-muted-foreground">{m.done_items}/{m.total_items} tasks</span>
+                </div>
+                <div className="mt-2 h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                  <div className={`h-full ${m.status === 'Completed' ? 'bg-green-500' : m.status === 'Partial' ? 'bg-amber-500' : 'bg-red-400'}`} style={{ width: `${m.pct}%` }} />
+                </div>
+              </div>
+            )
+          })}
+          {(!data || data.members.length === 0) && <p className="text-sm text-muted-foreground">No KRA assigned yet.</p>}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function MyKra({ refresh }) {
+  const [lists, setLists] = useState([])
+  useEffect(() => { api('/member-checklists').then(setLists).catch(() => {}) }, [refresh])
+  if (!lists.length) return null
+  return (
+    <Card>
+      <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-teal-600" />My KRA — Today</CardTitle></CardHeader>
+      <CardContent className="space-y-3">
+        {lists.map((l) => {
+          const sub = l.today_submission
+          const done = sub ? (sub.responses || []).filter((r) => r.done).length : 0
+          const total = l.items.length
+          const complete = sub && sub.status === 'Completed'
+          return (
+            <div key={l.id} className={`rounded-md border p-3 ${!sub ? 'border-red-300 bg-red-50' : complete ? 'border-green-300 bg-green-50' : 'border-amber-300 bg-amber-50'}`}>
+              <div className="flex items-center justify-between">
+                <p className="font-medium text-sm">{l.title}</p>
+                <span className={`text-xs px-2 py-0.5 rounded-full ${!sub ? 'bg-red-100 text-red-700' : complete ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                  {!sub ? 'Not submitted' : complete ? 'Completed' : 'In progress'}
+                </span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {l.items.map((it) => {
+                  const r = sub?.responses?.find((x) => x.item === it.label)
+                  const isDone = r?.done
+                  return (
+                    <span key={it.key} className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border ${isDone ? 'bg-green-100 text-green-700 border-green-300' : 'bg-muted text-muted-foreground border-border'}`}>
+                      {isDone ? <CheckCircle2 className="h-3 w-3" /> : <CircleAlert className="h-3 w-3" />}{it.label}
+                    </span>
+                  )
+                })}
+              </div>
+              <p className="text-xs text-muted-foreground mt-2">{done}/{total} done · complete & submit in <span className="font-medium">My Checklist</span></p>
+            </div>
+          )
+        })}
+      </CardContent>
+    </Card>
+  )
+}
+
 function SuperDash({ onOpenTicket, refresh }) {
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-      <DeptPanel department="IT" onOpenTicket={onOpenTicket} refresh={refresh} />
-      <DeptPanel department="Admin" onOpenTicket={onOpenTicket} refresh={refresh} />
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <DeptPanel department="IT" onOpenTicket={onOpenTicket} refresh={refresh} />
+        <DeptPanel department="Admin" onOpenTicket={onOpenTicket} refresh={refresh} />
+      </div>
+      <DailyKra refresh={refresh} />
     </div>
   )
 }
@@ -179,10 +269,13 @@ function StaffDash({ user, onOpenTicket, refresh }) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">{cards.map((c) => <Stat key={c.label} {...c} />)}</div>
       <Charts s={s} />
       {isStaff ? (
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-base">Ticket Calendar</CardTitle></CardHeader>
-          <CardContent><TicketCalendar tickets={s.calendar || []} onOpenTicket={onOpenTicket} /></CardContent>
-        </Card>
+        <>
+          <MyKra refresh={refresh} />
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-base">Ticket Calendar</CardTitle></CardHeader>
+            <CardContent><TicketCalendar tickets={s.calendar || []} onOpenTicket={onOpenTicket} /></CardContent>
+          </Card>
+        </>
       ) : (
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-base">Recent Tickets</CardTitle></CardHeader>

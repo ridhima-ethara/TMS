@@ -121,7 +121,15 @@ function scopeFilter(session) {
 // ---------------- SEED ----------------
 const IT_CATEGORIES = ['Hardware','Laptop Allocation','Network/Wi-Fi','Email/Access','Password Reset','Software','Biometric','Meeting-Room Support','Onboarding','Offboarding','Asset Recovery','Security Incident']
 const ADMIN_CATEGORIES = ['Facilities','AC','Electricity','Furniture','Housekeeping','Washroom','Water','Parking','ID/Access Cards','Seating','Stationery','Medicine','Pantry','Courier','Vendors','Procurement','Insurance','Banking','Payments','Expense Summary','Cash Flow','Printers','Assets','Inventory']
-const LOCATIONS = ['HQ1','HQ2','301']
+const LOCATIONS = [
+  { name: 'Tulip - Ground Floor', building: 'Tulip', code: 'TULG' },
+  { name: 'Tulip - First Floor', building: 'Tulip', code: 'TUL1' },
+  { name: 'Tulip - Second Floor', building: 'Tulip', code: 'TUL2' },
+  { name: 'Tulip - Third Floor', building: 'Tulip', code: 'TUL3' },
+  { name: 'Lotus - Bullpen', building: 'Lotus', code: 'LOTB' },
+  { name: 'Lotus - Labs', building: 'Lotus', code: 'LOTL' },
+]
+const LOC_NAMES = LOCATIONS.map((l) => l.name)
 
 const IT_SEED = [
   ['Lalit','Network/Wi-Fi','High','Internet not working at desk','Ajeet Kumar','Resolve'],
@@ -167,11 +175,12 @@ async function seedDb(db) {
 
   const hash = await bcrypt.hash('Passw0rd!', 10)
   const users = [
-    { name: 'Emma Employee', email: 'employee@demo.com', role: 'employee', department: 'General', employee_id: 'EMP-1001', location: 'HQ1' },
-    { name: 'Ajeet Kumar', email: 'it@demo.com', role: 'it', department: 'IT', employee_id: 'IT-2001', location: 'HQ1' },
-    { name: 'Sunil Rathore', email: 'it2@demo.com', role: 'it', department: 'IT', employee_id: 'IT-2002', location: 'HQ2' },
-    { name: 'Rajeev Goyal', email: 'admin@demo.com', role: 'admin', department: 'Admin', employee_id: 'ADM-3001', location: 'HQ1' },
-    { name: 'Sara Superadmin', email: 'superadmin@demo.com', role: 'super_admin', department: 'Management', employee_id: 'SA-9001', location: 'HQ1' },
+    { name: 'Emma Employee', email: 'employee@demo.com', role: 'employee', department: 'General', employee_id: 'EMP-1001', location: 'Tulip - Ground Floor' },
+    { name: 'Ajeet Kumar', email: 'it@demo.com', role: 'it', department: 'IT', employee_id: 'IT-2001', location: 'Tulip - First Floor' },
+    { name: 'Sunil Rathore', email: 'it2@demo.com', role: 'it', department: 'IT', employee_id: 'IT-2002', location: 'Tulip - Second Floor' },
+    { name: 'Rajeev Goyal', email: 'admin@demo.com', role: 'admin', department: 'Admin', employee_id: 'ADM-3001', location: 'Lotus - Bullpen' },
+    { name: 'Neha Sharma', email: 'admin2@demo.com', role: 'admin', department: 'Admin', employee_id: 'ADM-3002', location: 'Lotus - Labs' },
+    { name: 'Sara Superadmin', email: 'superadmin@demo.com', role: 'super_admin', department: 'Management', employee_id: 'SA-9001', location: 'Tulip - Third Floor' },
   ]
   const userDocs = users.map((u) => ({ id: uuidv4(), password_hash: hash, active: true, created_at: new Date(), ...u }))
   await db.collection('users').insertMany(userDocs)
@@ -184,7 +193,7 @@ async function seedDb(db) {
     ...ADMIN_CATEGORIES.map((c) => ({ id: uuidv4(), department: 'Admin', name: c })),
   ]
   await db.collection('categories').insertMany(cats)
-  await db.collection('locations').insertMany(LOCATIONS.map((l) => ({ id: uuidv4(), name: l, code: l })))
+  await db.collection('locations').insertMany(LOCATIONS.map((l) => ({ id: uuidv4(), ...l })))
 
   // IT tickets from CSV (with realistic spread-out timestamps for SLA analytics)
   const itTickets = []
@@ -241,7 +250,7 @@ async function seedDb(db) {
   const templates = []
   for (const loc of LOCATIONS) {
     templates.push({
-      id: uuidv4(), name: `Daily Facility Checklist - ${loc}`, location: loc, frequency: 'daily',
+      id: uuidv4(), name: `Daily Facility Checklist - ${loc.name}`, location: loc.name, code: loc.code, frequency: 'daily',
       items: CHECKLIST_ITEMS.map((label, i) => ({ key: `item_${i}`, label })), created_at: new Date(),
     })
   }
@@ -283,7 +292,7 @@ async function seedDb(db) {
       id, human_id: hid, department: 'Admin', category: cat, subcategory: '',
       title, description: title, priority: prio, status,
       raised_by_id: employee.id, raised_by_name: 'Emma Employee', raised_for_name: 'Emma Employee',
-      employee_id: 'EMP-1001', email: 'employee@demo.com', location: LOCATIONS[Math.floor(Math.random() * 3)],
+      employee_id: 'EMP-1001', email: 'employee@demo.com', location: LOC_NAMES[Math.floor(Math.random() * LOC_NAMES.length)],
       assignee_id: admin.id, assignee_name: admin.name, approval_required: false, legacy_id: null,
       sla_response_due: new Date(createdAt.getTime() + m[0] * HOUR),
       sla_resolution_due: new Date(createdAt.getTime() + m[1] * HOUR),
@@ -301,9 +310,10 @@ async function seedDb(db) {
   // Per-member daily checklists (defined by Super Admin)
   const superUser = byName('Sara Superadmin')
   const memberChecklists = [
-    { member: byName('Ajeet Kumar'), title: 'IT Daily Ops Checklist', items: ['Verify server backups completed', 'Check network & Wi-Fi uptime', 'Respond to all pending tickets', 'Update asset & inventory register', 'Review security alerts'] },
-    { member: byName('Sunil Rathore'), title: 'IT Support Daily Checklist', items: ['Check printer & peripheral status', 'Process new laptop allocations', 'Verify biometric devices online', 'Clear helpdesk queue'] },
-    { member: byName('Rajeev Goyal'), title: 'Admin Daily Ops Checklist', items: ['Update expense summary', 'Check courier & inward register', 'Verify housekeeping done', 'Reconcile petty cash', 'Review vendor payments'] },
+    { member: byName('Ajeet Kumar'), title: 'IT Ops KRA', items: ['Verify server backups completed', 'Check network & Wi-Fi uptime', 'Respond to all pending tickets', 'Update asset & inventory register', 'Review security alerts'] },
+    { member: byName('Sunil Rathore'), title: 'IT Support KRA', items: ['Check printer & peripheral status', 'Process new laptop allocations', 'Verify biometric devices online', 'Clear helpdesk queue'] },
+    { member: byName('Rajeev Goyal'), title: 'Admin Ops KRA', items: ['Update expense summary', 'Check courier & inward register', 'Verify housekeeping done', 'Reconcile petty cash', 'Review vendor payments'] },
+    { member: byName('Neha Sharma'), title: 'Admin Facilities KRA', items: ['Inspect washrooms & pantry', 'Verify visitor register', 'Check AC & electricity', 'Follow up vendor agreements'] },
   ]
   const mcDocs = memberChecklists.filter((c) => c.member).map((c) => ({
     id: uuidv4(), member_id: c.member.id, member_name: c.member.name, member_role: c.member.role,
@@ -755,7 +765,7 @@ async function handleRoute(request, { params }) {
       const b = await request.json()
       const tpl = await db.collection('checklist_templates').findOne({ id: b.template_id })
       if (!tpl) return json({ error: 'Template not found' }, 404)
-      const hid = await humanId(db, 'CHK', tpl.location)
+      const hid = await humanId(db, 'CHK', tpl.code || (tpl.location || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 4))
       const exec = {
         id: uuidv4(), human_id: hid, template_id: tpl.id, template_name: tpl.name, location: tpl.location,
         date: new Date(), responses: (b.responses || tpl.items.map((it) => ({ item: it.label, status: 'Not Started', remarks: '' }))),
@@ -854,13 +864,44 @@ async function handleRoute(request, { params }) {
       return json({ ok: true })
     }
     if (route === '/member-checklist-submissions' && method === 'GET') {
-      if (session.role !== 'super_admin') return json({ error: 'Forbidden' }, 403)
       const p = new URL(request.url).searchParams
       const q = {}
-      if (p.get('member_id')) q.member_id = p.get('member_id')
+      if (session.role === 'super_admin') {
+        if (p.get('member_id')) q.member_id = p.get('member_id')
+      } else if (['it', 'admin'].includes(session.role)) {
+        q.member_id = session.id // members see only their own records
+      } else {
+        return json({ error: 'Forbidden' }, 403)
+      }
       if (p.get('date')) q.date = p.get('date')
       const items = await db.collection('member_checklist_submissions').find(q).sort({ date: -1, submitted_at: -1 }).limit(200).toArray()
       return json(clean(items))
+    }
+
+    // ---- DAILY KRA COMPLIANCE (Super Admin dashboard) ----
+    if (route === '/reports/daily-kra' && method === 'GET') {
+      if (session.role !== 'super_admin') return json({ error: 'Forbidden' }, 403)
+      const date = new URL(request.url).searchParams.get('date') || new Date().toISOString().slice(0, 10)
+      const lists = await db.collection('member_checklists').find({ active: true }).toArray()
+      const subs = await db.collection('member_checklist_submissions').find({ date }).toArray()
+      const byMember = {}
+      for (const l of lists) {
+        const m = (byMember[l.member_id] = byMember[l.member_id] || { member_id: l.member_id, member_name: l.member_name, member_role: l.member_role, total_lists: 0, total_items: 0, done_items: 0, submitted_lists: 0 })
+        m.total_lists += 1
+        m.total_items += (l.items || []).length
+      }
+      for (const s of subs) {
+        const m = byMember[s.member_id]
+        if (!m) continue
+        m.submitted_lists += 1
+        m.done_items += s.done_count || 0
+      }
+      const members = Object.values(byMember).map((m) => {
+        let status = 'Not Submitted'
+        if (m.submitted_lists > 0) status = (m.submitted_lists >= m.total_lists && m.done_items >= m.total_items) ? 'Completed' : 'Partial'
+        return { ...m, status, compliant: status === 'Completed', pct: m.total_items ? Math.round((m.done_items / m.total_items) * 100) : 0 }
+      })
+      return json({ date, members })
     }
 
     // ---- NOTIFICATIONS ----
