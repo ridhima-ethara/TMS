@@ -33,15 +33,26 @@ function Charts({ s, stacked }) {
     <div className={`grid gap-4 ${stacked ? 'grid-cols-1' : 'md:grid-cols-2'}`}>
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-sm">By Priority</CardTitle></CardHeader>
-        <CardContent className="h-56">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie data={(s.by_priority || []).filter((x) => x.value > 0)} dataKey="value" nameKey="name" innerRadius={40} outerRadius={75} label>
-                {(s.by_priority || []).map((e, i) => <Cell key={i} fill={PIE_COLORS[e.name] || '#64748b'} />)}
-              </Pie>
-              <Tooltip />
-            </PieChart>
-          </ResponsiveContainer>
+        <CardContent>
+          <div className="h-44">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={(s.by_priority || []).filter((x) => x.value > 0)} dataKey="value" nameKey="name" innerRadius={38} outerRadius={68} paddingAngle={2}>
+                  {(s.by_priority || []).map((e, i) => <Cell key={i} fill={PIE_COLORS[e.name] || '#64748b'} />)}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1">
+            {(s.by_priority || []).map((e) => (
+              <span key={e.name} className="flex items-center gap-1.5 text-xs">
+                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: PIE_COLORS[e.name] || '#64748b' }} />
+                <span className="text-foreground font-medium">{e.name}</span>
+                <span className="text-muted-foreground">{e.value}</span>
+              </span>
+            ))}
+          </div>
         </CardContent>
       </Card>
       <Card>
