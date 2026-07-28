@@ -1,0 +1,72 @@
+================================================================================
+TICKETFLOW BACKEND API TEST SUITE
+================================================================================
+
+[1] SEEDING DATA...
+✅ PASS: Seed endpoint idempotent
+   Seed result: {'seeded': False, 'message': 'already seeded'}
+
+[2] AUTH TESTS...
+✅ PASS: Login with valid credentials returns 200 + user + sets cookie
+✅ PASS: Login with wrong password returns 401
+✅ PASS: GET /auth/me returns logged-in user when cookie present
+✅ PASS: GET /auth/me returns {user:null} without cookie
+✅ PASS: POST /auth/logout clears session
+
+[3] RBAC SCOPING + IDOR TESTS...
+✅ PASS: GET /tickets as employee returns only own tickets
+✅ PASS: GET /tickets as IT returns only IT department tickets
+✅ PASS: GET /tickets as Admin returns only Admin department tickets
+✅ PASS: GET /tickets as super_admin returns all tickets
+✅ PASS: Unauthenticated request to /tickets returns 401
+✅ PASS: IDOR: Employee cannot access ticket not raised by them (403)
+✅ PASS: IDOR: IT cannot access Admin department ticket (403)
+✅ PASS: IDOR: Admin cannot access IT department ticket (403)
+
+[4] TICKET LIFECYCLE TESTS...
+✅ PASS: Employee creates IT ticket with human_id IT-DDMMYY-000xxx and status Open
+✅ PASS: IT assigns ticket: sets assignee and moves Open->Assigned
+✅ PASS: IT changes ticket priority
+✅ PASS: IT changes status to In Progress
+✅ PASS: IT resolves ticket with resolution
+✅ PASS: GET /tickets/:id returns history[] and comments[]
+✅ PASS: IT adds internal comment
+✅ PASS: Employee cannot see internal comments
+✅ PASS: Employee confirms ticket: moves to Closed with rating
+✅ PASS: Employee reopens ticket: moves to Reopened
+
+[5] ADMIN APPROVAL WORKFLOW TESTS...
+✅ PASS: Found seeded Admin approval ticket 'New printer procurement for HQ2'
+✅ PASS: Admin blocked from In Progress before approval (400)
+✅ PASS: Admin submits approval: status -> Pending Super Admin Approval
+✅ PASS: Super admin decision 'clarify' without remarks returns 400
+✅ PASS: Super admin clarify decision: status -> Clarification Required
+✅ PASS: Admin resubmits approval: status -> Pending again
+✅ PASS: Super admin partial approval: status -> Approved - Ready for Action, approved_amount stored
+✅ PASS: Admin moves to In Progress after approval granted
+✅ PASS: Admin resolves approved ticket
+✅ PASS: RBAC: Employee cannot submit approval (403)
+✅ PASS: RBAC: IT cannot submit approval (403)
+✅ PASS: RBAC: Admin cannot make approval decision (403)
+✅ PASS: RBAC: Super admin cannot submit approval (403)
+
+[6] TASKS / CHECKLISTS / NOTIFICATIONS / AUDIT / DASHBOARD...
+✅ PASS: GET /tasks as admin returns tasks (13 seeded)
+✅ PASS: GET /tasks as employee returns 403
+✅ PASS: POST /tasks as admin creates task with human_id ATSK-...
+✅ PASS: PATCH /tasks updates status
+✅ PASS: GET /checklists/templates returns templates
+✅ PASS: POST /checklists/executions creates execution with human_id CHK-...
+✅ PASS: POST /checklists/to-ticket creates Admin ticket
+✅ PASS: GET /notifications returns notifications
+✅ PASS: POST /notifications/read marks notifications as read
+✅ PASS: GET /audit as super_admin returns audit entries
+✅ PASS: GET /audit as admin returns 403
+✅ PASS: GET /dashboard returns role-scoped stats
+
+================================================================================
+TEST SUMMARY
+================================================================================
+Total Passed: 49
+Total Failed: 0
+================================================================================
