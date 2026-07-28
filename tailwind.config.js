@@ -5,7 +5,13 @@ module.exports = {
       './pages/**/*.{js,jsx}',
       './components/**/*.{js,jsx}',
       './app/**/*.{js,jsx}',
+      './lib/**/*.{js,jsx}',
       './src/**/*.{js,jsx}',
+    ],
+    safelist: [
+      'bg-red-800', 'bg-orange-500', 'bg-yellow-400', 'bg-emerald-500',
+      'text-white', 'text-yellow-950', 'border-red-900', 'border-orange-600',
+      'border-yellow-500', 'border-emerald-600',
     ],
     prefix: "",
     theme: {
