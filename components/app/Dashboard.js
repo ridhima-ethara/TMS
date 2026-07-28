@@ -28,9 +28,9 @@ function Stat({ label, value, icon: Icon, tone = 'default', suffix = '' }) {
 
 function slaTone(pct) { return pct >= 80 ? 'text-green-600' : pct >= 50 ? 'text-amber-600' : 'text-red-600' }
 
-function Charts({ s }) {
+function Charts({ s, stacked }) {
   return (
-    <div className="grid md:grid-cols-2 gap-4">
+    <div className={`grid gap-4 ${stacked ? 'grid-cols-1' : 'md:grid-cols-2'}`}>
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-sm">By Priority</CardTitle></CardHeader>
         <CardContent className="h-56">
@@ -111,15 +111,15 @@ function DeptPanel({ department, onOpenTicket, refresh }) {
   if (loading || !s) return <Skeleton className="h-96 w-full" />
   return (
     <div className="space-y-4">
-      <div className={`rounded-lg bg-gradient-to-r ${accent} text-white p-4 flex items-center justify-between`}>
-        <div className="flex items-center gap-2"><Icon className="h-6 w-6" /><div><p className="text-lg font-semibold">{department} Service Desk</p><p className="text-xs opacity-90">Live analytics & SLA</p></div></div>
-        <div className="flex gap-6 text-center">
-          <div><p className="text-2xl font-bold">{s.total}</p><p className="text-xs opacity-90">Tickets</p></div>
-          <div><p className="text-2xl font-bold">{s.overdue}</p><p className="text-xs opacity-90">SLA Breach</p></div>
-          <div><p className="text-2xl font-bold">{s.sla_compliance}%</p><p className="text-xs opacity-90">SLA Met</p></div>
+      <div className={`rounded-lg bg-gradient-to-r ${accent} text-white p-4 flex flex-wrap items-center justify-between gap-3`}>
+        <div className="flex items-center gap-2"><Icon className="h-6 w-6" /><div><p className="text-base font-semibold">{department} Service Desk</p><p className="text-xs opacity-90">Live analytics & SLA</p></div></div>
+        <div className="flex gap-4 text-center">
+          <div><p className="text-xl font-bold">{s.total}</p><p className="text-[10px] opacity-90">Tickets</p></div>
+          <div><p className="text-xl font-bold">{s.overdue}</p><p className="text-[10px] opacity-90">SLA Breach</p></div>
+          <div><p className="text-xl font-bold">{s.sla_compliance}%</p><p className="text-[10px] opacity-90">SLA Met</p></div>
         </div>
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <Stat label="Open" value={s.open} icon={Clock} tone="blue" />
         <Stat label="In Progress" value={s.in_progress} icon={Timer} tone="blue" />
         <Stat label="Pending Approval" value={s.pending_approval} icon={FileCheck2} tone="amber" />
@@ -129,7 +129,7 @@ function DeptPanel({ department, onOpenTicket, refresh }) {
         <Stat label="Clarification" value={s.clarification} icon={AlertTriangle} tone="amber" />
         <Stat label="Overdue" value={s.overdue} icon={AlertTriangle} tone="red" />
       </div>
-      <Charts s={s} />
+      <Charts s={s} stacked />
       <MemberSla rows={sla?.members} />
     </div>
   )
@@ -137,9 +137,8 @@ function DeptPanel({ department, onOpenTicket, refresh }) {
 
 function SuperDash({ onOpenTicket, refresh }) {
   return (
-    <div className="space-y-8">
+    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
       <DeptPanel department="IT" onOpenTicket={onOpenTicket} refresh={refresh} />
-      <div className="border-t" />
       <DeptPanel department="Admin" onOpenTicket={onOpenTicket} refresh={refresh} />
     </div>
   )
