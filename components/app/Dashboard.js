@@ -29,6 +29,7 @@ function Stat({ label, value, icon: Icon, tone = 'default', suffix = '' }) {
 function slaTone(pct) { return pct >= 80 ? 'text-green-600' : pct >= 50 ? 'text-amber-600' : 'text-red-600' }
 
 function Charts({ s, stacked }) {
+  const pdata = (s.by_priority || []).filter((x) => x.value > 0)
   return (
     <div className={`grid gap-4 ${stacked ? 'grid-cols-1' : 'md:grid-cols-2'}`}>
       <Card>
@@ -37,8 +38,8 @@ function Charts({ s, stacked }) {
           <div className="h-44">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
-                <Pie data={(s.by_priority || []).filter((x) => x.value > 0)} dataKey="value" nameKey="name" innerRadius={38} outerRadius={68} paddingAngle={2}>
-                  {(s.by_priority || []).map((e, i) => <Cell key={i} fill={PIE_COLORS[e.name] || '#64748b'} />)}
+                <Pie data={pdata} dataKey="value" nameKey="name" innerRadius={38} outerRadius={68} paddingAngle={2}>
+                  {pdata.map((e, i) => <Cell key={i} fill={PIE_COLORS[e.name] || '#64748b'} />)}
                 </Pie>
                 <Tooltip />
               </PieChart>
@@ -126,19 +127,19 @@ function DeptPanel({ department, onOpenTicket, refresh }) {
         <div className="flex items-center gap-2"><Icon className="h-6 w-6" /><div><p className="text-base font-semibold">{department} Service Desk</p><p className="text-xs opacity-90">Live analytics & SLA</p></div></div>
         <div className="flex gap-4 text-center">
           <div><p className="text-xl font-bold">{s.total}</p><p className="text-[10px] opacity-90">Tickets</p></div>
-          <div><p className="text-xl font-bold">{s.overdue}</p><p className="text-[10px] opacity-90">SLA Breach</p></div>
+          <div><p className="text-xl font-bold">{s.escalated}</p><p className="text-[10px] opacity-90">Escalated</p></div>
           <div><p className="text-xl font-bold">{s.sla_compliance}%</p><p className="text-[10px] opacity-90">SLA Met</p></div>
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3">
-        <Stat label="Open" value={s.open} icon={Clock} tone="blue" />
+        <Stat label="Today (per day)" value={s.today} icon={Ticket} tone="blue" />
         <Stat label="In Progress" value={s.in_progress} icon={Timer} tone="blue" />
         <Stat label="Pending Approval" value={s.pending_approval} icon={FileCheck2} tone="amber" />
+        <Stat label="Approved Ready" value={s.approved_ready} icon={CheckCircle2} tone="green" />
         <Stat label="Resolved" value={s.resolved} icon={CheckCircle2} tone="green" />
+        <Stat label="Escalated (>24h)" value={s.escalated} icon={AlertTriangle} tone="red" />
         <Stat label="Avg Response" value={s.avg_response_hours} suffix="h" icon={Gauge} />
         <Stat label="Avg Resolution" value={s.avg_resolution_hours} suffix="h" icon={Gauge} />
-        <Stat label="Clarification" value={s.clarification} icon={AlertTriangle} tone="amber" />
-        <Stat label="Overdue" value={s.overdue} icon={AlertTriangle} tone="red" />
       </div>
       <Charts s={s} stacked />
       <MemberSla rows={sla?.members} />

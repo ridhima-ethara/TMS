@@ -457,8 +457,10 @@ async function handleRoute(request, { params }) {
         }
       }
       const avg = (a) => a.length ? Math.round((a.reduce((x, y) => x + y, 0) / a.length) * 10) / 10 : 0
+      const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
       const stats = {
         total: tickets.length,
+        today: tickets.filter((t) => t.created_at && new Date(t.created_at) >= startOfDay).length,
         open: count((t) => t.status === 'Open'),
         assigned: count((t) => t.status === 'Assigned'),
         in_progress: count((t) => t.status === 'In Progress'),
@@ -469,6 +471,7 @@ async function handleRoute(request, { params }) {
         resolved: count((t) => t.status === 'Resolved'),
         closed: count((t) => t.status === 'Closed'),
         overdue: count((t) => !['Resolved', 'Closed', 'Cancelled'].includes(t.status) && t.sla_resolution_due && new Date(t.sla_resolution_due).getTime() < now),
+        escalated: count((t) => !['Resolved', 'Closed', 'Cancelled'].includes(t.status) && t.created_at && (now - new Date(t.created_at).getTime()) > 24 * HOUR),
         avg_response_hours: avg(respTimes),
         avg_resolution_hours: avg(resTimes),
         sla_compliance: slaTotalResolved ? Math.round((slaMet / slaTotalResolved) * 100) : 0,
