@@ -116,9 +116,15 @@ export default function Login({ onLogin }) {
               </TabsContent>
             </Tabs>
 
-            <p className="mt-6 text-xs text-muted-foreground text-center">
-              Super Admin (demo): <span className="font-medium">superadmin@ethara.ai</span> / <span className="font-medium">Passw0rd!</span>
-            </p>
+            <div className="mt-6 rounded-md border bg-muted/40 p-3">
+              <p className="text-xs font-medium text-center mb-2">Demo accounts <span className="text-muted-foreground font-normal">(password: Passw0rd!)</span></p>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                <span>Employee: <span className="font-medium text-foreground">employee@ethara.ai</span></span>
+                <span>IT Team: <span className="font-medium text-foreground">it@ethara.ai</span></span>
+                <span>Admin Team: <span className="font-medium text-foreground">admin@ethara.ai</span></span>
+                <span>Super Admin: <span className="font-medium text-foreground">superadmin@ethara.ai</span></span>
+              </div>
+            </div>
           </CardContent>
         </Card>
       </div>
