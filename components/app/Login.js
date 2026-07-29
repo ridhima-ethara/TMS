@@ -1,47 +1,38 @@
 'use client'
 import { useState } from 'react'
-import { api, ROLE_LABEL } from '@/lib/appapi'
+import { api } from '@/lib/appapi'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { toast } from 'sonner'
 import { Ticket, ShieldCheck, Loader2 } from 'lucide-react'
 
-const DEMO = [
-  { email: 'employee@demo.com', label: 'Employee' },
-  { email: 'it@demo.com', label: 'IT · Ajeet' },
-  { email: 'it2@demo.com', label: 'IT · Sunil' },
-  { email: 'admin@demo.com', label: 'Admin · Rajeev' },
-  { email: 'admin2@demo.com', label: 'Admin · Neha' },
-  { email: 'superadmin@demo.com', label: 'Super Admin' },
-]
-
 export default function Login({ onLogin }) {
-  const [email, setEmail] = useState('superadmin@demo.com')
-  const [password, setPassword] = useState('Passw0rd!')
+  const [mode, setMode] = useState('login')
   const [loading, setLoading] = useState(false)
+  const [login, setLoginState] = useState({ email: '', password: '' })
+  const [reg, setReg] = useState({ name: '', email: '', password: '', role: 'employee' })
 
-  const submit = async (e) => {
+  const doLogin = async (e) => {
     e?.preventDefault()
     setLoading(true)
     try {
-      const { user } = await api('/auth/login', { method: 'POST', body: { email, password } })
+      const { user } = await api('/auth/login', { method: 'POST', body: login })
       toast.success(`Welcome, ${user.name}`)
       onLogin(user)
-    } catch (err) {
-      toast.error(err.message)
-    } finally {
-      setLoading(false)
-    }
+    } catch (err) { toast.error(err.message) } finally { setLoading(false) }
   }
 
-  const quick = async (em) => {
-    setEmail(em); setPassword('Passw0rd!')
+  const doRegister = async (e) => {
+    e?.preventDefault()
+    if (!reg.email.toLowerCase().endsWith('@ethara.ai')) return toast.error('Please use your @ethara.ai email')
     setLoading(true)
     try {
-      const { user } = await api('/auth/login', { method: 'POST', body: { email: em, password: 'Passw0rd!' } })
-      toast.success(`Welcome, ${user.name}`)
+      const { user } = await api('/auth/register', { method: 'POST', body: reg })
+      toast.success(`Account created. Welcome, ${user.name}!`)
       onLogin(user)
     } catch (err) { toast.error(err.message) } finally { setLoading(false) }
   }
@@ -53,47 +44,81 @@ export default function Login({ onLogin }) {
           <Ticket className="h-6 w-6 text-teal-400" /> TicketFlow
         </div>
         <div>
-          <h1 className="text-4xl font-bold leading-tight">IT & Admin Service Management</h1>
-          <p className="mt-4 text-slate-300 max-w-md">Tickets, approvals, operational tasks and checklists — with SLA tracking, role-based access and immutable audit trails.</p>
+          <h1 className="text-4xl font-bold leading-tight">IT &amp; Admin Service Management</h1>
+          <p className="mt-4 text-slate-300 max-w-md">Tickets, approvals, operational tasks and KRA checklists — with SLA tracking, role-based access and immutable audit trails.</p>
           <div className="mt-8 grid grid-cols-2 gap-3 max-w-md">
-            {['Ticket Lifecycle','Approval Workflow','SLA & Escalations','Audit Logs'].map((f) => (
+            {['Ticket Lifecycle', 'Approval Workflow', 'SLA &amp; Escalations', 'Daily KRA Tracking'].map((f) => (
               <div key={f} className="flex items-center gap-2 text-sm text-slate-200"><ShieldCheck className="h-4 w-4 text-teal-400" />{f}</div>
             ))}
           </div>
         </div>
-        <p className="text-xs text-slate-500">Enterprise Service Desk Platform</p>
+        <p className="text-xs text-slate-500">Restricted to @ethara.ai accounts</p>
       </div>
 
       <div className="flex items-center justify-center p-6 bg-background">
         <Card className="w-full max-w-md shadow-lg">
           <CardHeader>
-            <CardTitle className="text-2xl">Sign in</CardTitle>
-            <p className="text-sm text-muted-foreground">Use a demo account or your credentials.</p>
+            <CardTitle className="text-2xl">{mode === 'login' ? 'Sign in' : 'Create account'}</CardTitle>
+            <p className="text-sm text-muted-foreground">Use your company <span className="font-medium">@ethara.ai</span> email.</p>
           </CardHeader>
           <CardContent>
-            <form onSubmit={submit} className="space-y-4">
-              <div className="space-y-1.5">
-                <Label>Email</Label>
-                <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Password</Label>
-                <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-              </div>
-              <Button type="submit" className="w-full" disabled={loading}>
-                {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Sign in
-              </Button>
-            </form>
-            <div className="mt-6">
-              <p className="text-xs text-muted-foreground mb-2">Quick demo login (password: Passw0rd!)</p>
-              <div className="grid grid-cols-2 gap-2">
-                {DEMO.map((d) => (
-                  <Button key={d.email} variant="outline" size="sm" onClick={() => quick(d.email)} disabled={loading}>
-                    {d.label}
+            <Tabs value={mode} onValueChange={setMode}>
+              <TabsList className="grid grid-cols-2 w-full mb-4">
+                <TabsTrigger value="login">Login</TabsTrigger>
+                <TabsTrigger value="register">Register</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="login">
+                <form onSubmit={doLogin} className="space-y-4">
+                  <div className="space-y-1.5">
+                    <Label>Email</Label>
+                    <Input type="email" value={login.email} onChange={(e) => setLoginState({ ...login, email: e.target.value })} placeholder="you@ethara.ai" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Password</Label>
+                    <Input type="password" value={login.password} onChange={(e) => setLoginState({ ...login, password: e.target.value })} placeholder="••••••••" />
+                  </div>
+                  <Button type="submit" className="w-full" disabled={loading}>
+                    {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Sign in
                   </Button>
-                ))}
-              </div>
-            </div>
+                </form>
+              </TabsContent>
+
+              <TabsContent value="register">
+                <form onSubmit={doRegister} className="space-y-4">
+                  <div className="space-y-1.5">
+                    <Label>Full name</Label>
+                    <Input value={reg.name} onChange={(e) => setReg({ ...reg, name: e.target.value })} placeholder="Your name" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Work email</Label>
+                    <Input type="email" value={reg.email} onChange={(e) => setReg({ ...reg, email: e.target.value })} placeholder="you@ethara.ai" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Register as</Label>
+                    <Select value={reg.role} onValueChange={(v) => setReg({ ...reg, role: v })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="employee">Employee</SelectItem>
+                        <SelectItem value="it">IT Team Member</SelectItem>
+                        <SelectItem value="admin">Admin Team Member</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Password</Label>
+                    <Input type="password" value={reg.password} onChange={(e) => setReg({ ...reg, password: e.target.value })} placeholder="Min 6 characters" />
+                  </div>
+                  <Button type="submit" className="w-full" disabled={loading}>
+                    {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Create account
+                  </Button>
+                </form>
+              </TabsContent>
+            </Tabs>
+
+            <p className="mt-6 text-xs text-muted-foreground text-center">
+              Super Admin (demo): <span className="font-medium">superadmin@ethara.ai</span> / <span className="font-medium">Passw0rd!</span>
+            </p>
           </CardContent>
         </Card>
       </div>

@@ -175,12 +175,12 @@ async function seedDb(db) {
 
   const hash = await bcrypt.hash('Passw0rd!', 10)
   const users = [
-    { name: 'Emma Employee', email: 'employee@demo.com', role: 'employee', department: 'General', employee_id: 'EMP-1001', location: 'Tulip - Ground Floor' },
-    { name: 'Ajeet Kumar', email: 'it@demo.com', role: 'it', department: 'IT', employee_id: 'IT-2001', location: 'Tulip - First Floor' },
-    { name: 'Sunil Rathore', email: 'it2@demo.com', role: 'it', department: 'IT', employee_id: 'IT-2002', location: 'Tulip - Second Floor' },
-    { name: 'Rajeev Goyal', email: 'admin@demo.com', role: 'admin', department: 'Admin', employee_id: 'ADM-3001', location: 'Lotus - Bullpen' },
-    { name: 'Neha Sharma', email: 'admin2@demo.com', role: 'admin', department: 'Admin', employee_id: 'ADM-3002', location: 'Lotus - Labs' },
-    { name: 'Sara Superadmin', email: 'superadmin@demo.com', role: 'super_admin', department: 'Management', employee_id: 'SA-9001', location: 'Tulip - Third Floor' },
+    { name: 'Emma Employee', email: 'employee@ethara.ai', role: 'employee', department: 'General', employee_id: 'EMP-1001', location: 'Tulip - Ground Floor' },
+    { name: 'Ajeet Kumar', email: 'it@ethara.ai', role: 'it', department: 'IT', employee_id: 'IT-2001', location: 'Tulip - First Floor' },
+    { name: 'Sunil Rathore', email: 'it2@ethara.ai', role: 'it', department: 'IT', employee_id: 'IT-2002', location: 'Tulip - Second Floor' },
+    { name: 'Rajeev Goyal', email: 'admin@ethara.ai', role: 'admin', department: 'Admin', employee_id: 'ADM-3001', location: 'Lotus - Bullpen' },
+    { name: 'Neha Sharma', email: 'admin2@ethara.ai', role: 'admin', department: 'Admin', employee_id: 'ADM-3002', location: 'Lotus - Labs' },
+    { name: 'Sara Superadmin', email: 'superadmin@ethara.ai', role: 'super_admin', department: 'Management', employee_id: 'SA-9001', location: 'Tulip - Third Floor' },
   ]
   const userDocs = users.map((u) => ({ id: uuidv4(), password_hash: hash, active: true, created_at: new Date(), ...u }))
   await db.collection('users').insertMany(userDocs)
@@ -359,7 +359,11 @@ async function handleRoute(request, { params }) {
     // ---- AUTH ----
     if (route === '/auth/login' && method === 'POST') {
       const body = await request.json()
-      const user = await db.collection('users').findOne({ email: (body.email || '').toLowerCase() })
+      const email = (body.email || '').toLowerCase().trim()
+      if (!email.endsWith('@ethara.ai')) {
+        return json({ error: 'Only @ethara.ai email addresses are allowed' }, 400)
+      }
+      const user = await db.collection('users').findOne({ email })
       if (!user || !(await bcrypt.compare(body.password || '', user.password_hash))) {
         return json({ error: 'Invalid credentials' }, 401)
       }
@@ -368,6 +372,36 @@ async function handleRoute(request, { params }) {
       const res = json({ user: clean(user) })
       res.cookies.set('tf_token', token, { httpOnly: true, sameSite: 'lax', path: '/', maxAge: 7 * 24 * 3600 })
       await audit(db, user, 'login', 'user', user.id, {})
+      return res
+    }
+    if (route === '/auth/register' && method === 'POST') {
+      const b = await request.json()
+      const email = (b.email || '').toLowerCase().trim()
+      const name = (b.name || '').trim()
+      const password = b.password || ''
+      if (!email.endsWith('@ethara.ai')) {
+        return json({ error: 'Registration is restricted to @ethara.ai email addresses' }, 400)
+      }
+      if (!name || password.length < 6) {
+        return json({ error: 'Name and a password of at least 6 characters are required' }, 400)
+      }
+      const role = ['employee', 'it', 'admin'].includes(b.role) ? b.role : null
+      if (!role) return json({ error: 'Please select a valid role (Employee, IT, or Admin)' }, 400)
+      const existing = await db.collection('users').findOne({ email })
+      if (existing) return json({ error: 'An account with this email already exists' }, 409)
+      const department = role === 'it' ? 'IT' : role === 'admin' ? 'Admin' : 'General'
+      const hash = await bcrypt.hash(password, 10)
+      const user = {
+        id: uuidv4(), name, email, role, department, password_hash: hash,
+        employee_id: b.employee_id || '', location: b.location || 'Tulip - Ground Floor',
+        active: true, created_at: new Date(),
+      }
+      await db.collection('users').insertOne(user)
+      const token = await new SignJWT({ id: user.id, name: user.name, email: user.email, role: user.role, department: user.department })
+        .setProtectedHeader({ alg: 'HS256' }).setExpirationTime('7d').setIssuedAt().sign(SECRET)
+      const res = json({ user: clean(user) })
+      res.cookies.set('tf_token', token, { httpOnly: true, sameSite: 'lax', path: '/', maxAge: 7 * 24 * 3600 })
+      await audit(db, user, 'register', 'user', user.id, { role })
       return res
     }
     if (route === '/auth/logout' && method === 'POST') {

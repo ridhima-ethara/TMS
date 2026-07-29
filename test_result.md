@@ -301,6 +301,20 @@ backend:
         - working: true
           agent: "testing"
           comment: "Tested 3 scenarios: (1) IT user POST /tickets creates ticket with human_id IT-280726-000013 and location 'Tulip - First Floor' exactly as specified, (2) IT user POST /tickets/{id}/approval/submit succeeds - ticket status changes to 'Pending Super Admin Approval', approval object created with human_id APR-280726-000001, (3) Superadmin GET /tickets?department=IT&status=Pending Super Admin Approval includes the IT ticket in results. All tests passed."
+  - task: "Auth domain enforcement + register endpoint (@ethara.ai)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "NEW auth changes: (1) Login domain enforcement - only @ethara.ai emails allowed, domain checked BEFORE credentials (400 for wrong domain, 401 for wrong password). (2) Register endpoint - POST /api/auth/register {name, email, password, role} creates user with roles employee/it/admin (NOT super_admin), sets tf_token cookie, returns user. Domain restricted to @ethara.ai, password min 6 chars, duplicate check returns 409. (3) Registered users have proper RBAC scoping (IT sees IT dept tickets, employee sees own tickets). Seeded users now use @ethara.ai domain with password Passw0rd!: employee@ethara.ai, it@ethara.ai, admin@ethara.ai, superadmin@ethara.ai."
+        - working: true
+          agent: "testing"
+          comment: "Tested 17 auth scenarios - ALL PASSED: (1) LOGIN DOMAIN ENFORCEMENT: superadmin@ethara.ai login returns 200+user+cookie, someone@gmail.com returns 400 with @ethara.ai error (domain checked BEFORE credentials), superadmin@ethara.ai with wrong password returns 401 invalid credentials. (2) REGISTER: newemp1@ethara.ai registers as employee (role=employee, department=General, sets cookie), GET /auth/me returns registered user; newit1@ethara.ai registers as IT (role=it, department=IT); newadmin1@ethara.ai registers as admin (role=admin, department=Admin); x@gmail.com returns 400 (restricted to @ethara.ai); hacker@ethara.ai with role=super_admin returns 400 (not allowed); short@ethara.ai with password '123' returns 400 (min 6 chars); duplicate email returns 409. (3) REGISTERED USER FUNCTIONALITY: newit1@ethara.ai login succeeds, GET /tickets returns only IT department tickets (12 tickets, all IT dept), GET /reports/member-sla returns 403 (not super_admin); newemp1@ethara.ai login succeeds, GET /tickets returns empty array (only own tickets, none raised yet), GET /audit returns 403. All domain enforcement, registration validations, and RBAC scoping working correctly."
 
 frontend:
   - task: "Full UI (login, dashboards, tickets, drawer, approvals, tasks, checklists, audit)"
@@ -318,7 +332,7 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 3
+  test_sequence: 4
   run_ui: false
 
 test_plan:
@@ -336,3 +350,5 @@ agent_communication:
       message: "Enhancement round testing complete. All 19 NEW endpoint tests passed (0 failures). Tested: (1) Dashboard department scoping - super admin can scope by department param, non-super users have param ignored, (2) Member SLA report - super admin only, returns member stats with SLA metrics, (3) IT approval submit - IT users can now submit approvals (previously admin-only), (4) Member checklists - super admin defines, IT/admin submit daily, proper RBAC enforcement. All endpoints working correctly with proper data structures and RBAC."
     - agent: "testing"
       message: "Round 3 backend testing complete. All 14 NEW/CHANGED endpoint tests passed (0 failures). Tested: (1) GET /api/locations - returns exactly 6 objects with name, building, code (Tulip: 4 floors, Lotus: 2 areas), (2) GET /api/reports/daily-kra - super admin only with proper structure (4 members: Ajeet, Sunil IT; Rajeev, Neha Admin), IT/Admin/Employee return 403, (3) GET /api/member-checklist-submissions - IT/Admin see ONLY own submissions (verified Ajeet sees only his), Employee returns 403, Superadmin sees all, (4) Raise Request flow - IT creates ticket with specific location 'Tulip - First Floor', submits approval (status->Pending Super Admin Approval, APR- human_id created), Superadmin can filter pending approvals. Daily KRA correctly reflects member submissions. All endpoints working correctly with proper RBAC and data structures."
+    - agent: "testing"
+      message: "Round 4 AUTH testing complete. All 17 NEW auth tests passed (0 failures). Tested: (1) LOGIN DOMAIN ENFORCEMENT - @ethara.ai domain required, domain checked BEFORE credentials (400 for wrong domain, 401 for wrong password), (2) REGISTER ENDPOINT - POST /api/auth/register creates users with roles employee/it/admin (NOT super_admin), domain restricted to @ethara.ai, password min 6 chars, duplicate check returns 409, sets tf_token cookie, (3) REGISTERED USER FUNCTIONALITY - newly registered IT user sees only IT dept tickets and gets 403 on super_admin endpoints, newly registered employee sees only own tickets (empty array) and gets 403 on restricted endpoints. All domain enforcement, registration validations, role restrictions, and RBAC scoping working correctly. Seeded users now use @ethara.ai domain."
