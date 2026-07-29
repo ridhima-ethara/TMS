@@ -41,7 +41,7 @@ export default function ChecklistsView({ user, onRefresh }) {
           <CardContent className="flex flex-wrap gap-2">
             {templates.map((tpl) => (
               <div key={tpl.id} className="flex items-center gap-2 rounded-md border p-2">
-                <ClipboardList className="h-4 w-4 text-teal-600" />
+                <ClipboardList className="h-4 w-4 text-fuchsia-600" />
                 <span className="text-sm">{tpl.name}</span>
                 <Button size="sm" variant="outline" onClick={() => start(tpl.id)}>Start today</Button>
               </div>

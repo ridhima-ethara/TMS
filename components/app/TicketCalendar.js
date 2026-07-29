@@ -46,7 +46,7 @@ export default function TicketCalendar({ tickets = [], onOpenTicket }) {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <CalendarDays className="h-4 w-4 text-teal-600" />
+          <CalendarDays className="h-4 w-4 text-fuchsia-600" />
           <span className="font-medium">{cursor.toLocaleString('en-US', { month: 'long', year: 'numeric' })}</span>
         </div>
         <div className="flex items-center gap-1">
@@ -68,9 +68,9 @@ export default function TicketCalendar({ tickets = [], onOpenTicket }) {
           const isToday = new Date().getDate() === d && new Date().getMonth() === month && new Date().getFullYear() === year
           return (
             <button key={i} onClick={() => setSelected(selected === d ? null : d)}
-              className={`min-h-[68px] rounded-md border p-1.5 text-left transition ${tint} ${selected === d ? 'ring-2 ring-teal-500' : ''}`}>
+              className={`min-h-[68px] rounded-md border p-1.5 text-left transition ${tint} ${selected === d ? 'ring-2 ring-fuchsia-500' : ''}`}>
               <div className="flex items-center justify-between">
-                <span className={`text-xs ${isToday ? 'bg-teal-600 text-white rounded-full h-5 w-5 flex items-center justify-center' : 'text-foreground'}`}>{d}</span>
+                <span className={`text-xs ${isToday ? 'bg-fuchsia-600 text-white rounded-full h-5 w-5 flex items-center justify-center' : 'text-foreground'}`}>{d}</span>
                 {has && <span className="text-[10px] font-semibold text-muted-foreground">{list.length}</span>}
               </div>
               {has && (

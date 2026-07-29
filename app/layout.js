@@ -2,7 +2,7 @@ import './globals.css'
 import { Providers } from './providers'
 
 export const metadata = {
-  title: 'TicketFlow — IT & Admin Service Management',
+  title: 'Ethara Service Hub — IT & Admin Operations',
   description: 'Tickets, approvals, tasks and checklists with SLA and audit trails.',
 }
 

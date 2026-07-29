@@ -152,7 +152,7 @@ export default function TicketDrawer({ ticketId, user, open, onClose, onChanged,
                 <ol className="relative border-l pl-4 space-y-4">
                   {(t.history || []).map((h) => (
                     <li key={h.id} className="ml-2">
-                      <div className="absolute -left-[7px] mt-1 h-3 w-3 rounded-full bg-teal-500" />
+                      <div className="absolute -left-[7px] mt-1 h-3 w-3 rounded-full bg-fuchsia-500" />
                       <p className="text-sm font-medium capitalize">{h.type}{h.to ? `: ${h.to}` : ''}</p>
                       {h.note && <p className="text-sm text-muted-foreground">{h.note}</p>}
                       <p className="text-xs text-muted-foreground">{h.by_name || 'System'} · {fmtDateTime(h.created_at)}</p>

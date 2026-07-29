@@ -47,7 +47,7 @@ export default function MemberChecklists() {
               <Card key={l.id}>
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-base flex items-center gap-2"><ClipboardList className="h-4 w-4 text-teal-600" />{l.title} <span className="text-sm font-normal text-muted-foreground">— {l.member_name}</span></CardTitle>
+                    <CardTitle className="text-base flex items-center gap-2"><ClipboardList className="h-4 w-4 text-fuchsia-600" />{l.title} <span className="text-sm font-normal text-muted-foreground">— {l.member_name}</span></CardTitle>
                     <Button variant="ghost" size="icon" onClick={() => del(l.id)}><Trash2 className="h-4 w-4 text-red-500" /></Button>
                   </div>
                 </CardHeader>

@@ -32,7 +32,7 @@ function ChecklistCard({ list, onSubmitted }) {
     <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-teal-600" />{list.title}</CardTitle>
+          <CardTitle className="text-base flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-fuchsia-600" />{list.title}</CardTitle>
           <div className="flex items-center gap-2">
             {today && <Badge variant="outline" className="text-green-700 border-green-300"><CheckCircle2 className="h-3 w-3 mr-1" />Submitted today ({today.status})</Badge>}
             <Badge variant="outline">{doneCount}/{rows.length}</Badge>

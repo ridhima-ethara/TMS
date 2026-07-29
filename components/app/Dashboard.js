@@ -9,18 +9,18 @@ import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, 
 import TicketCalendar from '@/components/app/TicketCalendar'
 import { Ticket, AlertTriangle, CheckCircle2, Clock, FileCheck2, Timer, Gauge, Server, Building2, Users, ClipboardCheck, XCircle, CircleAlert } from 'lucide-react'
 
-const PIE_COLORS = { Critical: '#991b1b', High: '#f97316', Medium: '#facc15', Low: '#10b981' }
+const PIE_COLORS = { Critical: '#b91c1c', High: '#f97316', Medium: '#eab308', Low: '#16a34a' }
 
 function Stat({ label, value, icon: Icon, tone = 'default', suffix = '' }) {
   const tones = { default: 'text-foreground', red: 'text-red-600', amber: 'text-amber-600', green: 'text-green-600', blue: 'text-blue-600' }
   return (
-    <Card>
-      <CardContent className="p-4 flex items-center justify-between">
+    <Card className="border-[#e4e6ef] bg-white transition-all duration-200 hover:-translate-y-0.5 hover:border-fuchsia-200 hover:shadow-[0_12px_32px_rgba(238,0,238,.08)]">
+      <CardContent className="p-4 min-h-24 flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs text-muted-foreground">{label}</p>
-          <p className={`text-2xl font-semibold ${tones[tone]}`}>{value ?? 0}{suffix}</p>
+          <p className="text-xs font-medium text-[#697087]">{label}</p>
+          <p className={`mt-1 text-2xl font-bold tabular-nums ${tones[tone]}`}>{value ?? 0}{suffix}</p>
         </div>
-        {Icon && <Icon className={`h-8 w-8 opacity-20 ${tones[tone]}`} />}
+        {Icon && <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#f7f8fc]"><Icon className={`h-5 w-5 opacity-55 ${tones[tone]}`} /></span>}
       </CardContent>
     </Card>
   )
@@ -32,7 +32,7 @@ function Charts({ s, stacked }) {
   const pdata = (s.by_priority || []).filter((x) => x.value > 0)
   return (
     <div className={`grid gap-4 ${stacked ? 'grid-cols-1' : 'md:grid-cols-2'}`}>
-      <Card>
+      <Card className="border-[#e4e6ef] overflow-hidden">
         <CardHeader className="pb-2"><CardTitle className="text-sm">By Priority</CardTitle></CardHeader>
         <CardContent>
           <div className="h-44">
@@ -41,7 +41,7 @@ function Charts({ s, stacked }) {
                 <Pie data={pdata} dataKey="value" nameKey="name" innerRadius={38} outerRadius={68} paddingAngle={2}>
                   {pdata.map((e, i) => <Cell key={i} fill={PIE_COLORS[e.name] || '#64748b'} />)}
                 </Pie>
-                <Tooltip />
+                <Tooltip contentStyle={{ borderRadius: 10, border: '1px solid #e4e6ef', boxShadow: '0 10px 28px rgba(11,14,20,.12)' }} />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -56,16 +56,16 @@ function Charts({ s, stacked }) {
           </div>
         </CardContent>
       </Card>
-      <Card>
+      <Card className="border-[#e4e6ef] overflow-hidden">
         <CardHeader className="pb-2"><CardTitle className="text-sm">By Category</CardTitle></CardHeader>
         <CardContent className="h-56">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={(s.by_category || []).slice(0, 8)}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <CartesianGrid stroke="#e8eaf2" strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="name" tick={{ fontSize: 9 }} interval={0} angle={-25} textAnchor="end" height={60} />
               <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-              <Tooltip />
-              <Bar dataKey="value" fill="#0d9488" radius={[4, 4, 0, 0]} />
+              <Tooltip contentStyle={{ borderRadius: 10, border: '1px solid #e4e6ef', boxShadow: '0 10px 28px rgba(11,14,20,.12)' }} />
+              <Bar dataKey="value" fill="#ee00ee" radius={[6, 6, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </CardContent>
@@ -76,9 +76,9 @@ function Charts({ s, stacked }) {
 
 function MemberSla({ rows }) {
   return (
-    <Card>
+    <Card className="border-[#e4e6ef] overflow-hidden">
       <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Users className="h-4 w-4" />Member SLA Performance</CardTitle></CardHeader>
-      <CardContent className="p-0">
+      <CardContent className="p-0 overflow-x-auto">
         <Table>
           <TableHeader><TableRow>
             <TableHead>Member</TableHead><TableHead className="text-center">Assigned</TableHead><TableHead className="text-center">Open</TableHead>
@@ -118,20 +118,21 @@ function DeptPanel({ department, onOpenTicket, refresh }) {
   }, [department, refresh])
 
   const Icon = department === 'IT' ? Server : Building2
-  const accent = department === 'IT' ? 'from-indigo-600 to-blue-500' : 'from-teal-600 to-emerald-500'
+  const accent = department === 'IT' ? 'from-[#151a28] via-[#252b42] to-[#435987]' : 'from-[#6d006d] via-[#b000b0] to-[#ee00ee]'
 
   if (loading || !s) return <Skeleton className="h-96 w-full" />
   return (
     <div className="space-y-4">
-      <div className={`rounded-lg bg-gradient-to-r ${accent} text-white p-4 flex flex-wrap items-center justify-between gap-3`}>
+      <div className={`relative overflow-hidden rounded-xl border border-white/10 bg-gradient-to-r ${accent} text-white p-5 flex flex-wrap items-center justify-between gap-4 shadow-[0_14px_35px_rgba(11,14,20,.16)]`}>
+        <div className="pointer-events-none absolute -right-10 -top-20 h-44 w-44 rounded-full border border-white/15" />
         <div className="flex items-center gap-2"><Icon className="h-6 w-6" /><div><p className="text-base font-semibold">{department} Service Desk</p><p className="text-xs opacity-90">Live analytics & SLA</p></div></div>
-        <div className="flex gap-4 text-center">
-          <div><p className="text-xl font-bold">{s.total}</p><p className="text-[10px] opacity-90">Tickets</p></div>
-          <div><p className="text-xl font-bold">{s.escalated}</p><p className="text-[10px] opacity-90">Escalated</p></div>
-          <div><p className="text-xl font-bold">{s.sla_compliance}%</p><p className="text-[10px] opacity-90">SLA Met</p></div>
+        <div className="relative flex gap-5 text-center">
+          <div><p className="text-xl font-bold tabular-nums">{s.total}</p><p className="text-[10px] uppercase tracking-wider opacity-80">Tickets</p></div>
+          <div><p className="text-xl font-bold tabular-nums">{s.escalated}</p><p className="text-[10px] uppercase tracking-wider opacity-80">Escalated</p></div>
+          <div><p className="text-xl font-bold tabular-nums">{s.sla_compliance}%</p><p className="text-[10px] uppercase tracking-wider opacity-80">SLA Met</p></div>
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Stat label="Today (per day)" value={s.today} icon={Ticket} tone="blue" />
         <Stat label="In Progress" value={s.in_progress} icon={Timer} tone="blue" />
         <Stat label="Pending Approval" value={s.pending_approval} icon={FileCheck2} tone="amber" />
@@ -158,7 +159,7 @@ function DailyKra({ refresh }) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-base flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-teal-600" />Daily KRA Compliance
+        <CardTitle className="text-base flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-fuchsia-600" />Daily KRA Compliance
           <span className="text-xs font-normal text-muted-foreground ml-1">{data?.date}</span>
         </CardTitle>
       </CardHeader>
@@ -199,7 +200,7 @@ function MyKra({ refresh }) {
   if (!lists.length) return null
   return (
     <Card>
-      <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-teal-600" />My KRA — Today</CardTitle></CardHeader>
+      <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-fuchsia-600" />My KRA — Today</CardTitle></CardHeader>
       <CardContent className="space-y-3">
         {lists.map((l) => {
           const sub = l.today_submission
@@ -236,8 +237,8 @@ function MyKra({ refresh }) {
 
 function SuperDash({ onOpenTicket, refresh }) {
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+    <div className="space-y-7">
+      <div className="grid grid-cols-1 2xl:grid-cols-2 gap-7">
         <DeptPanel department="IT" onOpenTicket={onOpenTicket} refresh={refresh} />
         <DeptPanel department="Admin" onOpenTicket={onOpenTicket} refresh={refresh} />
       </div>
@@ -267,7 +268,7 @@ function StaffDash({ user, onOpenTicket, refresh }) {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">{cards.map((c) => <Stat key={c.label} {...c} />)}</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">{cards.map((c) => <Stat key={c.label} {...c} />)}</div>
       <Charts s={s} />
       {isStaff ? (
         <>
