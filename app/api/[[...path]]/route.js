@@ -119,8 +119,7 @@ function scopeFilter(session) {
 }
 
 // ---------------- SEED ----------------
-const IT_CATEGORIES = ['Hardware','Laptop Allocation','Network/Wi-Fi','Email/Access','Password Reset','Software','Biometric','Meeting-Room Support','Onboarding','Offboarding','Asset Recovery','Security Incident']
-const ADMIN_CATEGORIES = ['Facilities','AC','Electricity','Furniture','Housekeeping','Washroom','Water','Parking','ID/Access Cards','Seating','Stationery','Medicine','Pantry','Courier','Vendors','Procurement','Insurance','Banking','Payments','Expense Summary','Cash Flow','Printers','Assets','Inventory']
+const CATEGORIES = ['Daily Operations','Employee Onboarding','Employee Offboarding','Email & Slack Support','Laptop Allocation','Laptop Replacement','Laptop Repair','Hardware Accessories','IT Asset Inventory','Internet Issues','WiFi Issues','LAN & Network Issues','Printer Support','Software Installation','Device Configuration','Vendor Asset Receipt','Asset Transfer','Account & Access Management','Administrative Support','Other']
 const LOCATIONS = [
   { name: 'Tulip - Ground Floor', building: 'Tulip', code: 'TULG' },
   { name: 'Tulip - First Floor', building: 'Tulip', code: 'TUL1' },
@@ -189,8 +188,8 @@ async function seedDb(db) {
 
   // categories
   const cats = [
-    ...IT_CATEGORIES.map((c) => ({ id: uuidv4(), department: 'IT', name: c })),
-    ...ADMIN_CATEGORIES.map((c) => ({ id: uuidv4(), department: 'Admin', name: c })),
+    ...CATEGORIES.map((c) => ({ id: uuidv4(), department: 'IT', name: c })),
+    ...CATEGORIES.map((c) => ({ id: uuidv4(), department: 'Admin', name: c })),
   ]
   await db.collection('categories').insertMany(cats)
   await db.collection('locations').insertMany(LOCATIONS.map((l) => ({ id: uuidv4(), ...l })))
