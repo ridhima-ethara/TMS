@@ -59,6 +59,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
+import { RaiseTicket } from "@/components/app/TicketsView";
 
 const DONE = ["Resolved", "Closed", "Cancelled"];
 const roleMeta = (user) =>
@@ -260,6 +261,7 @@ function QueueCategories({ tickets, accent }) {
 
 function AgentWeek({ tickets, accent, soft }) {
   const [calendarView, setCalendarView] = useState("week");
+  const [selectedDay, setSelectedDay] = useState(null);
   const now = new Date();
   const weekDays = Array.from({ length: 7 }, (_, index) => {
     const date = new Date(now);
@@ -339,9 +341,14 @@ function AgentWeek({ tickets, accent, soft }) {
             (ticket) => new Date(ticket.sla_resolution_due) < now,
           ).length;
           return (
-            <div
+            <button
+              type="button"
               key={date.toISOString()}
-              className={`rounded-xl border p-3 ${calendarView === "month" ? "min-h-24" : "min-h-20"} ${!inMonth && calendarView === "month" ? "bg-[#FAFBFC] opacity-50" : ""}`}
+              disabled={!due.length}
+              onClick={() =>
+                due.length && setSelectedDay({ date, tickets: due })
+              }
+              className={`rounded-xl border p-3 text-left transition-all ${calendarView === "month" ? "min-h-24" : "min-h-20"} ${!inMonth && calendarView === "month" ? "bg-[#FAFBFC] opacity-50" : ""} ${due.length ? "cursor-pointer hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-offset-2" : "cursor-default"}`}
               style={
                 today
                   ? { border: `2px solid ${accent}`, background: soft }
@@ -375,10 +382,89 @@ function AgentWeek({ tickets, accent, soft }) {
                   <span className="text-xs text-[#9CA3AF]">—</span>
                 )}
               </div>
-            </div>
+              {due.length > 0 && (
+                <p
+                  className="mt-2 text-[10px] font-semibold"
+                  style={{ color: accent }}
+                >
+                  View tickets →
+                </p>
+              )}
+            </button>
           );
         })}
       </div>
+      <Dialog
+        open={!!selectedDay}
+        onOpenChange={(open) => !open && setSelectedDay(null)}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              Tickets due{" "}
+              {selectedDay?.date.toLocaleDateString("en-GB", {
+                weekday: "long",
+                day: "2-digit",
+                month: "long",
+              })}
+            </DialogTitle>
+            <p className="text-sm text-[#9CA3AF]">
+              {selectedDay?.tickets.length || 0} active team ticket
+              {selectedDay?.tickets.length === 1 ? "" : "s"}
+            </p>
+          </DialogHeader>
+          <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
+            {selectedDay?.tickets.map((ticket) => {
+              const sla = slaRemaining(ticket.sla_resolution_due);
+              return (
+                <Card
+                  key={ticket.id}
+                  className="border-[#E5E9EF] p-4 shadow-none"
+                >
+                  <div className="flex flex-wrap items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-xs text-[#9CA3AF]">
+                          {ticket.human_id}
+                        </span>
+                        <Badge
+                          className={PRIORITY_META[ticket.priority]?.badge}
+                        >
+                          {ticket.priority}
+                        </Badge>
+                        <Badge
+                          variant="outline"
+                          className={statusClass(ticket.status)}
+                        >
+                          {ticket.status}
+                        </Badge>
+                      </div>
+                      <p className="mt-2 font-semibold">{ticket.title}</p>
+                      <p className="mt-1 text-xs text-[#9CA3AF]">
+                        {ticket.category} · Raised by{" "}
+                        {ticket.raised_by_name || "—"} ·{" "}
+                        {ticket.location || "Location not set"}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p
+                        className={`text-xs font-semibold ${sla.breach ? "text-red-700" : "text-green-700"}`}
+                      >
+                        {sla.text}
+                      </p>
+                      <p className="mt-1 text-xs text-[#9CA3AF]">
+                        {ticket.assignee_name
+                          ? `Assigned to ${ticket.assignee_name}`
+                          : "Awaiting team claim"}
+                      </p>
+                    </div>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }
@@ -390,10 +476,16 @@ export function AgentDashboard({ user, onGoTickets, onGoKra }) {
     Promise.all([
       api("/dashboard"),
       api(`/tickets?assignee_id=${user.id}&limit=200`),
+      api("/tickets?limit=200"),
       api("/member-checklists"),
     ])
-      .then(([stats, queue, lists]) =>
-        setData({ stats, tickets: queue.items, lists }),
+      .then(([stats, queue, teamQueue, lists]) =>
+        setData({
+          stats,
+          tickets: queue.items,
+          teamTickets: teamQueue.items,
+          lists,
+        }),
       )
       .catch(() => {});
   }, [user.id]);
@@ -459,7 +551,11 @@ export function AgentDashboard({ user, onGoTickets, onGoKra }) {
         <MiniKra lists={data.lists} onGoKra={onGoKra} />
         <QueueCategories tickets={data.tickets} accent={meta.accent} />
       </div>
-      <AgentWeek tickets={data.tickets} accent={meta.accent} soft={meta.soft} />
+      <AgentWeek
+        tickets={data.teamTickets}
+        accent={meta.accent}
+        soft={meta.soft}
+      />
     </div>
   );
 }
@@ -598,7 +694,7 @@ const exportTickets = (rows) => {
   URL.revokeObjectURL(link.href);
 };
 
-function TicketActionMenu({ ticket, done, onOpenTicket, onUpdated }) {
+function TicketActionMenu({ ticket, done, user, onOpenTicket, onUpdated }) {
   if (done)
     return (
       <Button
@@ -618,11 +714,17 @@ function TicketActionMenu({ ticket, done, onOpenTicket, onUpdated }) {
       toast.error(error.message);
     }
   };
+  const actionLabel =
+    {
+      Acknowledged: "Acknowledged",
+      "In Progress": "In progress",
+      "Pending User Response": "Awaiting user",
+    }[ticket.status] || "Resolve";
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="outline" size="sm">
-          Resolve ▾
+          {actionLabel} ▾
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-52">
@@ -635,7 +737,10 @@ function TicketActionMenu({ ticket, done, onOpenTicket, onUpdated }) {
           disabled={ticket.status === "Acknowledged"}
           onSelect={() =>
             update(
-              { status: "Acknowledged" },
+              {
+                status: "Acknowledged",
+                assignee_id: ticket.assignee_id || user.id,
+              },
               `${ticket.human_id} acknowledged`,
             )
           }
@@ -689,7 +794,7 @@ function TicketActionMenu({ ticket, done, onOpenTicket, onUpdated }) {
 
 export function AgentTickets({ user, onOpenTicket }) {
   const meta = roleMeta(user);
-  const [scope, setScope] = useState("mine");
+  const [scope, setScope] = useState("team");
   const [tickets, setTickets] = useState([]);
   const [search, setSearch] = useState("");
   const [priority, setPriority] = useState("all");
@@ -812,7 +917,7 @@ export function AgentTickets({ user, onOpenTicket }) {
           <Download className="h-4 w-4" />
           Export
         </Button>
-        <RaiseAgentTicket user={user} onCreated={load} />
+        <RaiseTicket user={user} onCreated={load} />
       </div>
       <Card className="overflow-hidden border-[#E5E9EF] shadow-none">
         <div className="overflow-x-auto">
@@ -892,6 +997,7 @@ export function AgentTickets({ user, onOpenTicket }) {
                         <TicketActionMenu
                           ticket={ticket}
                           done={done}
+                          user={user}
                           onOpenTicket={onOpenTicket}
                           onUpdated={load}
                         />

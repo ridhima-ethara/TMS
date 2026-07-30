@@ -677,17 +677,15 @@ async function seedDb(db) {
     resolution: null,
     confirmation: null,
   });
-  await db
-    .collection("history")
-    .insertOne({
-      id: uuidv4(),
-      ticket_id: aid,
-      type: "created",
-      by_name: "Emma Employee",
-      by_role: "employee",
-      note: "Ticket raised",
-      created_at: new Date(),
-    });
+  await db.collection("history").insertOne({
+    id: uuidv4(),
+    ticket_id: aid,
+    type: "created",
+    by_name: "Emma Employee",
+    by_role: "employee",
+    note: "Ticket raised",
+    created_at: new Date(),
+  });
 
   // Extra Admin tickets for split-view / SLA / calendar richness
   const ADMIN_TICKET_SEED = [
@@ -1026,6 +1024,44 @@ async function handleRoute(request, { params }) {
       const users = await db.collection("users").find({}).toArray();
       return json(clean(users));
     }
+    if (seg[0] === "users" && seg[1] && method === "PATCH") {
+      if (session.role !== "super_admin")
+        return json({ error: "Forbidden" }, 403);
+      const b = await request.json();
+      const user = await db.collection("users").findOne({ id: seg[1] });
+      if (!user) return json({ error: "Member not found" }, 404);
+      const set = {};
+      if (["employee", "it", "admin", "super_admin"].includes(b.role)) {
+        set.role = b.role;
+        set.department =
+          b.role === "it"
+            ? "IT"
+            : b.role === "admin"
+              ? "Admin"
+              : b.role === "super_admin"
+                ? "Management"
+                : "General";
+      }
+      if (typeof b.active === "boolean") set.active = b.active;
+      if (typeof b.is_team_head === "boolean")
+        set.is_team_head = b.is_team_head;
+      if (b.name?.trim()) set.name = b.name.trim();
+      if (b.employee_id !== undefined)
+        set.employee_id = String(b.employee_id).trim();
+      if (b.location !== undefined) set.location = String(b.location).trim();
+      if (b.password) {
+        if (String(b.password).length < 6)
+          return json({ error: "Password must be at least 6 characters" }, 400);
+        set.password_hash = await bcrypt.hash(String(b.password), 10);
+      }
+      set.updated_at = new Date();
+      await db.collection("users").updateOne({ id: user.id }, { $set: set });
+      await audit(db, session, "user.settings.update", "user", user.id, {
+        ...set,
+        password_hash: set.password_hash ? "changed" : undefined,
+      });
+      return json(clean(await db.collection("users").findOne({ id: user.id })));
+    }
     if (route === "/categories" && method === "GET") {
       const dept = new URL(request.url).searchParams.get("department");
       const q = dept ? { department: dept } : {};
@@ -1034,6 +1070,105 @@ async function handleRoute(request, { params }) {
     }
     if (route === "/locations" && method === "GET") {
       return json(clean(await db.collection("locations").find({}).toArray()));
+    }
+
+    if (route === "/parking" && method === "GET") {
+      if (!["admin", "super_admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      const allocations = await db
+        .collection("parking_allocations")
+        .find({ location: "Tulip" })
+        .sort({ vehicle_type: 1, slot_number: 1 })
+        .toArray();
+      return json({
+        location: "Tulip",
+        capacity: { four_wheeler: 12, two_wheeler: 90 },
+        allocations: clean(allocations),
+      });
+    }
+    if (route === "/parking" && method === "POST") {
+      if (!["admin", "super_admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      const b = await request.json();
+      const member = await db.collection("users").findOne({ id: b.member_id });
+      if (!member) return json({ error: "Member not found" }, 400);
+      const vehicleType =
+        b.vehicle_type === "four_wheeler" ? "four_wheeler" : "two_wheeler";
+      const capacity = vehicleType === "four_wheeler" ? 12 : 90;
+      const existing = await db
+        .collection("parking_allocations")
+        .find({ location: "Tulip", vehicle_type: vehicleType })
+        .toArray();
+      const occupied = new Set(existing.map((item) => item.slot_number));
+      const requested = Number(b.slot_number || 0);
+      const slotNumber =
+        requested ||
+        Array.from({ length: capacity }, (_, index) => index + 1).find(
+          (slot) => !occupied.has(slot),
+        );
+      if (!slotNumber || slotNumber < 1 || slotNumber > capacity)
+        return json({ error: "No valid parking slot available" }, 400);
+      if (occupied.has(slotNumber))
+        return json({ error: "That parking slot is already allocated" }, 409);
+      const vehicleNumber = String(b.vehicle_number || "")
+        .trim()
+        .toUpperCase();
+      if (!vehicleNumber)
+        return json({ error: "Vehicle number is required" }, 400);
+      if (
+        await db
+          .collection("parking_allocations")
+          .findOne({ vehicle_number: vehicleNumber })
+      )
+        return json(
+          { error: "This vehicle already has a parking allocation" },
+          409,
+        );
+      const doc = {
+        id: uuidv4(),
+        location: "Tulip",
+        member_id: member.id,
+        member_name: member.name,
+        member_email: member.email,
+        vehicle_type: vehicleType,
+        vehicle_number: vehicleNumber,
+        slot_number: slotNumber,
+        notes: b.notes || "",
+        allocated_by: session.name,
+        created_at: new Date(),
+      };
+      await db.collection("parking_allocations").insertOne(doc);
+      await notify(
+        db,
+        member.id,
+        `${vehicleType === "four_wheeler" ? "Four" : "Two"}-wheeler parking slot ${slotNumber} allocated at Tulip`,
+        null,
+      );
+      await audit(db, session, "parking.allocate", "parking", doc.id, {
+        member: member.name,
+        slot: slotNumber,
+        vehicle_type: vehicleType,
+      });
+      return json(clean(doc));
+    }
+    if (seg[0] === "parking" && seg[1] && method === "DELETE") {
+      if (!["admin", "super_admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      const allocation = await db
+        .collection("parking_allocations")
+        .findOne({ id: seg[1] });
+      if (!allocation) return json({ error: "Allocation not found" }, 404);
+      await db.collection("parking_allocations").deleteOne({ id: seg[1] });
+      await notify(
+        db,
+        allocation.member_id,
+        `Tulip parking slot ${allocation.slot_number} allocation removed`,
+        null,
+      );
+      await audit(db, session, "parking.remove", "parking", allocation.id, {
+        slot: allocation.slot_number,
+      });
+      return json({ ok: true });
     }
 
     // ---- APPROVALS: joined request feed ----
@@ -1297,6 +1432,13 @@ async function handleRoute(request, { params }) {
       const prefix = department === "Admin" ? "ADM" : "IT";
       const hid = await humanId(db, prefix);
       const priority = b.priority || "Medium";
+      const requestedAssignee =
+        session.role !== "employee" && b.assignee_id
+          ? await db.collection("users").findOne({
+              id: b.assignee_id,
+              role: department === "Admin" ? "admin" : "it",
+            })
+          : null;
       const t = {
         id,
         human_id: hid,
@@ -1306,15 +1448,15 @@ async function handleRoute(request, { params }) {
         title: b.title || "Untitled",
         description: b.description || "",
         priority,
-        status: "Open",
+        status: requestedAssignee ? "Assigned" : "Open",
         raised_by_id: session.id,
         raised_by_name: session.name,
         raised_for_name: b.raised_for_name || session.name,
         employee_id: b.employee_id || "",
         email: b.email || session.email,
         location: b.location || "HQ1",
-        assignee_id: null,
-        assignee_name: null,
+        assignee_id: requestedAssignee?.id || null,
+        assignee_name: requestedAssignee?.name || null,
         approval_required: false,
         legacy_id: null,
         ...slaDates(department, priority),
@@ -1348,6 +1490,13 @@ async function handleRoute(request, { params }) {
         `New ${department} ticket ${hid}: ${t.title}`,
         t,
       );
+      if (requestedAssignee)
+        await notify(
+          db,
+          requestedAssignee.id,
+          `Ticket ${hid} assigned to you`,
+          t,
+        );
       return json(clean(t));
     }
 
@@ -1401,6 +1550,23 @@ async function handleRoute(request, { params }) {
         const notes = [];
         if (b.assignee_id !== undefined) {
           const u = await db.collection("users").findOne({ id: b.assignee_id });
+          const actor = await db
+            .collection("users")
+            .findOne({ id: session.id });
+          if (session.role !== "super_admin") {
+            if (!u || u.role !== session.role)
+              return json(
+                { error: "You can only assign within your team" },
+                403,
+              );
+            if (!actor?.is_team_head && u.id !== session.id)
+              return json(
+                {
+                  error: "Only team heads can assign tickets to other members",
+                },
+                403,
+              );
+          }
           set.assignee_id = b.assignee_id;
           set.assignee_name = u?.name || null;
           if (ticket.status === "Open") set.status = "Assigned";
@@ -1563,23 +1729,21 @@ async function handleRoute(request, { params }) {
           return json({ error: "Forbidden" }, 403);
         const b = await request.json();
         if (b.action === "confirm") {
-          await db
-            .collection("tickets")
-            .updateOne(
-              { id: ticketId },
-              {
-                $set: {
-                  status: "Closed",
-                  confirmation: {
-                    confirmed: true,
-                    rating: b.rating || null,
-                    comment: b.comment || "",
-                    at: new Date(),
-                  },
-                  updated_at: new Date(),
+          await db.collection("tickets").updateOne(
+            { id: ticketId },
+            {
+              $set: {
+                status: "Closed",
+                confirmation: {
+                  confirmed: true,
+                  rating: b.rating || null,
+                  comment: b.comment || "",
+                  at: new Date(),
                 },
+                updated_at: new Date(),
               },
-            );
+            },
+          );
           await addHistory(
             db,
             ticketId,
@@ -1596,22 +1760,20 @@ async function handleRoute(request, { params }) {
             ticket,
           );
         } else if (b.action === "reopen") {
-          await db
-            .collection("tickets")
-            .updateOne(
-              { id: ticketId },
-              {
-                $set: {
-                  status: "Reopened",
-                  confirmation: {
-                    confirmed: false,
-                    comment: b.comment || "",
-                    at: new Date(),
-                  },
-                  updated_at: new Date(),
+          await db.collection("tickets").updateOne(
+            { id: ticketId },
+            {
+              $set: {
+                status: "Reopened",
+                confirmation: {
+                  confirmed: false,
+                  comment: b.comment || "",
+                  at: new Date(),
                 },
+                updated_at: new Date(),
               },
-            );
+            },
+          );
           await addHistory(
             db,
             ticketId,
@@ -1695,18 +1857,16 @@ async function handleRoute(request, { params }) {
           };
           await db.collection("approvals").insertOne(approval);
         }
-        await db
-          .collection("tickets")
-          .updateOne(
-            { id: ticketId },
-            {
-              $set: {
-                status: "Pending Super Admin Approval",
-                approval_required: true,
-                updated_at: new Date(),
-              },
+        await db.collection("tickets").updateOne(
+          { id: ticketId },
+          {
+            $set: {
+              status: "Pending Super Admin Approval",
+              approval_required: true,
+              updated_at: new Date(),
             },
-          );
+          },
+        );
         await addHistory(
           db,
           ticketId,
@@ -2026,6 +2186,7 @@ async function handleRoute(request, { params }) {
         member_id: member.id,
         member_name: member.name,
         member_role: member.role,
+        location: b.location || member.location || "",
         title: b.title || "Daily Checklist",
         frequency: b.frequency || "daily",
         active: true,

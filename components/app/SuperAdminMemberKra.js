@@ -267,7 +267,7 @@ function KraCard({ list, member, submissions, onDelete, onDuplicate }) {
   );
 }
 
-function AssignChecklist({ members, lists, onCreated }) {
+function AssignChecklist({ members, lists, locations, onCreated }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({
     member_id: "",
@@ -275,6 +275,7 @@ function AssignChecklist({ members, lists, onCreated }) {
     items: [],
     repeat: "Daily",
     cutoff: "18:00",
+    location: "",
   });
   const [newTask, setNewTask] = useState("");
   const templates = {
@@ -305,6 +306,7 @@ function AssignChecklist({ members, lists, onCreated }) {
           items,
           repeat: form.repeat,
           cutoff: form.cutoff,
+          location: form.location,
         },
       });
       toast.success("Checklist assigned");
@@ -315,6 +317,7 @@ function AssignChecklist({ members, lists, onCreated }) {
         items: [],
         repeat: "Daily",
         cutoff: "18:00",
+        location: "",
       });
       onCreated();
     } catch (error) {
@@ -348,7 +351,13 @@ function AssignChecklist({ members, lists, onCreated }) {
                   <button
                     type="button"
                     key={member.id}
-                    onClick={() => setForm({ ...form, member_id: member.id })}
+                    onClick={() =>
+                      setForm({
+                        ...form,
+                        member_id: member.id,
+                        location: member.location || form.location,
+                      })
+                    }
                     className={`flex items-center gap-3 rounded-xl border p-3 text-left ${form.member_id === member.id ? "border-[#6C5CE7] bg-[#FAF9FF] ring-1 ring-[#6C5CE7]" : "border-[#E5E9EF]"}`}
                   >
                     <span
@@ -379,6 +388,27 @@ function AssignChecklist({ members, lists, onCreated }) {
                 This member already has a KRA. This will add another checklist.
               </div>
             )}
+          </div>
+          <div>
+            <Label>Location</Label>
+            <Select
+              value={form.location}
+              onValueChange={(value) => setForm({ ...form, location: value })}
+            >
+              <SelectTrigger className="mt-1">
+                <SelectValue placeholder="Select location" />
+              </SelectTrigger>
+              <SelectContent>
+                {locations.map((location) => (
+                  <SelectItem key={location.name} value={location.name}>
+                    {location.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-[#9CA3AF]">
+              The selected member&apos;s saved location is filled automatically.
+            </p>
           </div>
           <div>
             <Label>Checklist title</Label>
@@ -502,6 +532,7 @@ function AssignChecklist({ members, lists, onCreated }) {
 
 export default function SuperAdminMemberKra() {
   const [members, setMembers] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [lists, setLists] = useState([]);
   const [submissions, setSubmissions] = useState([]);
   const [mode, setMode] = useState("define");
@@ -511,11 +542,13 @@ export default function SuperAdminMemberKra() {
       api("/users"),
       api("/member-checklists"),
       api("/member-checklist-submissions"),
+      api("/locations"),
     ])
-      .then(([users, checklists, records]) => {
+      .then(([users, checklists, records, availableLocations]) => {
         setMembers(users.filter((user) => ["it", "admin"].includes(user.role)));
         setLists(checklists);
         setSubmissions(records);
+        setLocations(availableLocations);
       })
       .catch((error) => toast.error(error.message));
   useEffect(() => {
@@ -605,7 +638,12 @@ export default function SuperAdminMemberKra() {
           <Bell className="h-4 w-4" />
           Remind pending ({pending})
         </Button>
-        <AssignChecklist members={members} lists={lists} onCreated={load} />
+        <AssignChecklist
+          members={members}
+          lists={lists}
+          locations={locations}
+          onCreated={load}
+        />
       </div>
       <Summary lists={visible} submissions={submissions} />
       {mode === "define" ? (

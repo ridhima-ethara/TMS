@@ -13,6 +13,8 @@ import TicketDrawer from "@/components/app/TicketDrawer";
 import SuperAdminDashboard from "@/components/app/SuperAdminDashboard";
 import SuperAdminTickets from "@/components/app/SuperAdminTickets";
 import ApprovalsView from "@/components/app/ApprovalsView";
+import ParkingView from "@/components/app/ParkingView";
+import SettingsView from "@/components/app/SettingsView";
 import {
   AgentDashboard,
   AgentKra,
@@ -43,6 +45,8 @@ import {
   Loader2,
   Menu,
   Users,
+  Car,
+  Settings,
 } from "lucide-react";
 
 const NAV = {
@@ -61,12 +65,15 @@ const NAV = {
     { k: "tickets", label: "Admin Tickets", icon: Ticket },
     { k: "approvals", label: "Approvals", icon: FileCheck2 },
     { k: "mychecklist", label: "My KRA", icon: ClipboardCheck },
+    { k: "parking", label: "Parking", icon: Car },
   ],
   super_admin: [
     { k: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { k: "tickets", label: "All Tickets", icon: Ticket },
     { k: "approvals", label: "Approval Inbox", icon: FileCheck2 },
     { k: "member-checklists", label: "Member KRA", icon: Users },
+    { k: "parking", label: "Parking", icon: Car },
+    { k: "settings", label: "Settings", icon: Settings },
     { k: "audit", label: "Audit Logs", icon: ScrollText },
   ],
 };
@@ -152,13 +159,15 @@ export default function App() {
     checklists: "Checklists",
     mychecklist: "My KRA / Daily Tasks",
     "member-checklists": "Member KRA",
+    parking: "Tulip Parking",
+    settings: "Member Settings",
     audit: "Audit Logs",
   };
 
   const Sidebar = () => (
-    <aside className="w-64 shrink-0 border-r border-white/10 bg-[#0b0e14] text-[#c5cbe9] flex flex-col shadow-2xl">
-      <div className="h-16 flex items-center gap-3 px-5 border-b border-white/10 text-lg font-semibold text-white">
-        <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-fuchsia-400/30 bg-fuchsia-500/10 shadow-[0_0_24px_rgba(238,0,238,.16)]">
+    <aside className="flex w-64 shrink-0 flex-col border-r border-[#E5E9EF] bg-white text-[#4B5563] shadow-[8px_0_28px_rgba(17,24,39,.04)]">
+      <div className="flex h-16 items-center gap-3 border-b border-[#E5E9EF] px-5 text-lg font-semibold text-[#111827]">
+        <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-fuchsia-200 bg-fuchsia-50 shadow-sm">
           <Ticket className="h-5 w-5 text-[#ee00ee]" />
         </span>
         <span>
@@ -176,7 +185,7 @@ export default function App() {
                 setView(n.k);
                 setSidebarOpen(false);
               }}
-              className={`w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all ${active ? "bg-[#ee00ee]/15 text-white shadow-[inset_3px_0_0_#ee00ee]" : "text-[#c5cbe9] hover:bg-white/[.06] hover:text-white"}`}
+              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all ${active ? "bg-fuchsia-50 text-[#9D139D] shadow-[inset_3px_0_0_#ee00ee]" : "text-[#4B5563] hover:bg-[#F4F6F8] hover:text-[#111827]"}`}
             >
               <Icon className="h-4 w-4" />
               {n.label}
@@ -184,8 +193,8 @@ export default function App() {
           );
         })}
       </nav>
-      <div className="p-4 border-t border-white/10 text-xs text-[#8a8fa5]">
-        <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 mr-2 shadow-[0_0_10px_#34d399]" />
+      <div className="border-t border-[#E5E9EF] p-4 text-xs text-[#6B7280]">
+        <span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,.45)]" />
         {ROLE_LABEL[user.role]} workspace
       </div>
     </aside>
@@ -343,6 +352,8 @@ export default function App() {
               <MyChecklist />
             ))}
           {view === "member-checklists" && <SuperAdminMemberKra />}
+          {view === "parking" && <ParkingView />}
+          {view === "settings" && <SettingsView />}
           {view === "audit" && <AuditView />}
         </main>
       </div>
