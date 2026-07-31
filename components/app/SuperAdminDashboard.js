@@ -464,9 +464,96 @@ export default function SuperAdminDashboard({ onViewKra }) {
     0,
   );
   const exportReport = () => {
+    const allTickets = [...view.itTickets, ...view.adminTickets];
+    const csvCell = (value) => {
+      const text = String(value ?? "");
+      const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
+      return `"${safe.replace(/"/g, '""')}"`;
+    };
+    const dateTime = (value) =>
+      value ? new Date(value).toLocaleString("en-GB") : "";
+    const ticketStatusCount = (tickets, status) =>
+      tickets.filter((ticket) => ticket.status === status).length;
+    const resourceRows = (department, members, tickets) => {
+      const rows = members.map((member) => {
+        const assigned = tickets.filter(
+          (ticket) => ticket.assignee_id === member.member_id,
+        );
+        const overdue = assigned.filter(
+          (ticket) =>
+            !DONE.includes(ticket.status) &&
+            ticket.sla_resolution_due &&
+            new Date(ticket.sla_resolution_due) < new Date(),
+        ).length;
+        return [
+          department,
+          member.member_name,
+          member.email || "",
+          member.location || "",
+          assigned.length,
+          ticketStatusCount(assigned, "Open"),
+          ticketStatusCount(assigned, "Assigned"),
+          ticketStatusCount(assigned, "Acknowledged"),
+          ticketStatusCount(assigned, "In Progress"),
+          assigned.filter((ticket) =>
+            [
+              "Pending User Response",
+              "Pending Vendor",
+              "Pending Finance",
+              "Pending Material",
+              "On Hold",
+            ].includes(ticket.status),
+          ).length,
+          assigned.filter((ticket) =>
+            [
+              "Pending Super Admin Approval",
+              "Clarification Required",
+              "Approval On Hold",
+            ].includes(ticket.status),
+          ).length,
+          ticketStatusCount(assigned, "Resolved"),
+          ticketStatusCount(assigned, "Closed"),
+          overdue,
+          `${member.sla_compliance || 0}%`,
+          `${member.avg_response_hours || 0}h`,
+          `${member.avg_resolution_hours || 0}h`,
+        ];
+      });
+      const unassigned = tickets.filter((ticket) => !ticket.assignee_id);
+      if (unassigned.length)
+        rows.push([
+          department,
+          "Unassigned / Team queue",
+          "",
+          "",
+          unassigned.length,
+          ticketStatusCount(unassigned, "Open"),
+          ticketStatusCount(unassigned, "Assigned"),
+          ticketStatusCount(unassigned, "Acknowledged"),
+          ticketStatusCount(unassigned, "In Progress"),
+          unassigned.filter((ticket) => ticket.status.startsWith("Pending"))
+            .length,
+          unassigned.filter((ticket) => ticket.status.includes("Approval"))
+            .length,
+          ticketStatusCount(unassigned, "Resolved"),
+          ticketStatusCount(unassigned, "Closed"),
+          unassigned.filter(
+            (ticket) =>
+              ticket.sla_resolution_due &&
+              new Date(ticket.sla_resolution_due) < new Date(),
+          ).length,
+          "—",
+          "—",
+          "—",
+        ]);
+      return rows;
+    };
     const rows = [
+      ["TICKETFLOW DETAILED OPERATIONS REPORT"],
       ["Date range", `${from} to ${to}`],
+      ["Generated at", new Date().toLocaleString("en-GB")],
       [],
+      ["DEPARTMENT SUMMARY"],
       [
         "Department",
         "Tickets",
@@ -501,13 +588,106 @@ export default function SuperAdminDashboard({ onViewKra }) {
         `${view.admin.avg_response_hours}h`,
         `${view.admin.avg_resolution_hours}h`,
       ],
+      [],
+      ["RESOURCE / MEMBER STATUS SUMMARY"],
+      [
+        "Department",
+        "Member / Resource",
+        "Email",
+        "Location",
+        "Total assigned",
+        "Open",
+        "Assigned",
+        "Acknowledged",
+        "In progress",
+        "Pending / On hold",
+        "Pending approval",
+        "Resolved",
+        "Closed",
+        "Overdue",
+        "SLA met",
+        "Avg response",
+        "Avg resolution",
+      ],
+      ...resourceRows("IT", view.itMembers || [], view.itTickets),
+      ...resourceRows("Admin", view.adminMembers || [], view.adminTickets),
+      [],
+      ["TICKET-LEVEL ASSIGNMENT DETAILS"],
+      [
+        "Ticket ID",
+        "Department",
+        "Title",
+        "Category",
+        "Priority",
+        "Status",
+        "Assigned member",
+        "Assignee ID",
+        "Raised by",
+        "Raised for",
+        "Employee ID",
+        "Email",
+        "Location",
+        "Created at",
+        "First response at",
+        "SLA response due",
+        "SLA resolution due",
+        "SLA state",
+        "Resolved at",
+        "Resolution summary",
+        "Action taken",
+        "Root cause",
+        "Approval required",
+        "Description",
+      ],
+      ...allTickets
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+        .map((ticket) => {
+          const resolvedAt = ticket.resolution?.resolved_date;
+          const slaState = resolvedAt
+            ? new Date(resolvedAt) <= new Date(ticket.sla_resolution_due)
+              ? "Met"
+              : "Breached"
+            : DONE.includes(ticket.status)
+              ? "Closed"
+              : ticket.sla_resolution_due &&
+                  new Date(ticket.sla_resolution_due) < new Date()
+                ? "Overdue"
+                : "Within SLA";
+          return [
+            ticket.human_id,
+            ticket.department,
+            ticket.title,
+            ticket.category,
+            ticket.priority,
+            ticket.status,
+            ticket.assignee_name || "Unassigned / Team queue",
+            ticket.assignee_id || "",
+            ticket.raised_by_name,
+            ticket.raised_for_name,
+            ticket.employee_id,
+            ticket.email,
+            ticket.location,
+            dateTime(ticket.created_at),
+            dateTime(ticket.first_response_at),
+            dateTime(ticket.sla_response_due),
+            dateTime(ticket.sla_resolution_due),
+            slaState,
+            dateTime(resolvedAt),
+            ticket.resolution?.summary || "",
+            ticket.resolution?.action_taken || "",
+            ticket.resolution?.root_cause || "",
+            ticket.approval_required ? "Yes" : "No",
+            ticket.description || "",
+          ];
+        }),
     ];
-    const blob = new Blob([rows.map((row) => row.join(",")).join("\n")], {
-      type: "text/csv",
-    });
+    const blob = new Blob(
+      ["\uFEFF" + rows.map((row) => row.map(csvCell).join(",")).join("\r\n")],
+      { type: "text/csv;charset=utf-8" },
+    );
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `dashboard-${from}-to-${to}.csv`;
+    link.download = `ticketflow-detailed-report-${from}-to-${to}.csv`;
     link.click();
     URL.revokeObjectURL(link.href);
   };

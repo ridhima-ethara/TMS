@@ -844,6 +844,56 @@ export function AgentTickets({ user, onOpenTicket }) {
         ),
     )
     .reverse();
+  const kanbanColumns = [
+    {
+      key: "new",
+      label: "New / Unassigned",
+      color: "#6C5CE7",
+      soft: "bg-[#F4F2FF]",
+      matches: (ticket) => ["Open", "Assigned"].includes(ticket.status),
+    },
+    {
+      key: "acknowledged",
+      label: "Acknowledged",
+      color: "#2E7CD6",
+      soft: "bg-[#EEF5FD]",
+      matches: (ticket) => ticket.status === "Acknowledged",
+    },
+    {
+      key: "progress",
+      label: "In progress",
+      color: "#E8930C",
+      soft: "bg-[#FFF8EA]",
+      matches: (ticket) =>
+        ["In Progress", "Approved - Ready for Action"].includes(ticket.status),
+    },
+    {
+      key: "waiting",
+      label: "Waiting / Approval",
+      color: "#9B59B6",
+      soft: "bg-[#FAF3FC]",
+      matches: (ticket) =>
+        [
+          "Approval Preparation",
+          "Pending Super Admin Approval",
+          "Clarification Required",
+          "Approval On Hold",
+          "Approval Rejected",
+          "Pending User Response",
+          "Pending Vendor",
+          "Pending Finance",
+          "Pending Material",
+          "On Hold",
+        ].includes(ticket.status),
+    },
+    {
+      key: "done",
+      label: "Resolved / Closed",
+      color: "#1E9E6A",
+      soft: "bg-[#EFFAF5]",
+      matches: (ticket) => DONE.includes(ticket.status),
+    },
+  ];
   return (
     <div className="space-y-4 text-[#111827]">
       <div className="flex flex-wrap items-center gap-2">
@@ -919,108 +969,133 @@ export function AgentTickets({ user, onOpenTicket }) {
         </Button>
         <RaiseTicket user={user} onCreated={load} />
       </div>
-      <Card className="overflow-hidden border-[#E5E9EF] shadow-none">
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>ID</TableHead>
-                <TableHead>Title</TableHead>
-                <TableHead>Category</TableHead>
-                <TableHead>Priority</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>SLA</TableHead>
-                <TableHead>Age</TableHead>
-                <TableHead>Action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading ? (
-                <TableRow>
-                  <TableCell
-                    colSpan={8}
-                    className="py-12 text-center text-[#9CA3AF]"
-                  >
-                    Loading tickets…
-                  </TableCell>
-                </TableRow>
-              ) : filtered.length ? (
-                filtered.map((ticket) => {
-                  const sla = slaRemaining(ticket.sla_resolution_due);
-                  const done = DONE.includes(ticket.status);
-                  return (
-                    <TableRow
-                      key={ticket.id}
-                      className={sla.breach && !done ? "bg-[#FFF9F9]" : ""}
+      <Card className="overflow-hidden border-[#E5E9EF] bg-[#F7F8FA] shadow-none">
+        {loading ? (
+          <div className="py-20 text-center text-sm text-[#9CA3AF]">
+            Loading ticket board…
+          </div>
+        ) : (
+          <div className="overflow-x-auto p-4">
+            <div className="flex min-w-max items-start gap-3">
+              {kanbanColumns.map((column) => {
+                const rows = filtered.filter(column.matches);
+                return (
+                  <section key={column.key} className="w-[285px] shrink-0">
+                    <div
+                      className={`mb-3 flex items-center rounded-xl border border-white px-3 py-3 shadow-sm ${column.soft}`}
                     >
-                      <TableCell className="font-mono text-xs text-[#9CA3AF]">
-                        {ticket.human_id}
-                      </TableCell>
-                      <TableCell className="font-semibold">
-                        {ticket.title}
-                      </TableCell>
-                      <TableCell>{ticket.category}</TableCell>
-                      <TableCell>
-                        <Badge
-                          className={PRIORITY_META[ticket.priority]?.badge}
-                        >
-                          {ticket.priority}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge
-                          variant="outline"
-                          className={statusClass(ticket.status)}
-                        >
-                          {ticket.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        {done ? (
-                          <span className="text-[#9CA3AF]">met</span>
-                        ) : (
-                          <span
-                            className={
-                              sla.breach
-                                ? "rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-800"
-                                : "text-green-700"
-                            }
-                          >
-                            {sla.text}
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {done ? "—" : age(ticket.created_at)}
-                      </TableCell>
-                      <TableCell>
-                        <TicketActionMenu
-                          ticket={ticket}
-                          done={done}
-                          user={user}
-                          onOpenTicket={onOpenTicket}
-                          onUpdated={load}
-                        />
-                      </TableCell>
-                    </TableRow>
-                  );
-                })
-              ) : (
-                <TableRow>
-                  <TableCell colSpan={8}>
-                    <div className="py-12 text-center text-[#9CA3AF]">
-                      <Inbox className="mx-auto mb-2 h-8 w-8" />
-                      No tickets found
+                      <span
+                        className="mr-2 h-2.5 w-2.5 rounded-full"
+                        style={{ background: column.color }}
+                      />
+                      <h3 className="text-sm font-bold">{column.label}</h3>
+                      <span className="ml-auto rounded-full bg-white px-2 py-0.5 text-xs font-semibold shadow-sm">
+                        {rows.length}
+                      </span>
                     </div>
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
+                    <div className="space-y-3">
+                      {rows.map((ticket) => {
+                        const sla = slaRemaining(ticket.sla_resolution_due);
+                        const done = DONE.includes(ticket.status);
+                        return (
+                          <Card
+                            key={ticket.id}
+                            className={`group cursor-pointer border-[#E5E9EF] p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${sla.breach && !done ? "border-l-[3px] border-l-[#DC3D3D]" : ""}`}
+                            onClick={() => onOpenTicket(ticket.id)}
+                          >
+                            <div className="flex items-start gap-2">
+                              <span className="font-mono text-[11px] text-[#9CA3AF]">
+                                {ticket.human_id}
+                              </span>
+                              <Badge
+                                className={`ml-auto ${PRIORITY_META[ticket.priority]?.badge}`}
+                              >
+                                {ticket.priority}
+                              </Badge>
+                            </div>
+                            <h4 className="mt-2 line-clamp-2 text-sm font-bold leading-5">
+                              {ticket.title}
+                            </h4>
+                            <p className="mt-1 truncate text-xs text-[#9CA3AF]">
+                              {ticket.category} ·{" "}
+                              {ticket.location || "No location"}
+                            </p>
+                            <div className="mt-3 flex flex-wrap gap-1.5">
+                              <Badge
+                                variant="outline"
+                                className={statusClass(ticket.status)}
+                              >
+                                {ticket.status}
+                              </Badge>
+                              {!done && (
+                                <span
+                                  className={`rounded-full px-2 py-1 text-[10px] font-semibold ${sla.breach ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"}`}
+                                >
+                                  {sla.text}
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-3 flex items-center gap-2 border-t border-[#EDF0F4] pt-3">
+                              <span
+                                className="grid h-7 w-7 place-items-center rounded-full text-[10px] font-semibold text-white"
+                                style={{
+                                  background: ticket.assignee_name
+                                    ? meta.accent
+                                    : "#9CA3AF",
+                                }}
+                              >
+                                {ticket.assignee_name
+                                  ? ticket.assignee_name
+                                      .split(" ")
+                                      .map((part) => part[0])
+                                      .slice(0, 2)
+                                      .join("")
+                                  : "?"}
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-[11px] font-semibold">
+                                  {ticket.assignee_name || "Team queue"}
+                                </p>
+                                <p className="text-[10px] text-[#9CA3AF]">
+                                  {done
+                                    ? "Completed"
+                                    : `${age(ticket.created_at)} old`}
+                                </p>
+                              </div>
+                              <div onClick={(event) => event.stopPropagation()}>
+                                <TicketActionMenu
+                                  ticket={ticket}
+                                  done={done}
+                                  user={user}
+                                  onOpenTicket={onOpenTicket}
+                                  onUpdated={load}
+                                />
+                              </div>
+                            </div>
+                          </Card>
+                        );
+                      })}
+                      {!rows.length && (
+                        <div className="rounded-xl border border-dashed border-[#D9DEE5] bg-white/70 px-4 py-8 text-center text-xs text-[#9CA3AF]">
+                          No tickets in this stage
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+            {!filtered.length && (
+              <div className="py-12 text-center text-[#9CA3AF]">
+                <Inbox className="mx-auto mb-2 h-8 w-8" />
+                No tickets found
+              </div>
+            )}
+          </div>
+        )}
         <p className="border-t px-4 py-3 text-xs text-[#9CA3AF]">
           Showing {filtered.length} of {tickets.length}{" "}
-          {scope === "mine" ? "my" : "team"} tickets · overdue sorted first
+          {scope === "mine" ? "my" : "team"} tickets · grouped by workflow stage
         </p>
       </Card>
     </div>
