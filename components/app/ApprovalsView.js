@@ -31,7 +31,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { Check, Download, FileCheck2, Paperclip, Plus, X } from "lucide-react";
+import AttachmentUpload from "@/components/app/AttachmentUpload";
+import { Check, Download, FileCheck2, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 
 const pending = (status) =>
@@ -92,6 +93,7 @@ function RaiseRequest({ user, onCreated }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [cats, setCats] = useState([]);
+  const [attachments, setAttachments] = useState([]);
   const dept = user.role === "admin" ? "Admin" : "IT";
   const [form, setForm] = useState({
     category: "",
@@ -101,7 +103,6 @@ function RaiseRequest({ user, onCreated }) {
     requested_amount: "",
     vendor: "",
     required_by: "",
-    attachment: "",
   });
   useEffect(() => {
     if (open)
@@ -131,11 +132,12 @@ function RaiseRequest({ user, onCreated }) {
           requested_amount: Number(form.requested_amount) || 0,
           vendor: form.vendor,
           required_by: form.required_by,
-          attachments: form.attachment ? [form.attachment] : [],
+          attachment_ids: attachments.map((item) => item.id),
         },
       });
       toast.success(`Approval request submitted as ${ticket.human_id}`);
       setOpen(false);
+      setAttachments([]);
       onCreated();
     } catch (error) {
       toast.error(error.message);
@@ -261,21 +263,16 @@ function RaiseRequest({ user, onCreated }) {
               admin approval.
             </div>
           )}
-          <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed p-3 text-sm text-[#9CA3AF]">
-            <Paperclip className="h-4 w-4" />
-            {form.attachment || "Attach vendor quote (PDF)"}
-            <input
-              type="file"
-              className="hidden"
-              accept=".pdf,image/*"
-              onChange={(event) =>
-                setForm({
-                  ...form,
-                  attachment: event.target.files?.[0]?.name || "",
-                })
-              }
-            />
-          </label>
+          <div>
+            <Label>Proof, quotation or reference documents</Label>
+            <div className="mt-1">
+              <AttachmentUpload
+                value={attachments}
+                onChange={setAttachments}
+                disabled={busy}
+              />
+            </div>
+          </div>
         </div>
         <DialogFooter>
           <Button
@@ -341,7 +338,7 @@ function AgentApprovals({ rows, user, load, onOpenTicket }) {
         ))}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex rounded-lg bg-[#EDF0F4] p-1">
+        <div className="flex max-w-full overflow-x-auto rounded-lg bg-[#EDF0F4] p-1">
           {["All", "Pending", "Approved", "Rejected"].map((item) => (
             <button
               key={item}
@@ -371,7 +368,7 @@ function AgentApprovals({ rows, user, load, onOpenTicket }) {
       </div>
       <Card className="overflow-hidden border-[#E5E9EF] shadow-none">
         <div className="overflow-x-auto">
-          <Table>
+          <Table className="min-w-[860px]">
             <TableHeader>
               <TableRow>
                 <TableHead>ID</TableHead>
@@ -542,7 +539,7 @@ function SuperInbox({ rows, load }) {
             >
               {initials(row.ticket?.raised_by_name)}
             </span>
-            <div className="min-w-64 flex-1">
+            <div className="min-w-0 flex-1 sm:min-w-64">
               <p className="font-bold">
                 {row.ticket?.title}{" "}
                 <Badge
@@ -590,7 +587,7 @@ function SuperInbox({ rows, load }) {
             {pending(row.status) ? (
               <>
                 <Input
-                  className="ml-2 h-9 min-w-64 flex-1"
+                  className="h-9 w-full flex-1 sm:ml-2 sm:min-w-64"
                   placeholder="Add a note (required to reject)…"
                   value={notes[row.id] || ""}
                   onChange={(event) =>

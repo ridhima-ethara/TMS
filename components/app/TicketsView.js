@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import AttachmentUpload from "@/components/app/AttachmentUpload";
 import { toast } from "sonner";
 import {
   Check,
@@ -49,7 +50,6 @@ import {
   Search,
   Download,
   Inbox,
-  Paperclip,
   UserRound,
 } from "lucide-react";
 
@@ -192,7 +192,7 @@ export default function TicketsView({
             setFilters({ ...filters, department: v, category: "all", page: 1 })
           }
         >
-          <TabsList>
+          <TabsList className="h-auto max-w-full justify-start overflow-x-auto">
             <TabsTrigger value="IT">IT Department</TabsTrigger>
             <TabsTrigger value="Admin">Admin Department</TabsTrigger>
           </TabsList>
@@ -200,10 +200,10 @@ export default function TicketsView({
       )}
       <div className="flex flex-wrap items-center gap-2 justify-between">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="relative">
+          <div className="relative w-full sm:w-auto">
             <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
-              className="pl-8 w-56"
+              className="w-full pl-8 sm:w-56"
               placeholder="Search id, title..."
               value={filters.search}
               onChange={(e) =>
@@ -217,7 +217,7 @@ export default function TicketsView({
               setFilters({ ...filters, status: v, page: 1 })
             }
           >
-            <SelectTrigger className="w-44 h-9">
+            <SelectTrigger className="h-9 w-full sm:w-44">
               <SelectValue placeholder="Status" />
             </SelectTrigger>
             <SelectContent>
@@ -235,7 +235,7 @@ export default function TicketsView({
               setFilters({ ...filters, priority: v, page: 1 })
             }
           >
-            <SelectTrigger className="w-32 h-9">
+            <SelectTrigger className="h-9 w-full sm:w-32">
               <SelectValue placeholder="Priority" />
             </SelectTrigger>
             <SelectContent>
@@ -253,7 +253,7 @@ export default function TicketsView({
               setFilters({ ...filters, category: v, page: 1 })
             }
           >
-            <SelectTrigger className="w-44 h-9">
+            <SelectTrigger className="h-9 w-full sm:w-44">
               <SelectValue placeholder="Category" />
             </SelectTrigger>
             <SelectContent>
@@ -266,7 +266,7 @@ export default function TicketsView({
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           <Button
             variant="outline"
             size="sm"
@@ -298,7 +298,7 @@ export default function TicketsView({
       </div>
 
       <Card>
-        <Table>
+        <Table className="min-w-[900px]">
           <TableHeader className="sticky top-0 bg-card z-10">
             <TableRow>
               <TableHead>ID</TableHead>
@@ -392,7 +392,7 @@ export default function TicketsView({
         </Table>
       </Card>
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">{data.total} tickets</p>
         <div className="flex items-center gap-2">
           <Button
@@ -455,7 +455,7 @@ export function RaiseTicket({ user, onCreated }) {
   const [existingTickets, setExistingTickets] = useState([]);
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [categorySearch, setCategorySearch] = useState("");
-  const [attachment, setAttachment] = useState("");
+  const [attachments, setAttachments] = useState([]);
   const [f, setF] = useState({
     department: "IT",
     category: "",
@@ -501,9 +501,13 @@ export function RaiseTicket({ user, onCreated }) {
     if (!f.title) return toast.error("Title required");
     setBusy(true);
     try {
-      const t = await api("/tickets", { method: "POST", body: f });
+      const t = await api("/tickets", {
+        method: "POST",
+        body: { ...f, attachment_ids: attachments.map((item) => item.id) },
+      });
       toast.success(`Raised ${t.human_id}`);
       setOpen(false);
+      setAttachments([]);
       setF({ ...f, title: "", description: "", category: "" });
       onCreated();
     } catch (e) {
@@ -547,9 +551,9 @@ export function RaiseTicket({ user, onCreated }) {
           Raise Ticket
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-h-[94vh] max-w-[760px] overflow-y-auto rounded-2xl p-7">
+      <DialogContent className="max-h-[calc(100dvh-1rem)] max-w-[760px] overflow-y-auto rounded-2xl p-4 sm:max-h-[94vh] sm:p-7">
         <DialogHeader>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <div>
               <DialogTitle className="text-2xl font-bold">
                 Raise a ticket
@@ -558,14 +562,14 @@ export function RaiseTicket({ user, onCreated }) {
                 {f.department} department · routed automatically by category
               </p>
             </div>
-            <div className="ml-auto flex rounded-lg bg-[#EDF0F4] p-1">
+            <div className="flex w-full rounded-lg bg-[#EDF0F4] p-1 sm:ml-auto sm:w-auto">
               {["IT", "Admin"].map((department) => (
                 <button
                   key={department}
                   onClick={() =>
                     setF({ ...f, department, category: "", assignee_id: "" })
                   }
-                  className={`rounded-md px-5 py-2 text-sm font-semibold ${f.department === department ? "bg-white shadow-sm" : "text-[#4B5563]"}`}
+                  className={`flex-1 rounded-md px-5 py-2 text-sm font-semibold ${f.department === department ? "bg-white shadow-sm" : "text-[#4B5563]"}`}
                 >
                   {department}
                 </button>
@@ -628,7 +632,7 @@ export function RaiseTicket({ user, onCreated }) {
               <Label className="text-sm font-semibold">
                 Priority · sets response SLA
               </Label>
-              <div className="mt-2 grid grid-cols-4 gap-2">
+              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {[
                   ["Low", "24h"],
                   ["Medium", "8h"],
@@ -776,18 +780,13 @@ export function RaiseTicket({ user, onCreated }) {
               Attachments{" "}
               <span className="font-medium text-[#9CA3AF]">(optional)</span>
             </Label>
-            <label className="mt-2 flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-[#D9DEE5] p-4 text-sm text-[#9CA3AF]">
-              <Paperclip className="h-4 w-4" />
-              {attachment ||
-                "Drop screenshots or files here, or browse · max 10 MB"}
-              <input
-                className="hidden"
-                type="file"
-                onChange={(event) =>
-                  setAttachment(event.target.files?.[0]?.name || "")
-                }
+            <div className="mt-2">
+              <AttachmentUpload
+                value={attachments}
+                onChange={setAttachments}
+                disabled={busy}
               />
-            </label>
+            </div>
           </div>
         </div>
         <DialogFooter>
@@ -812,6 +811,7 @@ function RaiseRequest({ user, onCreated }) {
   const [busy, setBusy] = useState(false);
   const [cats, setCats] = useState([]);
   const [locs, setLocs] = useState([]);
+  const [attachments, setAttachments] = useState([]);
   const dept = user.role === "admin" ? "Admin" : "IT";
   const [f, setF] = useState({
     category: "",
@@ -858,10 +858,12 @@ function RaiseRequest({ user, onCreated }) {
           requested_amount: Number(f.requested_amount) || 0,
           vendor: f.vendor,
           required_by: f.required_by,
+          attachment_ids: attachments.map((item) => item.id),
         },
       });
       toast.success(`Request ${t.human_id} sent to Super Admin`);
       setOpen(false);
+      setAttachments([]);
       setF({
         ...f,
         title: "",
@@ -895,7 +897,7 @@ function RaiseRequest({ user, onCreated }) {
             This request will be submitted to the Super Admin for approval
             before any execution.
           </p>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1">
               <Label className="text-xs">Category</Label>
               <Select
@@ -958,7 +960,7 @@ function RaiseRequest({ user, onCreated }) {
               placeholder="Why is this needed"
             />
           </div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid gap-3 sm:grid-cols-3">
             <div className="space-y-1">
               <Label className="text-xs">Amount (₹)</Label>
               <Input
@@ -984,6 +986,14 @@ function RaiseRequest({ user, onCreated }) {
                 onChange={(e) => setF({ ...f, required_by: e.target.value })}
               />
             </div>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Proof or reference documents</Label>
+            <AttachmentUpload
+              value={attachments}
+              onChange={setAttachments}
+              disabled={busy}
+            />
           </div>
         </div>
         <DialogFooter>

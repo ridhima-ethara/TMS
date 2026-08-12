@@ -90,10 +90,10 @@ export default function SettingsView() {
             Manage registered accounts, roles, access and team-head permissions.
           </p>
         </div>
-        <div className="relative ml-auto">
+        <div className="relative w-full sm:ml-auto sm:w-auto">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#9CA3AF]" />
           <Input
-            className="w-72 bg-white pl-9"
+            className="w-full bg-white pl-9 sm:w-72"
             placeholder="Search members…"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
@@ -123,7 +123,7 @@ export default function SettingsView() {
       </div>
       <Card className="overflow-hidden border-[#E5E9EF] shadow-none">
         <div className="overflow-x-auto">
-          <Table>
+          <Table className="min-w-[760px]">
             <TableHeader>
               <TableRow>
                 <TableHead>Member</TableHead>

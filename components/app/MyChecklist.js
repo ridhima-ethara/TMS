@@ -31,9 +31,9 @@ function ChecklistCard({ list, onSubmitted }) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="text-base flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-fuchsia-600" />{list.title}</CardTitle>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {today && <Badge variant="outline" className="text-green-700 border-green-300"><CheckCircle2 className="h-3 w-3 mr-1" />Submitted today ({today.status})</Badge>}
             <Badge variant="outline">{doneCount}/{rows.length}</Badge>
           </div>
@@ -43,12 +43,12 @@ function ChecklistCard({ list, onSubmitted }) {
         {rows.map((r, idx) => (
           <div key={idx} className={`flex flex-wrap items-center gap-3 rounded-md border p-2 ${r.done ? 'bg-green-50 border-green-200' : ''}`}>
             <Checkbox checked={r.done} onCheckedChange={(v) => setRows(rows.map((x, i) => i === idx ? { ...x, done: !!v } : x))} />
-            <span className={`text-sm flex-1 min-w-[160px] ${r.done ? 'line-through text-muted-foreground' : ''}`}>{r.item}</span>
-            <Input className="h-8 w-56" placeholder="Remark (optional)" value={r.remark} onChange={(e) => setRows(rows.map((x, i) => i === idx ? { ...x, remark: e.target.value } : x))} />
+            <span className={`min-w-0 flex-1 text-sm sm:min-w-[160px] ${r.done ? 'line-through text-muted-foreground' : ''}`}>{r.item}</span>
+            <Input className="h-8 w-full sm:w-56" placeholder="Remark (optional)" value={r.remark} onChange={(e) => setRows(rows.map((x, i) => i === idx ? { ...x, remark: e.target.value } : x))} />
           </div>
         ))}
         <div className="flex justify-end">
-          <Button size="sm" onClick={submit} disabled={busy}>{busy && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}{today ? 'Update submission' : 'Submit checklist'}</Button>
+          <Button className="w-full sm:w-auto" size="sm" onClick={submit} disabled={busy}>{busy && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}{today ? 'Update submission' : 'Submit checklist'}</Button>
         </div>
       </CardContent>
     </Card>

@@ -82,8 +82,8 @@ function Summary({ lists, submissions }) {
   const remainingHours = Math.floor(remaining / 3600000);
   const remainingMinutes = Math.floor((remaining % 3600000) / 60000);
   return (
-    <Card className="flex flex-wrap items-center gap-7 border-[#E5E9EF] px-5 py-4 shadow-none">
-      <div>
+    <Card className="flex flex-wrap items-center gap-5 border-[#E5E9EF] px-4 py-4 shadow-none sm:gap-7 sm:px-5">
+      <div className="min-w-[calc(50%-0.625rem)] sm:min-w-0">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
           Today ·{" "}
           {new Date().toLocaleDateString("en-GB", {
@@ -100,12 +100,12 @@ function Summary({ lists, submissions }) {
         </p>
       </div>
       <span className="hidden h-10 w-px bg-[#E5E9EF] sm:block" />
-      <div>
+      <div className="w-full sm:w-auto">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
           Tasks completed today
         </p>
         <div className="mt-2 flex items-center gap-3">
-          <div className="h-2 w-44 overflow-hidden rounded-full bg-[#EDF0F4]">
+          <div className="h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-[#EDF0F4] sm:w-44 sm:flex-none">
             <div
               className="h-full bg-[#1E9E6A]"
               style={{
@@ -119,7 +119,7 @@ function Summary({ lists, submissions }) {
         </div>
       </div>
       <span className="hidden h-10 w-px bg-[#E5E9EF] lg:block" />
-      <div>
+      <div className="min-w-[calc(50%-0.625rem)] sm:min-w-0">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
           7-day compliance
         </p>
@@ -130,7 +130,7 @@ function Summary({ lists, submissions }) {
           </span>
         </p>
       </div>
-      <div className="ml-auto text-right">
+      <div className="w-full text-left sm:ml-auto sm:w-auto sm:text-right">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
           Cut-off
         </p>
@@ -471,13 +471,14 @@ function AssignChecklist({ members, lists, locations, onCreated }) {
                 </div>
               ))}
             </div>
-            <div className="mt-2 flex gap-2">
+            <div className="mt-2 flex flex-col gap-2 sm:flex-row">
               <Input
                 placeholder="Add another task"
                 value={newTask}
                 onChange={(event) => setNewTask(event.target.value)}
               />
               <Button
+                className="w-full sm:w-auto"
                 variant="outline"
                 disabled={!newTask.trim()}
                 onClick={() => {
@@ -605,7 +606,7 @@ export default function SuperAdminMemberKra() {
   return (
     <div className="space-y-5 text-[#111827]">
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex rounded-lg bg-[#EDF0F4] p-1">
+        <div className="flex w-full overflow-x-auto rounded-lg bg-[#EDF0F4] p-1 sm:w-auto">
           <button
             onClick={() => setMode("define")}
             className={`rounded-md px-4 py-2 text-sm font-semibold ${mode === "define" ? "bg-white shadow-sm" : "text-[#4B5563]"}`}
@@ -620,7 +621,7 @@ export default function SuperAdminMemberKra() {
           </button>
         </div>
         <Select value={team} onValueChange={setTeam}>
-          <SelectTrigger className="w-40 bg-white">
+          <SelectTrigger className="w-full bg-white sm:w-40">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -631,7 +632,7 @@ export default function SuperAdminMemberKra() {
         </Select>
         <Button
           variant="outline"
-          className="ml-auto"
+          className="w-full sm:ml-auto sm:w-auto"
           disabled={!pending}
           onClick={remindPending}
         >
@@ -684,7 +685,7 @@ export default function SuperAdminMemberKra() {
       ) : (
         <Card className="overflow-hidden border-[#E5E9EF] shadow-none">
           <div className="overflow-x-auto">
-            <Table>
+            <Table className="min-w-[760px]">
               <TableHeader>
                 <TableRow>
                   <TableHead>Date</TableHead>

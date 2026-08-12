@@ -55,7 +55,7 @@ export default function ChecklistsView({ user, onRefresh }) {
         {executions.map((exec) => (
           <Card key={exec.id}>
             <CardHeader className="pb-2">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <CardTitle className="text-base">{exec.template_name} <span className="font-mono text-xs text-muted-foreground ml-2">{exec.human_id}</span></CardTitle>
                 <Badge variant="outline">{fmtDate(exec.date)} · {exec.location}</Badge>
               </div>
@@ -63,14 +63,14 @@ export default function ChecklistsView({ user, onRefresh }) {
             <CardContent className="space-y-1">
               {exec.responses.map((r, idx) => (
                 <div key={idx} className="flex flex-wrap items-center gap-2 rounded-md border p-2">
-                  <span className="text-sm flex-1 min-w-[160px]">{r.item}</span>
+                  <span className="min-w-0 flex-1 text-sm sm:min-w-[160px]">{r.item}</span>
                   {isAdmin ? (
                     <>
                       <Select value={r.status} onValueChange={(v) => setItem(exec, idx, { status: v })}>
-                        <SelectTrigger className="h-8 w-48"><SelectValue /></SelectTrigger>
+                        <SelectTrigger className="h-8 w-full sm:w-48"><SelectValue /></SelectTrigger>
                         <SelectContent>{ITEM_STATUS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
                       </Select>
-                      <Input className="h-8 w-48" placeholder="Remarks" value={r.remarks} onChange={(e) => setItem(exec, idx, { remarks: e.target.value })} />
+                      <Input className="h-8 w-full sm:w-48" placeholder="Remarks" value={r.remarks} onChange={(e) => setItem(exec, idx, { remarks: e.target.value })} />
                       {r.status === 'Issue Identified' && <Button size="sm" variant="outline" onClick={() => toTicket(exec, r)}><Ticket className="h-3.5 w-3.5 mr-1" />Create Ticket</Button>}
                     </>
                   ) : (

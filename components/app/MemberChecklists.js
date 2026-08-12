@@ -30,13 +30,13 @@ export default function MemberChecklists() {
 
   return (
     <Tabs defaultValue="define" className="space-y-4">
-      <TabsList>
+      <TabsList className="h-auto max-w-full justify-start overflow-x-auto">
         <TabsTrigger value="define">Define Checklists</TabsTrigger>
         <TabsTrigger value="tracking">Submission Tracking</TabsTrigger>
       </TabsList>
 
       <TabsContent value="define" className="space-y-4">
-        <div className="flex justify-between items-center">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">Assign daily checklists to IT & Admin members.</p>
           <NewMemberChecklist members={members} onCreated={load} />
         </div>
@@ -46,7 +46,7 @@ export default function MemberChecklists() {
             {lists.filter((l) => l.member_role === role).map((l) => (
               <Card key={l.id}>
                 <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-start justify-between gap-3">
                     <CardTitle className="text-base flex items-center gap-2"><ClipboardList className="h-4 w-4 text-fuchsia-600" />{l.title} <span className="text-sm font-normal text-muted-foreground">— {l.member_name}</span></CardTitle>
                     <Button variant="ghost" size="icon" onClick={() => del(l.id)}><Trash2 className="h-4 w-4 text-red-500" /></Button>
                   </div>
@@ -63,7 +63,7 @@ export default function MemberChecklists() {
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-base">Daily Submissions</CardTitle></CardHeader>
           <CardContent className="p-0">
-            <Table>
+            <Table className="min-w-[680px]">
               <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Member</TableHead><TableHead>Checklist</TableHead><TableHead className="text-center">Completed</TableHead><TableHead>Status</TableHead></TableRow></TableHeader>
               <TableBody>
                 {subs.map((s) => (

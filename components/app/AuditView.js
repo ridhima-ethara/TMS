@@ -11,7 +11,7 @@ export default function AuditView() {
   useEffect(() => { api('/audit').then(setLogs).catch((e) => toast.error(e.message)) }, [])
   return (
     <Card>
-      <Table>
+      <Table className="min-w-[700px]">
         <TableHeader className="sticky top-0 bg-card"><TableRow><TableHead>Time</TableHead><TableHead>Actor</TableHead><TableHead>Role</TableHead><TableHead>Action</TableHead><TableHead>Entity</TableHead></TableRow></TableHeader>
         <TableBody>
           {logs.map((l) => (

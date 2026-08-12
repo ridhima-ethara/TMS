@@ -31,14 +31,14 @@ function AgentWorkload({ tickets }) {
   }, [tickets])
   const max = Math.max(...rows.map((row) => row.open), 1)
   return (
-    <Card className="border-[#E5E9EF] p-6 shadow-none">
+    <Card className="border-[#E5E9EF] p-4 shadow-none sm:p-6">
       <h3 className="mb-4 font-bold">Agent workload</h3>
       <div className="space-y-4">{rows.map((row, index) => (
-        <div key={row.name} className="grid grid-cols-[44px_170px_1fr_auto] items-center gap-3">
+        <div key={row.name} className="grid grid-cols-[40px_minmax(0,1fr)_auto] items-center gap-3 sm:grid-cols-[44px_170px_1fr_auto]">
           <span className={`grid h-10 w-10 place-items-center rounded-full text-sm font-semibold ${index % 2 ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'}`}>{initials(row.name)}</span>
           <span className="font-medium">{row.name}</span>
-          <div className="h-3 overflow-hidden rounded-full bg-[#F4F6F8]"><div className={index % 2 ? 'h-full bg-[#20A377]' : 'h-full bg-[#388AD9]'} style={{ width: `${(row.open / max) * 100}%` }} /></div>
-          <span className="text-sm text-[#4B5563]">{row.open} open · {row.overdue} overdue</span>
+          <div className="col-span-2 col-start-2 h-3 overflow-hidden rounded-full bg-[#F4F6F8] sm:col-auto"><div className={index % 2 ? 'h-full bg-[#20A377]' : 'h-full bg-[#388AD9]'} style={{ width: `${(row.open / max) * 100}%` }} /></div>
+          <span className="col-start-3 row-start-1 whitespace-nowrap text-xs text-[#4B5563] sm:col-auto sm:row-auto sm:text-sm">{row.open} open · {row.overdue} overdue</span>
         </div>
       ))}</div>
     </Card>
@@ -68,7 +68,7 @@ function DepartmentPanel({ department, tickets, onOpenTicket }) {
   const Icon = isIt ? Laptop : Building2
   return (
     <Card className="overflow-hidden border-[#E5E9EF] shadow-none">
-      <div className="flex items-center gap-3 border-b border-[#E5E9EF] px-5 py-4"><Icon className={`h-5 w-5 ${isIt ? 'text-blue-600' : 'text-indigo-600'}`} /><h3 className="text-lg font-bold">{department} department</h3><span className="ml-auto text-sm text-[#4B5563]">{open.length} open · <b className="text-red-700">{overdue.length} overdue</b></span></div>
+      <div className="flex flex-wrap items-center gap-3 border-b border-[#E5E9EF] px-4 py-4 sm:px-5"><Icon className={`h-5 w-5 ${isIt ? 'text-blue-600' : 'text-indigo-600'}`} /><h3 className="text-lg font-bold">{department} department</h3><span className="w-full text-sm text-[#4B5563] sm:ml-auto sm:w-auto">{open.length} open · <b className="text-red-700">{overdue.length} overdue</b></span></div>
       <div className="grid grid-cols-3 border-b border-[#E5E9EF] text-center">{[['Open', open.length], ['Overdue', overdue.length], ['Resolved', resolved.length]].map(([label, value], index) => <div key={label} className={`py-4 ${index < 2 ? 'border-r border-[#E5E9EF]' : ''}`}><p className={`text-2xl font-bold ${label === 'Overdue' ? 'text-red-700' : label === 'Resolved' ? 'text-green-700' : ''}`}>{value}</p><p className="text-sm text-[#85817D]">{label}</p></div>)}</div>
       <div>{open.slice(0, 3).map((ticket) => <button key={ticket.id} onClick={() => onOpenTicket(ticket.id)} className="block w-full border-b border-[#E5E9EF] px-5 py-4 text-left last:border-0 hover:bg-[#FAFBFC]"><p className="font-semibold">{ticket.title}</p><p className="mt-1 text-sm text-[#4B5563]">{ticket.priority} · {ticket.assignee_name || 'Unassigned'} · <span className={slaRemaining(ticket.sla_resolution_due).breach ? 'text-red-700' : ''}>{slaRemaining(ticket.sla_resolution_due).text}</span></p></button>)}</div>
     </Card>
@@ -133,7 +133,7 @@ export default function SuperAdminTickets({ onOpenTicket }) {
 
   return (
     <div className="space-y-5 text-[#111827]">
-      <div className="grid grid-cols-2 gap-6 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 sm:gap-6 lg:grid-cols-4">
         <Kpi label="Open tickets" value={stats.active.length} detail="↗ +3 vs last week" tone="red" />
         <Kpi label="SLA breached" value={stats.overdue.length} detail="oldest active breach" tone="red" />
         <Kpi label="Resolved this week" value={stats.resolved.length} detail="avg 1.9d to close" tone="green" />
@@ -141,15 +141,15 @@ export default function SuperAdminTickets({ onOpenTicket }) {
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[1.65fr_1fr]">
-        <Card className="border-[#E5E9EF] p-6 shadow-none"><h3 className="mb-3 font-bold">Tickets raised vs resolved (14 days)</h3><div className="h-60"><ResponsiveContainer width="100%" height="100%"><LineChart data={trend}><CartesianGrid stroke="#E5E9EF" /><XAxis dataKey="day" /><YAxis allowDecimals={false} /><Tooltip /><Legend /><Line type="monotone" dataKey="Raised" stroke="#388AD9" strokeWidth={2.5} dot={false} /><Line type="monotone" dataKey="Resolved" stroke="#20A377" strokeWidth={2.5} dot={false} /></LineChart></ResponsiveContainer></div></Card>
-        <Card className="border-[#E5E9EF] p-6 shadow-none"><h3 className="mb-3 font-bold">By category</h3><div className="h-60"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={categories} dataKey="value" nameKey="name" innerRadius={55} outerRadius={90}>{categories.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}</Pie><Tooltip /><Legend layout="vertical" align="right" verticalAlign="middle" /></PieChart></ResponsiveContainer></div></Card>
+        <Card className="border-[#E5E9EF] p-4 shadow-none sm:p-6"><h3 className="mb-3 font-bold">Tickets raised vs resolved (14 days)</h3><div className="h-60"><ResponsiveContainer width="100%" height="100%"><LineChart data={trend}><CartesianGrid stroke="#E5E9EF" /><XAxis dataKey="day" /><YAxis allowDecimals={false} /><Tooltip /><Legend /><Line type="monotone" dataKey="Raised" stroke="#388AD9" strokeWidth={2.5} dot={false} /><Line type="monotone" dataKey="Resolved" stroke="#20A377" strokeWidth={2.5} dot={false} /></LineChart></ResponsiveContainer></div></Card>
+        <Card className="border-[#E5E9EF] p-4 shadow-none sm:p-6"><h3 className="mb-3 font-bold">By category</h3><div className="h-60"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={categories} dataKey="value" nameKey="name" innerRadius={55} outerRadius={90}>{categories.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}</Pie><Tooltip /><Legend layout="vertical" align="right" verticalAlign="middle" /></PieChart></ResponsiveContainer></div></Card>
       </div>
 
       <AgentWorkload tickets={periodTickets} />
 
       <div className="grid gap-6 lg:grid-cols-3">{columns.map((column) => <div key={column.title}><h3 className="mb-3 text-base font-semibold text-[#4B5563]">{column.title} <span className="ml-1 rounded-full border px-2 py-0.5 text-xs">{column.rows.length}</span></h3><div className="space-y-3">{column.rows.map((ticket) => <TicketCard key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />)}</div></div>)}</div>
 
-      <div className="flex flex-wrap items-center gap-3 py-2"><Filter className="h-5 w-5 text-[#4B5563]" /><span className="font-semibold text-[#4B5563]">Shared filters:</span><Select value={status} onValueChange={setStatus}><SelectTrigger className="w-44 bg-white"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All statuses</SelectItem><SelectItem value="Open">Open</SelectItem><SelectItem value="In Progress">In progress</SelectItem><SelectItem value="Resolved">Resolved</SelectItem><SelectItem value="Closed">Closed</SelectItem></SelectContent></Select><Select value={category} onValueChange={setCategory}><SelectTrigger className="w-48 bg-white"><SelectValue placeholder="Category" /></SelectTrigger><SelectContent><SelectItem value="all">All categories</SelectItem>{categoryOptions.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><button onClick={() => setOverdueOnly((value) => !value)} className={`rounded-full border px-4 py-2 text-sm ${overdueOnly ? 'border-red-200 bg-red-100 text-red-800' : 'bg-white text-[#4B5563]'}`}>Overdue only {overdueOnly ? '×' : ''}</button><Select value={period} onValueChange={setPeriod}><SelectTrigger className="w-40 rounded-full bg-white"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="week">This week</SelectItem><SelectItem value="30">Last 30 days</SelectItem><SelectItem value="90">Last 90 days</SelectItem><SelectItem value="all">All time</SelectItem></SelectContent></Select></div>
+      <div className="flex flex-wrap items-center gap-3 py-2"><Filter className="h-5 w-5 text-[#4B5563]" /><span className="font-semibold text-[#4B5563]">Shared filters:</span><Select value={status} onValueChange={setStatus}><SelectTrigger className="w-full bg-white sm:w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All statuses</SelectItem><SelectItem value="Open">Open</SelectItem><SelectItem value="In Progress">In progress</SelectItem><SelectItem value="Resolved">Resolved</SelectItem><SelectItem value="Closed">Closed</SelectItem></SelectContent></Select><Select value={category} onValueChange={setCategory}><SelectTrigger className="w-full bg-white sm:w-48"><SelectValue placeholder="Category" /></SelectTrigger><SelectContent><SelectItem value="all">All categories</SelectItem>{categoryOptions.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><button onClick={() => setOverdueOnly((value) => !value)} className={`w-full rounded-full border px-4 py-2 text-sm sm:w-auto ${overdueOnly ? 'border-red-200 bg-red-100 text-red-800' : 'bg-white text-[#4B5563]'}`}>Overdue only {overdueOnly ? '×' : ''}</button><Select value={period} onValueChange={setPeriod}><SelectTrigger className="w-full rounded-full bg-white sm:w-40"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="week">This week</SelectItem><SelectItem value="30">Last 30 days</SelectItem><SelectItem value="90">Last 90 days</SelectItem><SelectItem value="all">All time</SelectItem></SelectContent></Select></div>
 
       <div className="grid gap-5 xl:grid-cols-2"><DepartmentPanel department="IT" tickets={filtered.filter((ticket) => ticket.department === 'IT')} onOpenTicket={onOpenTicket} /><DepartmentPanel department="Admin" tickets={filtered.filter((ticket) => ticket.department === 'Admin')} onOpenTicket={onOpenTicket} /></div>
     </div>

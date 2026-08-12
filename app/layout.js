@@ -4,6 +4,7 @@ import { Providers } from './providers'
 export const metadata = {
   title: 'Ethara Service Hub — IT & Admin Operations',
   description: 'Tickets, approvals, tasks and checklists with SLA and audit trails.',
+  icons: { icon: '/brand/ethara-emblem.png', apple: '/brand/ethara-emblem.png' },
 }
 
 export default function RootLayout({ children }) {

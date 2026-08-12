@@ -95,7 +95,7 @@ function AllocateParking({ members, allocations, onCreated }) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button className="bg-[#131C26] hover:bg-[#1C2836]">
+        <Button className="w-full bg-[#131C26] hover:bg-[#1C2836] sm:w-auto">
           <Plus className="h-4 w-4" />
           Allocate parking
         </Button>
@@ -129,7 +129,7 @@ function AllocateParking({ members, allocations, onCreated }) {
           </div>
           <div>
             <Label>Vehicle type</Label>
-            <div className="mt-2 grid grid-cols-2 gap-3">
+            <div className="mt-2 grid gap-3 sm:grid-cols-2">
               {Object.entries(META).map(([value, item]) => {
                 const Icon = item.Icon;
                 const used = allocations.filter(
@@ -287,15 +287,17 @@ export default function ParkingView() {
             Manage vehicle spaces for members at Tulip.
           </p>
         </div>
-        <AllocateParking
-          members={members}
-          allocations={data.allocations}
-          onCreated={load}
-        />
-        <div className="relative ml-auto">
+        <div className="w-full sm:w-auto">
+          <AllocateParking
+            members={members}
+            allocations={data.allocations}
+            onCreated={load}
+          />
+        </div>
+        <div className="relative w-full sm:ml-auto sm:w-auto">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#9CA3AF]" />
           <Input
-            className="w-64 bg-white pl-9"
+            className="w-full bg-white pl-9 sm:w-64"
             placeholder="Search member or vehicle…"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
@@ -334,12 +336,12 @@ export default function ParkingView() {
       </div>
       <Card className="overflow-hidden border-[#E5E9EF] shadow-none">
         <div className="flex flex-wrap items-center gap-4 border-b bg-gradient-to-r from-white to-[#FAFBFC] p-5">
-          <div className="flex rounded-lg bg-[#EDF0F4] p-1 sm:w-fit">
+          <div className="flex w-full overflow-x-auto rounded-lg bg-[#EDF0F4] p-1 sm:w-fit">
             {Object.entries(META).map(([value, item]) => (
               <button
                 key={value}
                 onClick={() => setType(value)}
-                className={`relative rounded-md px-5 py-2 text-sm font-semibold transition-all duration-300 ${type === value ? "scale-[1.02] bg-white text-[#111827] shadow-sm ring-1 ring-[#E5E9EF]" : "text-[#4B5563] hover:bg-white/60"}`}
+                className={`relative flex-1 whitespace-nowrap rounded-md px-3 py-2 text-sm font-semibold transition-all duration-300 sm:px-5 ${type === value ? "scale-[1.02] bg-white text-[#111827] shadow-sm ring-1 ring-[#E5E9EF]" : "text-[#4B5563] hover:bg-white/60"}`}
               >
                 {item.label} ·{" "}
                 {
@@ -350,7 +352,7 @@ export default function ParkingView() {
               </button>
             ))}
           </div>
-          <div className="ml-auto min-w-52">
+          <div className="w-full sm:ml-auto sm:min-w-52 sm:w-auto">
             <div className="mb-1 flex justify-between text-xs">
               <span className="font-semibold text-[#4B5563]">Occupancy</span>
               <span className={meta.color}>{occupancy}%</span>
@@ -454,7 +456,7 @@ export default function ParkingView() {
           <h3 className="font-bold">Vehicle allocations</h3>
         </div>
         <div className="overflow-x-auto">
-          <Table>
+          <Table className="min-w-[760px]">
             <TableHeader>
               <TableRow>
                 <TableHead>Slot</TableHead>

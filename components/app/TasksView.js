@@ -26,12 +26,12 @@ export default function TasksView({ user }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">{tasks.length} operational tasks</p>
         {isAdmin && <NewTask onCreated={load} />}
       </div>
       <Card>
-        <Table>
+        <Table className="min-w-[860px]">
           <TableHeader><TableRow><TableHead>ID</TableHead><TableHead>Task</TableHead><TableHead>Category</TableHead><TableHead>Location</TableHead><TableHead>Recurrence</TableHead><TableHead>Status</TableHead><TableHead>Remarks</TableHead></TableRow></TableHeader>
           <TableBody>
             {tasks.map((t) => (
@@ -74,7 +74,7 @@ function NewTask({ onCreated }) {
         <DialogHeader><DialogTitle>New Operational Task</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1"><Label className="text-xs">Title</Label><Input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1"><Label className="text-xs">Category</Label><Input value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })} /></div>
             <div className="space-y-1"><Label className="text-xs">Location</Label>
               <Select value={f.location} onValueChange={(v) => setF({ ...f, location: v })}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="HQ1">HQ1</SelectItem><SelectItem value="HQ2">HQ2</SelectItem><SelectItem value="301">301</SelectItem></SelectContent></Select>

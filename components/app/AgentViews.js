@@ -91,7 +91,7 @@ function AgentKpis({ tickets, stats }) {
     ? slaRemaining(oldest.sla_resolution_due).text.replace("Overdue ", "")
     : "—";
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
       {[
         [
           "Assigned to me",
@@ -112,7 +112,13 @@ function AgentKpis({ tickets, stats }) {
           "text-[#2E7CD6]",
         ],
         [
-          "SLA met",
+          "Response SLA",
+          `${stats.response_sla_compliance}%`,
+          "target 80%",
+          stats.response_sla_compliance >= 80 ? "text-[#1E9E6A]" : "text-[#DC3D3D]",
+        ],
+        [
+          "Resolution SLA",
           `${stats.sla_compliance}%`,
           "target 80%",
           stats.sla_compliance >= 80 ? "text-[#1E9E6A]" : "text-[#DC3D3D]",
@@ -235,7 +241,7 @@ function QueueCategories({ tickets, accent }) {
           return (
             <div
               key={category}
-              className="grid grid-cols-[110px_1fr_18px] items-center gap-3 text-xs"
+              className="grid grid-cols-[84px_1fr_18px] items-center gap-2 text-xs sm:grid-cols-[110px_1fr_18px] sm:gap-3"
             >
               <span className="truncate text-[#4B5563]">{category}</span>
               <div className="flex h-2 overflow-hidden rounded-full bg-[#EDF0F4]">
@@ -313,8 +319,9 @@ function AgentWeek({ tickets, accent, soft }) {
           </button>
         </div>
       </div>
+      <div className={calendarView === "month" ? "overflow-x-auto pb-2" : ""}>
       {calendarView === "month" && (
-        <div className="mb-2 grid grid-cols-7 gap-2">
+        <div className="mb-2 grid min-w-[680px] grid-cols-7 gap-2">
           {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((label) => (
             <span
               key={label}
@@ -326,7 +333,7 @@ function AgentWeek({ tickets, accent, soft }) {
         </div>
       )}
       <div
-        className={`grid grid-cols-2 gap-2 sm:grid-cols-4 ${calendarView === "month" ? "lg:grid-cols-7" : "xl:grid-cols-7"}`}
+        className={`grid gap-2 ${calendarView === "month" ? "min-w-[680px] grid-cols-7" : "grid-cols-1 sm:grid-cols-4 xl:grid-cols-7"}`}
       >
         {days.map((date) => {
           const today = dayKey(date) === dayKey(now);
@@ -393,6 +400,7 @@ function AgentWeek({ tickets, accent, soft }) {
             </button>
           );
         })}
+      </div>
       </div>
       <Dialog
         open={!!selectedDay}
@@ -613,7 +621,7 @@ function RaiseAgentTicket({ user, onCreated }) {
               }
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <Label>Category</Label>
               <Select
@@ -897,7 +905,7 @@ export function AgentTickets({ user, onOpenTicket }) {
   return (
     <div className="space-y-4 text-[#111827]">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex rounded-lg bg-[#EDF0F4] p-1">
+        <div className="flex w-full overflow-x-auto rounded-lg bg-[#EDF0F4] p-1 sm:w-auto">
           <button
             onClick={() => setScope("mine")}
             className={`rounded-md px-4 py-2 text-sm font-semibold ${scope === "mine" ? "bg-white shadow-sm" : "text-[#4B5563]"}`}
@@ -924,17 +932,17 @@ export function AgentTickets({ user, onOpenTicket }) {
             {label}
           </button>
         ))}
-        <div className="relative ml-2">
+        <div className="relative w-full sm:ml-2 sm:w-auto">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#9CA3AF]" />
           <Input
-            className="w-56 bg-white pl-9"
+            className="w-full bg-white pl-9 sm:w-56"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search id, title…"
           />
         </div>
         <Select value={category} onValueChange={setCategory}>
-          <SelectTrigger className="ml-auto w-44 bg-white">
+          <SelectTrigger className="w-full bg-white sm:ml-auto sm:w-44">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -947,7 +955,7 @@ export function AgentTickets({ user, onOpenTicket }) {
           </SelectContent>
         </Select>
         <Select value={priority} onValueChange={setPriority}>
-          <SelectTrigger className="w-36 bg-white">
+          <SelectTrigger className="w-full bg-white sm:w-36">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -1212,8 +1220,8 @@ function TodayChecklist({ list, onSubmitted }) {
     }
   };
   return (
-    <Card className="border-[#E5E9EF] p-5 shadow-none">
-      <div className="flex items-center gap-2">
+    <Card className="border-[#E5E9EF] p-4 shadow-none sm:p-5">
+      <div className="flex flex-wrap items-center gap-2">
         <h3 className="font-bold">
           ☑ {list.title} —{" "}
           {new Date().toLocaleDateString("en-GB", {
@@ -1262,12 +1270,12 @@ function TodayChecklist({ list, onSubmitted }) {
                   }
                 />
                 <span
-                  className={`min-w-52 flex-1 text-sm ${row.done ? "text-[#9CA3AF] line-through" : "font-medium"}`}
+                  className={`min-w-0 flex-1 text-sm sm:min-w-52 ${row.done ? "text-[#9CA3AF] line-through" : "font-medium"}`}
                 >
                   {row.item}
                 </span>
                 <Input
-                  className="h-8 w-52"
+                  className="h-8 w-full sm:w-52"
                   placeholder="Remark (optional)"
                   value={row.remark}
                   onChange={(event) =>
@@ -1313,12 +1321,12 @@ function TodayChecklist({ list, onSubmitted }) {
                   }
                 />
                 <span
-                  className={`min-w-52 flex-1 text-sm ${row.done ? "text-[#9CA3AF] line-through" : "font-medium"}`}
+                  className={`min-w-0 flex-1 text-sm sm:min-w-52 ${row.done ? "text-[#9CA3AF] line-through" : "font-medium"}`}
                 >
                   {row.item}
                 </span>
                 <Input
-                  className="h-8 w-52 bg-white"
+                  className="h-8 w-full bg-white sm:w-52"
                   placeholder="Remark (optional)"
                   value={row.remark || ""}
                   onChange={(event) =>
@@ -1344,7 +1352,7 @@ function TodayChecklist({ list, onSubmitted }) {
               </div>
             ),
         )}
-        <div className="mt-3 flex gap-2">
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
           <Input
             className="bg-white"
             placeholder="Add a task for today"
@@ -1387,18 +1395,18 @@ function TodayChecklist({ list, onSubmitted }) {
           </Button>
         </div>
       </div>
-      <div className="mt-4 flex items-center gap-2 border-t pt-4">
-        <span className="text-xs text-[#9CA3AF]">
+      <div className="mt-4 flex flex-wrap items-center gap-2 border-t pt-4">
+        <span className="w-full text-xs text-[#9CA3AF] sm:w-auto">
           Submit before the 6:00 PM cut-off
         </span>
         <Button
           variant="outline"
-          className="ml-auto"
+          className="w-full sm:ml-auto sm:w-auto"
           onClick={() => toast.success("Draft saved locally")}
         >
           Save draft
         </Button>
-        <Button className="bg-[#131C26] hover:bg-[#1C2836]" onClick={submit}>
+        <Button className="w-full bg-[#131C26] hover:bg-[#1C2836] sm:w-auto" onClick={submit}>
           Submit checklist
         </Button>
       </div>
@@ -1428,17 +1436,17 @@ export function AgentKra({ user }) {
   }, []);
   return (
     <div className="space-y-4 text-[#111827]">
-      <div className="flex items-center">
-        <div className="flex rounded-lg bg-[#EDF0F4] p-1">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex w-full rounded-lg bg-[#EDF0F4] p-1 sm:w-auto">
           <button
             onClick={() => setMode("today")}
-            className={`rounded-md px-5 py-2 text-sm font-semibold ${mode === "today" ? "bg-white shadow-sm" : "text-[#4B5563]"}`}
+            className={`flex-1 rounded-md px-5 py-2 text-sm font-semibold ${mode === "today" ? "bg-white shadow-sm" : "text-[#4B5563]"}`}
           >
             Today
           </button>
           <button
             onClick={() => setMode("submissions")}
-            className={`rounded-md px-5 py-2 text-sm font-semibold ${mode === "submissions" ? "bg-white shadow-sm" : "text-[#4B5563]"}`}
+            className={`flex-1 rounded-md px-5 py-2 text-sm font-semibold ${mode === "submissions" ? "bg-white shadow-sm" : "text-[#4B5563]"}`}
           >
             Submissions
           </button>
@@ -1553,7 +1561,7 @@ function SubmissionHistory({
         </div>
         <Input
           type="month"
-          className="ml-auto w-44 bg-white"
+          className="w-full bg-white sm:ml-auto sm:w-44"
           value={month}
           onChange={(event) => {
             setMonth(event.target.value);
@@ -1584,7 +1592,7 @@ function SubmissionHistory({
         {rows.slice(0, visibleCount).map((submission) => (
           <div key={submission.id} className="border-b last:border-0">
             <button
-              className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-[#FAFBFC]"
+              className="flex w-full flex-wrap items-center gap-3 px-4 py-4 text-left hover:bg-[#FAFBFC] sm:flex-nowrap sm:gap-4 sm:px-5"
               onClick={() =>
                 setExpanded(expanded === submission.id ? null : submission.id)
               }

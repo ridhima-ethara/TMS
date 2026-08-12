@@ -1,7 +1,18 @@
 const nextConfig = {
   output: 'standalone',
+  outputFileTracingRoot: __dirname,
   images: {
     unoptimized: true,
+    localPatterns: [
+      {
+        pathname: '/brand/ethara-mark-animation.svg',
+        search: '?ctx=signin',
+      },
+      {
+        pathname: '/brand/ethara-mark-animation.svg',
+        search: '?ctx=register',
+      },
+    ],
     remotePatterns: [
       { protocol: 'https', hostname: 'avatars.githubusercontent.com', pathname: '/**' },
     ],
@@ -28,11 +39,12 @@ const nextConfig = {
       {
         source: "/(.*)",
         headers: [
-          { key: "X-Frame-Options", value: "ALLOWALL" },
-          { key: "Content-Security-Policy", value: "frame-ancestors *;" },
-          { key: "Access-Control-Allow-Origin", value: process.env.CORS_ORIGINS || "*" },
-          { key: "Access-Control-Allow-Methods", value: "GET, POST, PUT, DELETE, OPTIONS" },
-          { key: "Access-Control-Allow-Headers", value: "*" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'; object-src 'none'; base-uri 'self';" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
         ],
       },
     ];

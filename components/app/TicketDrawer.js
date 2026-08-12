@@ -9,6 +9,8 @@ import {
   fmtDateTime,
   fmtDate,
   slaRemaining,
+  formatWorkingMinutes,
+  fmtWorkingDuration,
 } from "@/lib/appapi";
 import {
   Sheet,
@@ -30,6 +32,9 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
+import AttachmentUpload, {
+  AttachmentList,
+} from "@/components/app/AttachmentUpload";
 import { toast } from "sonner";
 import {
   Loader2,
@@ -38,7 +43,6 @@ import {
   Clock,
   FileCheck2,
   CheckCircle2,
-  RotateCcw,
   Star,
 } from "lucide-react";
 
@@ -60,6 +64,7 @@ export default function TicketDrawer({
   const [comment, setComment] = useState("");
   const [commentType, setCommentType] = useState("public");
   const isStaff = ["it", "admin", "super_admin"].includes(user.role);
+  const isTerminal = ["Resolved", "Closed", "Cancelled"].includes(t?.status);
   const deptUsers = users.filter((u) =>
     t?.department === "Admin" ? u.role === "admin" : u.role === "it",
   );
@@ -119,14 +124,14 @@ export default function TicketDrawer({
         if (!o) onClose();
       }}
     >
-      <SheetContent className="w-full sm:max-w-2xl overflow-y-auto p-0">
+      <SheetContent className="w-full overflow-y-auto p-0 sm:max-w-2xl">
         {loading || !t ? (
           <div className="flex h-full items-center justify-center">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         ) : (
           <div className="flex flex-col">
-            <SheetHeader className="p-5 border-b bg-muted/30">
+            <SheetHeader className="border-b bg-muted/30 p-4 sm:p-5">
               <div className="flex items-center gap-2 flex-wrap">
                 <Badge variant="outline" className="font-mono">
                   {t.human_id}
@@ -148,8 +153,8 @@ export default function TicketDrawer({
               </p>
             </SheetHeader>
 
-            <Tabs defaultValue="details" className="p-5">
-              <TabsList className="grid grid-cols-4 w-full">
+            <Tabs defaultValue="details" className="p-4 sm:p-5">
+              <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-4">
                 <TabsTrigger value="details">Details</TabsTrigger>
                 <TabsTrigger value="timeline">
                   <Clock className="h-3.5 w-3.5 mr-1" />
@@ -172,9 +177,116 @@ export default function TicketDrawer({
                 <p className="text-sm whitespace-pre-wrap">
                   {t.description || "No description."}
                 </p>
-                <div className="grid grid-cols-2 gap-3 text-sm">
+                {t.attachments?.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium">Ticket evidence</p>
+                    <AttachmentList attachments={t.attachments} />
+                  </div>
+                )}
+                <div className="rounded-xl border bg-slate-50/70 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold">Business-hours SLA</p>
+                      <p className="text-xs text-muted-foreground">
+                        {t.sla_policy?.working_days || "Monday-Friday"} ·{" "}
+                        {t.sla_policy?.working_hours || "10:00-19:00"} · Asia/Kolkata
+                      </p>
+                    </div>
+                    <div className="flex gap-2 text-xs">
+                      <Badge variant="outline">
+                        Response {t.sla_policy?.response_hours || "-"}h
+                      </Badge>
+                      <Badge variant="outline">
+                        Resolution {t.sla_policy?.resolution_hours || "-"}h
+                      </Badge>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <div className="rounded-lg border bg-white p-2.5">
+                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        Response / acknowledgement
+                      </p>
+                      <ResponseSlaText
+                        due={t.sla_response_due}
+                        respondedAt={t.acknowledged_at || t.first_response_at}
+                        createdAt={t.raised_at || t.created_at}
+                        status={t.status}
+                      />
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Due {fmtDateTime(t.sla_response_due)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border bg-white p-2.5">
+                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        Resolution
+                      </p>
+                      <ResolutionSlaText
+                        due={t.sla_resolution_due}
+                        resolvedAt={t.resolved_at || t.resolution?.resolved_date}
+                        createdAt={t.raised_at || t.created_at}
+                        status={t.status}
+                      />
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Due {fmtDateTime(t.sla_resolution_due)}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="mb-2 text-sm font-medium">Lifecycle timestamps</p>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                    <LifecycleStage
+                      label="Raised"
+                      at={t.raised_at || t.created_at}
+                      actor={t.raised_by_name}
+                    />
+                    <LifecycleStage
+                      label="Allocated"
+                      at={t.assigned_at}
+                      actor={t.assigned_by_name}
+                    />
+                    <LifecycleStage
+                      label="Acknowledged"
+                      at={t.acknowledged_at || t.first_response_at}
+                      actor={t.acknowledged_by_name || t.first_response_by_name}
+                    />
+                    <LifecycleStage
+                      label="Work started"
+                      at={t.work_started_at}
+                      actor={t.work_started_by_name || t.assignee_name}
+                    />
+                    <LifecycleStage
+                      label="Resolved"
+                      at={t.resolved_at || t.resolution?.resolved_date}
+                      actor={t.resolved_by_name || t.resolution?.resolved_by}
+                    />
+                    <LifecycleStage
+                      label="Closed"
+                      at={t.closed_at || (t.confirmation?.confirmed ? t.confirmation.at : null)}
+                      actor={t.closed_by_name}
+                    />
+                  </div>
+                  {t.work_started_at && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Member working time:{" "}
+                      {t.member_working_minutes != null
+                        ? formatWorkingMinutes(t.member_working_minutes)
+                        : fmtWorkingDuration(
+                            t.work_started_at,
+                            t.resolved_at ||
+                              t.resolution?.resolved_date ||
+                              new Date(),
+                          )}
+                    </p>
+                  )}
+                </div>
+                <div className="grid gap-3 text-sm sm:grid-cols-2">
                   <Info label="Raised by" value={t.raised_by_name} />
-                  <Info label="Raised for" value={t.raised_for_name} />
+                  <Info
+                    label="Issue owner"
+                    value={t.issue_user_name || t.raised_for_name}
+                  />
                   <Info label="Employee ID" value={t.employee_id} />
                   <Info label="Email" value={t.email} />
                   <Info
@@ -184,12 +296,24 @@ export default function TicketDrawer({
                   <Info label="Created" value={fmtDateTime(t.created_at)} />
                   <Info
                     label="Response SLA"
-                    value={fmtDate(t.sla_response_due)}
+                    value={
+                      <ResponseSlaText
+                        due={t.sla_response_due}
+                        respondedAt={t.acknowledged_at || t.first_response_at}
+                        createdAt={t.raised_at || t.created_at}
+                        status={t.status}
+                      />
+                    }
                   />
                   <Info
                     label="Resolution SLA"
                     value={
-                      <SlaText due={t.sla_resolution_due} status={t.status} />
+                      <ResolutionSlaText
+                        due={t.sla_resolution_due}
+                        resolvedAt={t.resolved_at || t.resolution?.resolved_date}
+                        createdAt={t.raised_at || t.created_at}
+                        status={t.status}
+                      />
                     }
                   />
                 </div>
@@ -244,10 +368,20 @@ export default function TicketDrawer({
                   </div>
                 )}
 
+                {isTerminal && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                    <p className="font-medium">Final ticket</p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Resolved and closed tickets cannot be reopened, reassigned,
+                      or returned to an active status.
+                    </p>
+                  </div>
+                )}
+
                 <Separator />
 
                 {/* STAFF ACTIONS */}
-                {isStaff && (
+                {isStaff && !isTerminal && (
                   <div className="space-y-3">
                     <p className="text-sm font-medium">Actions</p>
                     <Bar>
@@ -262,7 +396,7 @@ export default function TicketDrawer({
                             )
                           }
                         >
-                          <SelectTrigger className="w-44 h-9">
+                          <SelectTrigger className="h-9 w-full sm:w-44">
                             <SelectValue placeholder="Assign" />
                           </SelectTrigger>
                           <SelectContent>
@@ -287,7 +421,7 @@ export default function TicketDrawer({
                             patch({ priority: v }, "Priority updated")
                           }
                         >
-                          <SelectTrigger className="w-32 h-9">
+                          <SelectTrigger className="h-9 w-full sm:w-32">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -307,7 +441,7 @@ export default function TicketDrawer({
                             patch({ status: v }, "Status updated")
                           }
                         >
-                          <SelectTrigger className="w-56 h-9">
+                          <SelectTrigger className="h-9 w-full sm:w-56">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -416,7 +550,7 @@ export default function TicketDrawer({
                 <div className="space-y-2">
                   {isStaff && (
                     <Select value={commentType} onValueChange={setCommentType}>
-                      <SelectTrigger className="w-40 h-8">
+                      <SelectTrigger className="h-8 w-full sm:w-40">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -474,6 +608,19 @@ function Info({ label, value }) {
     </div>
   );
 }
+function LifecycleStage({ label, at, actor }) {
+  return (
+    <div className={`rounded-lg border p-2.5 ${at ? "bg-white" : "bg-muted/30"}`}>
+      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-0.5 text-sm font-medium">{fmtDateTime(at)}</p>
+      <p className="truncate text-xs text-muted-foreground">
+        {at ? actor || "System" : "Pending"}
+      </p>
+    </div>
+  );
+}
 function SlaText({ due, status }) {
   if (["Resolved", "Closed", "Cancelled"].includes(status))
     return <span>{fmtDate(due)}</span>;
@@ -485,6 +632,45 @@ function SlaText({ due, status }) {
       {s.text}
     </span>
   );
+}
+
+function ResponseSlaText({ due, respondedAt, createdAt, status }) {
+  if (respondedAt) {
+    const met = !due || new Date(respondedAt) <= new Date(due);
+    const elapsed = createdAt
+      ? fmtWorkingDuration(createdAt, respondedAt)
+      : null;
+    return (
+      <span className={met ? "font-semibold text-emerald-600" : "font-semibold text-red-600"}>
+        {met ? "Met" : "Breached"}{elapsed ? ` · ${elapsed}` : ""}
+      </span>
+    );
+  }
+  if (["Resolved", "Closed", "Cancelled"].includes(status))
+    return <span className="font-semibold text-red-600">No response recorded</span>;
+  return <SlaText due={due} status={status} />;
+}
+
+function ResolutionSlaText({ due, resolvedAt, createdAt, status }) {
+  if (resolvedAt) {
+    const met = !due || new Date(resolvedAt) <= new Date(due);
+    const elapsed = createdAt
+      ? fmtWorkingDuration(createdAt, resolvedAt)
+      : null;
+    return (
+      <span
+        className={
+          met
+            ? "font-semibold text-emerald-600"
+            : "font-semibold text-red-600"
+        }
+      >
+        {met ? "Met" : "Breached"}
+        {elapsed ? ` · ${elapsed}` : ""}
+      </span>
+    );
+  }
+  return <SlaText due={due} status={status} />;
 }
 
 function ResolveForm({ onSubmit, disabled }) {
@@ -513,7 +699,7 @@ function ResolveForm({ onSubmit, disabled }) {
         rows={2}
         placeholder="What was done"
       />
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid gap-2 sm:grid-cols-2">
         <Input
           value={action}
           onChange={(e) => setAction(e.target.value)}
@@ -554,7 +740,7 @@ function ConfirmForm({ ticketId, onDone }) {
         method: "POST",
         body: { action, rating, comment },
       });
-      toast.success(action === "confirm" ? "Confirmed & closed" : "Reopened");
+      toast.success("Confirmed & closed");
       onDone();
     } catch (e) {
       toast.error(e.message);
@@ -587,15 +773,6 @@ function ConfirmForm({ ticketId, onDone }) {
           <CheckCircle2 className="h-4 w-4 mr-1" />
           Confirm & close
         </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={busy}
-          onClick={() => act("reopen")}
-        >
-          <RotateCcw className="h-4 w-4 mr-1" />
-          Reopen
-        </Button>
       </div>
     </div>
   );
@@ -614,6 +791,7 @@ function ApprovalSection({ t, user, onChanged }) {
     required_by: "",
   });
   const [busy, setBusy] = useState(false);
+  const [attachments, setAttachments] = useState([]);
   const [decision, setDecision] = useState({
     decision: "approve",
     remarks: "",
@@ -625,8 +803,13 @@ function ApprovalSection({ t, user, onChanged }) {
     try {
       await api(`/tickets/${t.id}/approval/submit`, {
         method: "POST",
-        body: { ...form, requested_amount: Number(form.requested_amount) || 0 },
+        body: {
+          ...form,
+          requested_amount: Number(form.requested_amount) || 0,
+          attachment_ids: attachments.map((item) => item.id),
+        },
       });
+      setAttachments([]);
       toast.success("Submitted for approval");
       onChanged();
     } catch (e) {
@@ -659,11 +842,16 @@ function ApprovalSection({ t, user, onChanged }) {
 
   // IT/Admin: prepare & submit (dept-scoped; when no approval or clarification/rejected)
   const canPrepare =
+    !["Resolved", "Closed", "Cancelled"].includes(t.status) &&
     ((user.role === "admin" && t.department === "Admin") ||
       (user.role === "it" && t.department === "IT")) &&
     (!a || a.status === "Clarification" || a.status === "Rejected");
   // Super admin decision
-  const canDecide = user.role === "super_admin" && a && a.status === "Pending";
+  const canDecide =
+    !["Resolved", "Closed", "Cancelled"].includes(t.status) &&
+    user.role === "super_admin" &&
+    a &&
+    a.status === "Pending";
 
   return (
     <div className="space-y-4">
@@ -679,7 +867,7 @@ function ApprovalSection({ t, user, onChanged }) {
             <span className="text-muted-foreground">Justification:</span>{" "}
             {a.justification}
           </p>
-          <div className="grid grid-cols-2 gap-1">
+          <div className="grid gap-1 sm:grid-cols-2">
             <p>
               <span className="text-muted-foreground">Requested:</span> ₹
               {a.requested_amount}
@@ -709,6 +897,12 @@ function ApprovalSection({ t, user, onChanged }) {
               {a.decision_remarks}
             </p>
           )}
+          {a.attachments?.length > 0 && (
+            <div className="mt-3 border-t pt-3">
+              <p className="mb-2 text-xs font-medium">Approval documents</p>
+              <AttachmentList attachments={a.attachments} />
+            </div>
+          )}
           {(a.history || []).length > 0 && (
             <div className="mt-2 border-t pt-2">
               <p className="text-xs font-medium mb-1">Approval history</p>
@@ -734,7 +928,7 @@ function ApprovalSection({ t, user, onChanged }) {
               setForm({ ...form, justification: e.target.value })
             }
           />
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid gap-2 sm:grid-cols-2">
             <Input
               placeholder="Requested amount (₹)"
               type="number"
@@ -778,6 +972,14 @@ function ApprovalSection({ t, user, onChanged }) {
             value={form.risk}
             onChange={(e) => setForm({ ...form, risk: e.target.value })}
           />
+          <div className="space-y-1">
+            <Label className="text-xs">Proof or reference documents</Label>
+            <AttachmentUpload
+              value={attachments}
+              onChange={setAttachments}
+              disabled={busy}
+            />
+          </div>
           <Button
             size="sm"
             disabled={busy || !form.justification}

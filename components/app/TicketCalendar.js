@@ -56,10 +56,11 @@ export default function TicketCalendar({ tickets = [], onOpenTicket }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-7 gap-1 text-center text-xs text-muted-foreground">
+      <div className="overflow-x-auto pb-2">
+      <div className="grid min-w-[560px] grid-cols-7 gap-1 text-center text-xs text-muted-foreground">
         {WD.map((w) => <div key={w} className="py-1 font-medium">{w}</div>)}
       </div>
-      <div className="grid grid-cols-7 gap-1">
+      <div className="grid min-w-[560px] grid-cols-7 gap-1">
         {cells.map((d, i) => {
           if (!d) return <div key={i} />
           const list = byDay[d] || []
@@ -82,6 +83,7 @@ export default function TicketCalendar({ tickets = [], onOpenTicket }) {
           )
         })}
       </div>
+      </div>
 
       <div className="flex flex-wrap gap-3 text-xs text-muted-foreground pt-1">
         {['Critical', 'High', 'Medium', 'Low'].map((p) => (
@@ -94,7 +96,7 @@ export default function TicketCalendar({ tickets = [], onOpenTicket }) {
           <p className="text-sm font-medium mb-1">{selList.length} ticket(s) on {new Date(year, month, selected).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}</p>
           {selList.length === 0 && <p className="text-sm text-muted-foreground">No tickets.</p>}
           {selList.map((t) => (
-            <button key={t.id} onClick={() => onOpenTicket(t.id)} className="w-full flex items-center justify-between gap-2 rounded-md border p-2 text-left hover:bg-muted/50">
+            <button key={t.id} onClick={() => onOpenTicket(t.id)} className="flex w-full flex-col gap-2 rounded-md border p-2 text-left hover:bg-muted/50 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-2 min-w-0">
                 <span className="font-mono text-xs text-muted-foreground shrink-0">{t.human_id}</span>
                 <span className="truncate text-sm">{t.title}</span>

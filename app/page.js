@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 import { useCallback, useEffect, useState } from "react";
 import { api, ROLE_LABEL } from "@/lib/appapi";
 import Login from "@/components/app/Login";
@@ -15,6 +16,7 @@ import SuperAdminTickets from "@/components/app/SuperAdminTickets";
 import ApprovalsView from "@/components/app/ApprovalsView";
 import ParkingView from "@/components/app/ParkingView";
 import SettingsView from "@/components/app/SettingsView";
+import FirewallView from "@/components/app/FirewallView";
 import {
   AgentDashboard,
   AgentKra,
@@ -47,6 +49,7 @@ import {
   Users,
   Car,
   Settings,
+  Shield,
 } from "lucide-react";
 
 const NAV = {
@@ -59,6 +62,7 @@ const NAV = {
     { k: "tickets", label: "IT Tickets", icon: Ticket },
     { k: "approvals", label: "Approvals", icon: FileCheck2 },
     { k: "mychecklist", label: "My KRA", icon: ClipboardCheck },
+    { k: "firewall", label: "Firewall Utilization", icon: Shield },
   ],
   admin: [
     { k: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -66,6 +70,7 @@ const NAV = {
     { k: "approvals", label: "Approvals", icon: FileCheck2 },
     { k: "mychecklist", label: "My KRA", icon: ClipboardCheck },
     { k: "parking", label: "Parking", icon: Car },
+    { k: "firewall", label: "Firewall Utilization", icon: Shield },
   ],
   super_admin: [
     { k: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -74,6 +79,7 @@ const NAV = {
     { k: "member-checklists", label: "Member KRA", icon: Users },
     { k: "parking", label: "Parking", icon: Car },
     { k: "settings", label: "Settings", icon: Settings },
+    { k: "firewall", label: "Firewall Utilization", icon: Shield },
     { k: "audit", label: "Audit Logs", icon: ScrollText },
   ],
 };
@@ -92,7 +98,6 @@ export default function App() {
 
   const boot = useCallback(async () => {
     try {
-      await api("/seed", { method: "POST" });
       const { user } = await api("/auth/me");
       if (user) setUser(user);
     } catch (e) {
@@ -161,14 +166,15 @@ export default function App() {
     "member-checklists": "Member KRA",
     parking: "Tulip Parking",
     settings: "Member Settings",
+    firewall: "Firewall Utilization",
     audit: "Audit Logs",
   };
 
   const Sidebar = () => (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-[#E5E9EF] bg-white text-[#4B5563] shadow-[8px_0_28px_rgba(17,24,39,.04)]">
+    <aside className="dashboard-sidebar flex w-[min(16rem,calc(100vw-2rem))] shrink-0 flex-col border-r border-[#E5E9EF] bg-white text-[#4B5563] shadow-[8px_0_28px_rgba(17,24,39,.04)] md:w-64">
       <div className="flex h-16 items-center gap-3 border-b border-[#E5E9EF] px-5 text-lg font-semibold text-[#111827]">
-        <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-fuchsia-200 bg-fuchsia-50 shadow-sm">
-          <Ticket className="h-5 w-5 text-[#ee00ee]" />
+        <span className="brand-emblem-frame flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#DDE8E3] bg-white shadow-sm">
+          <Image src="/brand/ethara-emblem.png" alt="" width={36} height={36} priority className="brand-emblem h-9 w-9 object-contain" aria-hidden="true" />
         </span>
         <span>
           Ethara <span className="text-[#ee00ee]">Service Hub</span>
@@ -185,7 +191,7 @@ export default function App() {
                 setView(n.k);
                 setSidebarOpen(false);
               }}
-              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all ${active ? "bg-fuchsia-50 text-[#9D139D] shadow-[inset_3px_0_0_#ee00ee]" : "text-[#4B5563] hover:bg-[#F4F6F8] hover:text-[#111827]"}`}
+              className={`dashboard-nav-item flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all ${active ? "bg-fuchsia-50 text-[#9D139D] shadow-[inset_3px_0_0_#ee00ee]" : "text-[#4B5563] hover:bg-[#F4F6F8] hover:text-[#111827]"}`}
             >
               <Icon className="h-4 w-4" />
               {n.label}
@@ -208,18 +214,18 @@ export default function App() {
       {sidebarOpen && (
         <div className="fixed inset-0 z-40 md:hidden">
           <div
-            className="absolute inset-0 bg-black/40"
+            className="dashboard-mobile-backdrop absolute inset-0 bg-black/40"
             onClick={() => setSidebarOpen(false)}
           />
-          <div className="relative z-50 flex h-full">
+          <div className="dashboard-mobile-sidebar relative z-50 flex h-full">
             <Sidebar />
           </div>
         </div>
       )}
 
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="min-h-16 border-b border-[#e5e7f0] bg-white/90 backdrop-blur-xl flex items-center justify-between px-4 py-3 md:px-7 sticky top-0 z-30">
-          <div className="flex items-center gap-3">
+        <header className="sticky top-0 z-30 flex min-h-16 items-center justify-between gap-2 border-b border-[#e5e7f0] bg-white/90 px-2 py-2 backdrop-blur-xl sm:px-4 sm:py-3 md:px-7">
+          <div className="flex min-w-0 items-center gap-1 sm:gap-3">
             <Button
               variant="ghost"
               size="icon"
@@ -228,16 +234,16 @@ export default function App() {
             >
               <Menu className="h-5 w-5" />
             </Button>
-            <div>
-              <h1 className="text-xl font-bold text-[#0b0e14]">
+            <div className="min-w-0">
+              <h1 className="truncate text-base font-bold text-[#0b0e14] sm:text-xl">
                 {titleMap[view] || "Dashboard"}
               </h1>
-              <p className="text-xs text-[#697087]">
+              <p className="hidden text-xs text-[#697087] sm:block">
                 Ethara IT &amp; Admin Operations
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex shrink-0 items-center gap-1 sm:gap-3">
             <Popover
               onOpenChange={(o) => {
                 if (o && unread) markRead();
@@ -253,7 +259,7 @@ export default function App() {
                   )}
                 </Button>
               </PopoverTrigger>
-              <PopoverContent align="end" className="w-80 p-0">
+              <PopoverContent align="end" className="w-[calc(100vw-1rem)] max-w-80 p-0">
                 <div className="p-3 font-medium text-sm border-b">
                   Notifications
                 </div>
@@ -284,7 +290,7 @@ export default function App() {
               </PopoverContent>
             </Popover>
             <div className="flex items-center gap-2">
-              <Avatar className="h-9 w-9 ring-2 ring-fuchsia-100">
+              <Avatar className="h-8 w-8 ring-2 ring-fuchsia-100 sm:h-9 sm:w-9">
                 <AvatarFallback className="text-xs bg-[#151a28] text-white">
                   {user.name
                     .split(" ")
@@ -306,11 +312,13 @@ export default function App() {
           </div>
         </header>
 
-        <main className="flex-1 p-4 md:p-7 overflow-x-hidden max-w-[1920px] w-full mx-auto">
+        <main className="mx-auto w-full max-w-[1920px] flex-1 overflow-x-hidden p-3 sm:p-4 md:p-7">
+          <div key={view} className="dashboard-view-enter">
           {view === "dashboard" &&
             (user.role === "super_admin" ? (
               <SuperAdminDashboard
                 onViewKra={() => setView("member-checklists")}
+                onOpenTicket={setOpenTicketId}
               />
             ) : ["it", "admin"].includes(user.role) ? (
               <AgentDashboard
@@ -323,6 +331,7 @@ export default function App() {
                 user={user}
                 onOpenTicket={setOpenTicketId}
                 refresh={refresh}
+                onRefresh={doRefresh}
               />
             ))}
           {view === "tickets" &&
@@ -354,7 +363,9 @@ export default function App() {
           {view === "member-checklists" && <SuperAdminMemberKra />}
           {view === "parking" && <ParkingView />}
           {view === "settings" && <SettingsView />}
+          {view === "firewall" && <FirewallView user={user} />}
           {view === "audit" && <AuditView />}
+          </div>
         </main>
       </div>
 
