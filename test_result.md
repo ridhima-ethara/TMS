@@ -102,7 +102,7 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "IT & Admin Ticket, Approval, Task and Checklist Management Platform. RBAC across Employee/IT/Admin/Super Admin, ticket lifecycle, Admin approval workflow (Super Admin decisions), operational tasks, location checklists, SLA, in-app notifications, immutable audit logs. Built on Next.js API routes + MongoDB with JWT httpOnly cookie auth + bcrypt."
+user_problem_statement: "IT & Admin Ticket, Approval, Task and Checklist Management Platform. RBAC across Employee/IT/Admin/Super Admin, ticket lifecycle, Admin approval workflow (Super Admin decisions), operational tasks, location checklists, SLA, in-app notifications, immutable audit logs. Built on Next.js API routes + local PostgreSQL with JWT httpOnly cookie auth + bcrypt."
 
 backend:
   - task: "Auth (login/me/logout) with JWT cookie + bcrypt"

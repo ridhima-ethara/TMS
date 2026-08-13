@@ -446,6 +446,12 @@ function LocationSelect({ value, onChange, locs }) {
   );
 }
 
+const locationSite = (value) => {
+  if (/\blotus\b/i.test(String(value || ""))) return "Lotus";
+  if (/\btulip\b/i.test(String(value || ""))) return "Tulip";
+  return null;
+};
+
 export function RaiseTicket({ user, onCreated }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -541,7 +547,30 @@ export function RaiseTicket({ user, onCreated }) {
               f.title.toLowerCase().includes(ticket.title.toLowerCase())),
         )
       : null;
-  const selectedMember = members.find((member) => member.id === f.assignee_id);
+  const selectedSite = locationSite(f.location);
+  const userSite = locationSite(user.location);
+  const managedSites = (user.managed_locations || [])
+    .map(locationSite)
+    .filter(Boolean);
+  const canAssignTeam =
+    user.role === "super_admin" ||
+    (user.is_team_head &&
+      user.role === (f.department === "Admin" ? "admin" : "it") &&
+      (f.department === "Admin" ||
+        !selectedSite ||
+        managedSites.includes(selectedSite) ||
+        userSite === selectedSite));
+  const availableMembers = canAssignTeam
+    ? members
+    : members.filter(
+        (member) =>
+          member.id === user.id &&
+          user.role === (f.department === "Admin" ? "admin" : "it") &&
+          (!selectedSite || !userSite || selectedSite === userSite),
+      );
+  const selectedMember = availableMembers.find(
+    (member) => member.id === f.assignee_id,
+  );
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -655,7 +684,9 @@ export function RaiseTicket({ user, onCreated }) {
               <Label className="text-sm font-semibold">Location</Label>
               <LocationSelect
                 value={f.location}
-                onChange={(v) => setF({ ...f, location: v })}
+                onChange={(v) =>
+                  setF({ ...f, location: v, assignee_id: "" })
+                }
                 locs={locs}
               />
             </div>
@@ -764,11 +795,16 @@ export function RaiseTicket({ user, onCreated }) {
                       <SelectValue placeholder="Auto-route or select member" />
                     </SelectTrigger>
                     <SelectContent>
-                      {members.map((member) => (
+                      {availableMembers.map((member) => (
                         <SelectItem key={member.id} value={member.id}>
                           {member.name} · {member.location || f.department}
                         </SelectItem>
                       ))}
+                      {!availableMembers.length && (
+                        <div className="px-3 py-2 text-xs text-[#9CA3AF]">
+                          This ticket will be routed to the location team queue.
+                        </div>
+                      )}
                     </SelectContent>
                   </Select>
                 </div>

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ROLE_LABEL } from "@/lib/appapi";
 import Login from "@/components/app/Login";
 import Dashboard from "@/components/app/Dashboard";
+import EmployeeAcknowledgements from "@/components/app/EmployeeAcknowledgements";
 import TicketsView from "@/components/app/TicketsView";
 import TasksView from "@/components/app/TasksView";
 import ChecklistsView from "@/components/app/ChecklistsView";
@@ -56,6 +57,7 @@ const NAV = {
   employee: [
     { k: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { k: "tickets", label: "My Tickets", icon: Ticket },
+    { k: "acknowledgements", label: "Resolution Acknowledgements", icon: FileCheck2 },
   ],
   it: [
     { k: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -159,6 +161,7 @@ export default function App() {
   const titleMap = {
     dashboard: "Dashboard",
     tickets: nav.find((n) => n.k === "tickets")?.label,
+    acknowledgements: "Resolution Acknowledgements",
     approvals: "Approvals",
     tasks: "Operational Tasks",
     checklists: "Checklists",
@@ -330,10 +333,18 @@ export default function App() {
               <Dashboard
                 user={user}
                 onOpenTicket={setOpenTicketId}
+                onGoTickets={() => setView("tickets")}
+                onGoAcknowledgements={() => setView("acknowledgements")}
                 refresh={refresh}
-                onRefresh={doRefresh}
               />
             ))}
+          {view === "acknowledgements" && user.role === "employee" && (
+            <EmployeeAcknowledgements
+              onOpenTicket={setOpenTicketId}
+              refresh={refresh}
+              onRefresh={doRefresh}
+            />
+          )}
           {view === "tickets" &&
             (user.role === "super_admin" ? (
               <SuperAdminTickets onOpenTicket={setOpenTicketId} />

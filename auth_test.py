@@ -5,10 +5,11 @@ Tests login domain enforcement, registration, and registered user functionality
 """
 import requests
 import json
+import os
 from typing import Dict, Any
 
 # Base URL from .env
-BASE_URL = "https://ticket-flow-pro-8.preview.emergentagent.com/api"
+BASE_URL = os.getenv("BASE_URL", "http://localhost:3004/api")
 
 # Seeded users with @ethara.ai domain
 USERS = {

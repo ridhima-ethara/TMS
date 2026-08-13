@@ -108,6 +108,31 @@ const textFrom = (value, keys, fallback = "—") => {
   return fallback;
 };
 
+function firewallLocalDate(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function formatUsageRangeTimestamp(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString("en-GB", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function EmptyPanel({ title, configured }) {
   return (
     <div className="rounded-xl border border-dashed border-[#D9DEE5] bg-[#FAFBFC] px-5 py-12 text-center">
@@ -281,7 +306,7 @@ function ConnectedDevicesPanel({
   const [mappingFilter, setMappingFilter] = useState("all");
   const [bandwidthRange, setBandwidthRange] = useState("current");
   const [bandwidthDate, setBandwidthDate] = useState(
-    new Date().toISOString().slice(0, 10),
+    firewallLocalDate(),
   );
   const [periodLogs, setPeriodLogs] = useState(null);
   const [bandwidthMeta, setBandwidthMeta] = useState(null);
@@ -296,7 +321,9 @@ function ConnectedDevicesPanel({
       return;
     }
     const queryString =
-      bandwidthRange === "1h"
+      bandwidthRange === "today"
+        ? "today=true"
+        : bandwidthRange === "1h"
         ? "hours=1"
         : bandwidthRange === "25h"
           ? "hours=25"
@@ -630,6 +657,8 @@ function ConnectedDevicesPanel({
               Upload, download and sessions ·{" "}
               {bandwidthRange === "current"
                 ? "current API window"
+                : bandwidthRange === "today"
+                  ? `today · ${firewallLocalDate()}`
                 : bandwidthRange === "1h"
                   ? "last 1 hour"
                   : bandwidthRange === "25h"
@@ -644,7 +673,8 @@ function ConnectedDevicesPanel({
             onChange={(event) => setBandwidthRange(event.target.value)}
             className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
           >
-            <option value="current">Current usage</option>
+            <option value="current">Latest API snapshot</option>
+            <option value="today">Today</option>
             <option value="1h">Last 1 hour</option>
             <option value="25h">Last 25 hours</option>
             <option value="7d">Last 7 days</option>
@@ -654,7 +684,7 @@ function ConnectedDevicesPanel({
             <input
               type="date"
               value={bandwidthDate}
-              max={new Date().toISOString().slice(0, 10)}
+              max={firewallLocalDate()}
               onChange={(event) => setBandwidthDate(event.target.value)}
               className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
             />
@@ -670,8 +700,16 @@ function ConnectedDevicesPanel({
             ) : bandwidthMeta ? (
               <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
                 <b className="text-[#374151]">{bandwidthMeta.summary?.records || 0} traffic records</b>
-                <span>{bandwidthMeta.period?.start ? new Date(bandwidthMeta.period.start).toLocaleString("en-GB") : "—"} → {bandwidthMeta.period?.end ? new Date(bandwidthMeta.period.end).toLocaleString("en-GB") : "—"}</span>
+                <span>
+                  Usage from {formatUsageRangeTimestamp(bandwidthMeta.period?.start)} →{" "}
+                  {formatUsageRangeTimestamp(bandwidthMeta.period?.end)} IST
+                </span>
                 <span>Firewall: {firewall.toUpperCase()}</span>
+                {bandwidthMeta.summary?.record_limit_reached && (
+                  <span className="font-semibold text-[#B45309]">
+                    API row limit reached; displayed usage may be partial.
+                  </span>
+                )}
               </span>
             ) : null}
           </div>
@@ -2292,7 +2330,173 @@ function SecurityEventsPanel({ value }) {
   );
 }
 
-function InterfacesPanel({ value }) {
+function InterfacePeriodUsage({ firewall }) {
+  const [range, setRange] = useState("today");
+  const [selectedDate, setSelectedDate] = useState(firewallLocalDate());
+  const [report, setReport] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const queryString =
+      range === "today"
+        ? "today=true"
+        : range === "1h"
+          ? "hours=1"
+          : range === "25h"
+            ? "hours=25"
+            : range === "7d"
+              ? "days=7"
+              : `date=${selectedDate}`;
+    const controller = new AbortController();
+    setLoading(true);
+    setError("");
+    setReport(null);
+    api(`/firewall/report?${queryString}&firewall=${firewall}`, {
+      signal: controller.signal,
+      timeout: 30000,
+    })
+      .then(setReport)
+      .catch((requestError) => {
+        if (!controller.signal.aborted) setError(requestError.message);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [range, selectedDate, firewall]);
+
+  const records = report?.records || [];
+  const interfaceUsage = Object.values(
+    records.reduce((summary, row) => {
+      const name = row.source_interface || "Unclassified interface";
+      if (!summary[name])
+        summary[name] = { name, received: 0, sent: 0, total: 0, records: 0 };
+      const received = Number(row.received_bytes || 0);
+      const sent = Number(row.sent_bytes || 0);
+      summary[name].received += received;
+      summary[name].sent += sent;
+      summary[name].total += received + sent;
+      summary[name].records += 1;
+      return summary;
+    }, {}),
+  ).sort((a, b) => b.total - a.total);
+  const busiest = Math.max(...interfaceUsage.map((row) => row.total), 1);
+  const sourceSystems = new Set(records.map((row) => row.source_ip).filter(Boolean))
+    .size;
+
+  return (
+    <section className={`${FW_CARD} overflow-hidden`}>
+      <div className="flex flex-wrap items-center gap-3 border-b border-[#E7E9F2] px-[18px] py-4">
+        <div className="mr-auto">
+          <h3 className="text-sm font-bold">Interface usage by period</h3>
+          <p className="mt-0.5 text-xs text-[#98A0B5]">
+            Timestamped traffic logs grouped by source interface · {firewall.toUpperCase()}
+          </p>
+        </div>
+        <select
+          value={range}
+          onChange={(event) => setRange(event.target.value)}
+          className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
+        >
+          <option value="today">Today</option>
+          <option value="1h">Last 1 hour</option>
+          <option value="25h">Last 25 hours</option>
+          <option value="7d">Last 7 days</option>
+          <option value="day">Select a day</option>
+        </select>
+        {range === "day" && (
+          <input
+            type="date"
+            value={selectedDate}
+            max={firewallLocalDate()}
+            onChange={(event) => setSelectedDate(event.target.value)}
+            className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
+          />
+        )}
+        {loading && <RefreshCw className="h-4 w-4 animate-spin text-[#4A5FE8]" />}
+      </div>
+      <div
+        className={`border-b px-[18px] py-3 text-xs ${
+          error
+            ? "border-red-200 bg-red-50 text-red-700"
+            : "border-[#E7E9F2] bg-[#F8FAFC] text-[#5B6178]"
+        }`}
+      >
+        {error ? (
+          `Unable to load interface usage: ${error}`
+        ) : report?.period ? (
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <Clock3 className="h-3.5 w-3.5 text-[#4A5FE8]" />
+            <b className="text-[#374151]">Usage period:</b>
+            <span>{formatUsageRangeTimestamp(report.period.start)}</span>
+            <span>→</span>
+            <span>{formatUsageRangeTimestamp(report.period.end)} IST</span>
+            {report.summary?.record_limit_reached && (
+              <span className="font-semibold text-[#B45309]">
+                · API row limit reached; totals may be partial.
+              </span>
+            )}
+          </span>
+        ) : (
+          "Loading the selected usage period…"
+        )}
+      </div>
+      <div className="grid gap-px bg-[#E7E9F2] sm:grid-cols-2 lg:grid-cols-4">
+        {[
+          ["Usage in period", formatBytes(report?.summary?.traffic_bytes || 0)],
+          ["Traffic records", Number(report?.summary?.records || 0).toLocaleString()],
+          ["Source interfaces", interfaceUsage.length],
+          ["Systems observed", sourceSystems],
+        ].map(([label, metric]) => (
+          <div key={label} className="bg-white p-4">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-[#98A0B5]">
+              {label}
+            </p>
+            <b className="mt-1 block text-xl tabular-nums">{metric}</b>
+          </div>
+        ))}
+      </div>
+      {!loading && !error && (
+        interfaceUsage.length ? (
+          <div className="space-y-3 p-[18px]">
+            {interfaceUsage.slice(0, 10).map((row) => (
+              <div key={row.name} className="grid gap-2 md:grid-cols-[180px_1fr_100px] md:items-center">
+                <div>
+                  <b className="block truncate text-[12.5px]">{row.name}</b>
+                  <span className="text-[10.5px] text-[#98A0B5]">
+                    {row.records.toLocaleString()} records
+                  </span>
+                </div>
+                <div>
+                  <div className="h-2.5 overflow-hidden rounded-full bg-[#F0F1F7]">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-[#4A5FE8] to-[#0E7490]"
+                      style={{ width: `${Math.max(2, (row.total / busiest) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="mt-1 flex justify-between text-[10.5px] text-[#98A0B5]">
+                    <span>↓ {formatBytes(row.received)}</span>
+                    <span>↑ {formatBytes(row.sent)}</span>
+                  </div>
+                </div>
+                <b className="text-right text-[13px] tabular-nums">
+                  {formatBytes(row.total)}
+                </b>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="p-6 text-sm text-[#69738B]">
+            No interface traffic was returned for the selected date range.
+          </div>
+        )
+      )}
+    </section>
+  );
+}
+
+function InterfacesPanel({ value, firewall, lastUpdated }) {
   const results = value?.results || {};
   const rows = Array.isArray(results) ? results : Object.values(results);
   const [showDown, setShowDown] = useState(false);
@@ -2325,6 +2529,14 @@ function InterfacesPanel({ value }) {
   );
   return (
     <div className="space-y-4">
+      <InterfacePeriodUsage firewall={firewall} />
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[#E7E9F2] bg-white px-4 py-3 text-xs text-[#5B6178]">
+        <Clock3 className="h-4 w-4 text-[#4A5FE8]" />
+        <b className="text-[#374151]">Lifetime counter period:</b>
+        <span>last firewall reboot (start date not supplied by the API)</span>
+        <span>→</span>
+        <span>{formatUsageRangeTimestamp(lastUpdated)} IST</span>
+      </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
           ["Interfaces up", active.length, "text-[#15803D]", `of ${rows.length} physical ports`],
@@ -2821,6 +3033,191 @@ function FwKpi({ label, value, valueClass = "", children }) {
       </p>
       <div className="mt-1 text-[11.5px] text-[#5B6178]">{children}</div>
     </div>
+  );
+}
+
+function formatDowntimeDuration(milliseconds) {
+  const totalMinutes = Math.max(0, Math.floor(Number(milliseconds || 0) / 60000));
+  if (totalMinutes < 1) return "< 1 min";
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  return [
+    days ? `${days}d` : null,
+    hours ? `${hours}h` : null,
+    minutes || (!days && !hours) ? `${minutes}m` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function formatDowntimeTimestamp(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function FirewallDowntimeSection({
+  values,
+  days,
+  onDaysChange,
+  loading,
+  activeFirewall,
+  onSelect,
+}) {
+  const stateDetails = {
+    online: { label: "Online", tone: "green", dot: "bg-[#15803D]" },
+    degraded: { label: "Degraded", tone: "amber", dot: "bg-[#B45309]" },
+    down: { label: "Offline", tone: "red", dot: "bg-[#C41E3D]" },
+    unconfigured: { label: "Setup required", tone: "gray", dot: "bg-[#98A0B5]" },
+    unknown: { label: "Not checked", tone: "gray", dot: "bg-[#98A0B5]" },
+  };
+
+  return (
+    <section className={`${FW_CARD} overflow-hidden`}>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#F0F1F7] px-[18px] py-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <Activity className="h-4 w-4 text-[#4A5FE8]" />
+            <h3 className="text-sm font-bold tracking-tight">
+              Firewall uptime &amp; downtime
+            </h3>
+          </div>
+          <p className="mt-1 text-xs text-[#98A0B5]">
+            Persisted availability checks; partial endpoint failures are shown as degraded.
+          </p>
+        </div>
+        <div className="flex items-center rounded-[10px] border border-[#E7E9F2] bg-[#F7F8FB] p-1">
+          {[7, 30, 90].map((period) => (
+            <button
+              key={period}
+              type="button"
+              onClick={() => onDaysChange(period)}
+              className={`rounded-lg px-3 py-1.5 text-[11.5px] font-semibold transition ${
+                days === period
+                  ? "bg-white text-[#4A5FE8] shadow-sm"
+                  : "text-[#5B6178] hover:text-[#181C2E]"
+              }`}
+            >
+              {period} days
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="grid gap-3 p-3 sm:p-[18px] lg:grid-cols-2">
+        {["hq", "hq2"].map((id) => {
+          const availability = values[id];
+          const currentState = availability?.current?.state || "unknown";
+          const state = stateDetails[currentState] || stateDetails.unknown;
+          const currentOutage = availability?.current_outage;
+          const lastOutage = availability?.last_outage;
+          const availabilityPercent =
+            availability?.summary?.availability_percent;
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => onSelect(id)}
+              className={`rounded-[14px] border p-4 text-left transition sm:p-[18px] ${
+                activeFirewall === id
+                  ? "border-[#AEB9FA] bg-[#FAFAFF] shadow-[0_0_0_2px_rgba(74,95,232,0.08)]"
+                  : "border-[#E7E9F2] bg-white hover:border-[#CDD3E2]"
+              }`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[10.5px] font-semibold uppercase tracking-wider text-[#98A0B5]">
+                    {id.toUpperCase()} firewall
+                  </p>
+                  <p className="mt-1 text-[20px] font-bold tabular-nums">
+                    {availabilityPercent === null || availabilityPercent === undefined
+                      ? "—"
+                      : `${Number(availabilityPercent).toFixed(
+                          Number(availabilityPercent) >= 99.995 ? 3 : 2,
+                        )}%`}
+                  </p>
+                  <p className="text-[11.5px] text-[#5B6178]">availability</p>
+                </div>
+                <FwPill tone={state.tone}>
+                  <i className={`h-1.5 w-1.5 rounded-full ${state.dot}`} />
+                  {state.label}
+                </FwPill>
+              </div>
+
+              {loading && !availability ? (
+                <div className="mt-4 h-24 animate-pulse rounded-xl bg-[#F0F1F7]" />
+              ) : (
+                <>
+                  <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    <div className="rounded-[10px] bg-white p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-[#98A0B5]">
+                        Downtime
+                      </p>
+                      <p className="mt-1 text-sm font-bold tabular-nums">
+                        {formatDowntimeDuration(
+                          availability?.summary?.total_downtime_ms,
+                        )}
+                      </p>
+                    </div>
+                    <div className="rounded-[10px] bg-white p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-[#98A0B5]">
+                        Outages
+                      </p>
+                      <p className="mt-1 text-sm font-bold tabular-nums">
+                        {availability?.summary?.outage_count ?? 0}
+                      </p>
+                    </div>
+                    <div className="col-span-2 rounded-[10px] bg-white p-3 sm:col-span-1">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-[#98A0B5]">
+                        Last probe
+                      </p>
+                      <p className="mt-1 truncate text-xs font-semibold">
+                        {formatDowntimeTimestamp(
+                          availability?.current?.last_probe_at,
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                  {currentOutage ? (
+                    <div className="mt-3 rounded-[11px] border border-[#F5CBD5] bg-[#FFF6F7] p-3">
+                      <p className="text-[11.5px] font-bold text-[#C41E3D]">
+                        Current outage · {formatDowntimeDuration(currentOutage.duration_ms)}
+                      </p>
+                      <p className="mt-1 text-[11px] text-[#5B6178]">
+                        Detected {formatDowntimeTimestamp(currentOutage.started_at)}
+                      </p>
+                    </div>
+                  ) : lastOutage ? (
+                    <div className="mt-3 rounded-[11px] border border-[#E7E9F2] bg-white p-3">
+                      <p className="text-[11.5px] font-semibold text-[#5B6178]">
+                        Last downtime · {formatDowntimeDuration(lastOutage.duration_ms)}
+                      </p>
+                      <p className="mt-1 text-[11px] text-[#98A0B5]">
+                        {formatDowntimeTimestamp(lastOutage.started_at)} →{" "}
+                        {formatDowntimeTimestamp(lastOutage.ended_at)}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="mt-3 rounded-[11px] border border-[#D9EBDD] bg-[#F7FBF8] p-3 text-[11.5px] font-semibold text-[#15803D]">
+                      No downtime recorded in this tracking window.
+                    </div>
+                  )}
+                  <p className="mt-3 text-[10.5px] text-[#98A0B5]">
+                    Tracking from {formatDowntimeTimestamp(availability?.period?.tracked_start)}
+                  </p>
+                </>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -3371,6 +3768,9 @@ function FirewallArchivePanel({ firewall, configured }) {
 export default function FirewallView() {
   const [data, setData] = useState(null);
   const [comparison, setComparison] = useState({ hq: null, hq2: null });
+  const [downtime, setDowntime] = useState({ hq: null, hq2: null });
+  const [downtimeDays, setDowntimeDays] = useState(7);
+  const [downtimeLoading, setDowntimeLoading] = useState(true);
   const [firewall, setFirewall] = useState("hq");
   const [tab, setTab] = useState("overview");
   const [activeMetric, setActiveMetric] = useState("System status");
@@ -3378,6 +3778,16 @@ export default function FirewallView() {
   const [comparisonLoading, setComparisonLoading] = useState(true);
   const [reportLoading, setReportLoading] = useState(false);
   const detailRef = useRef(null);
+  const loadDowntime = (period = downtimeDays) => {
+    setDowntimeLoading(true);
+    return Promise.all([
+      api(`/firewall/downtime?firewall=hq&days=${period}`),
+      api(`/firewall/downtime?firewall=hq2&days=${period}`),
+    ])
+      .then(([hq, hq2]) => setDowntime({ hq, hq2 }))
+      .catch((error) => toast.error(error.message))
+      .finally(() => setDowntimeLoading(false));
+  };
   const load = () => {
     setLoading(true);
     api(`/firewall/overview?firewall=${firewall}`)
@@ -3395,6 +3805,7 @@ export default function FirewallView() {
       api("/firewall/overview?firewall=hq2"),
     ])
       .then(([hq, hq2]) => setComparison({ hq, hq2 }))
+      .then(() => loadDowntime())
       .catch((error) => toast.error(error.message))
       .finally(() => setComparisonLoading(false));
   };
@@ -3453,6 +3864,9 @@ export default function FirewallView() {
   useEffect(() => {
     loadComparison();
   }, []);
+  useEffect(() => {
+    loadDowntime(downtimeDays);
+  }, [downtimeDays]);
   const sections = data?.sections || {};
   const threatSections = Object.fromEntries(
     Object.entries(sections).filter(([name]) => name.startsWith("threat_")),
@@ -3542,7 +3956,18 @@ export default function FirewallView() {
       }),
       sessions: Number(value) || 0,
     }));
-  const status = data?.connected ? "Online" : "Offline";
+  const status =
+    data?.operational_state || (data?.connected ? "online" : "down");
+  const statusPresentation = {
+    online: { label: "Online", tone: "green", dot: "bg-[#15803D]" },
+    degraded: { label: "Degraded", tone: "amber", dot: "bg-[#B45309]" },
+    down: { label: "Offline", tone: "red", dot: "bg-[#C41E3D]" },
+    unconfigured: {
+      label: "Setup required",
+      tone: "gray",
+      dot: "bg-[#98A0B5]",
+    },
+  }[status] || { label: "Not checked", tone: "gray", dot: "bg-[#98A0B5]" };
   const openDetail = (target, label) => {
     setTab(target);
     setActiveMetric(label);
@@ -3689,9 +4114,9 @@ export default function FirewallView() {
             <h2 className="text-[16.5px] font-bold tracking-tight">
               {headerName} — {firewall.toUpperCase()} firewall
             </h2>
-            <FwPill tone={data?.connected ? "green" : data?.configured ? "amber" : "gray"}>
-              <i className={`h-1.5 w-1.5 rounded-full ${data?.connected ? "bg-[#15803D]" : data?.configured ? "bg-[#B45309]" : "bg-[#98A0B5]"}`} />
-              {data?.connected ? "Online" : data?.configured ? "Connection issue" : "Setup required"}
+            <FwPill tone={statusPresentation.tone}>
+              <i className={`h-1.5 w-1.5 rounded-full ${statusPresentation.dot}`} />
+              {statusPresentation.label}
             </FwPill>
           </div>
           <p className="mt-0.5 truncate text-xs text-[#98A0B5]">
@@ -3864,6 +4289,14 @@ export default function FirewallView() {
           </FwKpi>
         </button>
       </div>
+      <FirewallDowntimeSection
+        values={downtime}
+        days={downtimeDays}
+        onDaysChange={setDowntimeDays}
+        loading={downtimeLoading}
+        activeFirewall={firewall}
+        onSelect={setFirewall}
+      />
       <div
         ref={detailRef}
         className="scroll-mt-4 flex gap-1 overflow-x-auto rounded-xl border border-[#E7E9F2] bg-white p-1 shadow-[0_1px_2px_rgba(24,28,46,0.05),0_4px_14px_rgba(24,28,46,0.05)]"
@@ -4020,7 +4453,11 @@ export default function FirewallView() {
           </div>
         )}
         {tab === "interfaces" && (
-          <InterfacesPanel value={sections.interfaces} />
+          <InterfacesPanel
+            value={sections.interfaces}
+            firewall={firewall}
+            lastUpdated={data?.last_updated}
+          />
         )}
         {tab === "events" && <SecurityEventsPanel value={sections.events} />}
         {tab === "archive" && (

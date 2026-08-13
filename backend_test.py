@@ -5,10 +5,11 @@ Tests all backend endpoints with RBAC, IDOR protection, and approval workflow
 """
 import requests
 import json
+import os
 from typing import Dict, Any, Optional
 
 # Base URL from .env
-BASE_URL = "https://ticket-flow-pro-8.preview.emergentagent.com/api"
+BASE_URL = os.getenv("BASE_URL", "http://localhost:3004/api")
 
 # Demo users
 USERS = {

@@ -1,10 +1,11 @@
-import { GridFSBucket, MongoClient } from "mongodb";
+import { connectToPostgres } from "@/lib/postgres-document-db";
 import { v4 as uuidv4 } from "uuid";
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
 import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
+import { connect as tlsConnect } from "node:tls";
 import { readFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -15,22 +16,26 @@ import {
   workingMinutesBetween,
 } from "@/lib/sla";
 
-// ---------------- MongoDB ----------------
-let client;
+// ---------------- PostgreSQL ----------------
 let db;
 let connecting;
-async function connectToMongo() {
+async function connectToDatabase() {
   if (db) return db;
   if (!connecting) {
     connecting = (async () => {
-      client = new MongoClient(process.env.MONGO_URL);
-      await client.connect();
-      db = client.db(process.env.DB_NAME);
+      db = await connectToPostgres();
       await Promise.all([
         db.collection("users").createIndex({ email: 1 }, { unique: true }),
         db.collection("tickets").createIndex({ id: 1 }, { unique: true }),
         db.collection("tickets").createIndex({ human_id: 1 }, { unique: true }),
         db.collection("tickets").createIndex({ department: 1, status: 1, created_at: -1 }),
+        db.collection("tickets").createIndex({
+          department: 1,
+          routing_site: 1,
+          assignee_id: 1,
+          status: 1,
+          created_at: -1,
+        }),
         db.collection("tickets").createIndex({ sla_response_due: 1, response_sla_breached_at: 1 }),
         db.collection("tickets").createIndex({ sla_resolution_due: 1, resolution_sla_breached_at: 1 }),
         db.collection("approvals").createIndex({ ticket_id: 1 }),
@@ -52,11 +57,28 @@ async function connectToMongo() {
           { firewall_id: 1, date: -1 },
           { unique: true },
         ),
+        db.collection("firewall_health").createIndex(
+          { firewall_id: 1 },
+          { unique: true },
+        ),
+        db.collection("firewall_outages").createIndex(
+          { firewall_id: 1, open: 1 },
+          { unique: true, partialFilterExpression: { open: true } },
+        ),
+        db.collection("firewall_outages").createIndex(
+          { firewall_id: 1, started_at: -1 },
+        ),
       ]);
+      await ensureDesignatedItManagers(db);
+      await ensureTicketRoutingData(db);
       await migrateTicketSlaData(db);
       startSlaMonitor(db);
+      startFirewallHealthMonitor(db);
       return db;
-    })();
+    })().catch((error) => {
+      connecting = null;
+      throw error;
+    });
   }
   return connecting;
 }
@@ -89,25 +111,26 @@ function json(data, status = 200) {
   return res;
 }
 
-const loginAttempts = new Map();
-function loginRateLimited(request, email) {
-  const key = `${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local"}:${email}`;
-  const now = Date.now();
-  const recent = (loginAttempts.get(key) || []).filter((time) => now - time < 15 * 60_000);
-  if (recent.length >= 8) return true;
-  recent.push(now);
-  loginAttempts.set(key, recent);
-  return false;
+function loginRateLimitKey(request, email) {
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
+  return createHash("sha256").update(`${ip}:${email}`).digest("hex");
 }
-function clearLoginAttempts(request, email) {
-  const key = `${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local"}:${email}`;
-  loginAttempts.delete(key);
+async function loginRateLimited(db, request, email) {
+  const result = await db.consumeRateLimit(loginRateLimitKey(request, email), 8, 15 * 60_000);
+  return result.limited;
+}
+async function clearLoginAttempts(db, request, email) {
+  await db.clearRateLimit(loginRateLimitKey(request, email));
 }
 
 let localFirewallProfiles;
 function firewallProfile(request) {
   const requested =
-    new URL(request.url).searchParams.get("firewall") === "hq" ? "hq" : "hq2";
+    (typeof request === "string"
+      ? request
+      : new URL(request.url).searchParams.get("firewall")) === "hq"
+      ? "hq"
+      : "hq2";
   if (!localFirewallProfiles) {
     localFirewallProfiles = [];
     try {
@@ -137,17 +160,79 @@ function firewallProfile(request) {
   return { id: requested, label: requested === "hq" ? "HQ" : "HQ2", value };
 }
 
+function normalizeCertificateFingerprint(value) {
+  return String(value || "")
+    .replace(/[^a-f0-9]/gi, "")
+    .toUpperCase();
+}
+
+function pinnedFirewallAgent(expectedFingerprint) {
+  const expected = normalizeCertificateFingerprint(expectedFingerprint);
+  if (expected.length !== 64)
+    throw new Error("Firewall certificate pin must be a SHA-256 fingerprint");
+  const agent = new HttpsAgent({ keepAlive: false });
+  agent.createConnection = (options, callback) => {
+    const socket = tlsConnect({
+      ...options,
+      minVersion: "TLSv1.2",
+      rejectUnauthorized: false,
+    });
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (error) {
+        socket.destroy(error);
+        callback(error);
+      } else callback(null, socket);
+    };
+    socket.once("secureConnect", () => {
+      const certificate = socket.getPeerCertificate();
+      const actual = normalizeCertificateFingerprint(
+        certificate?.fingerprint256,
+      );
+      if (!actual || actual !== expected) {
+        const error = new Error("Firewall certificate fingerprint mismatch");
+        error.code = "FIREWALL_CERT_PIN_MISMATCH";
+        finish(error);
+        return;
+      }
+      const now = Date.now();
+      const validFrom = Date.parse(certificate.valid_from);
+      const validTo = Date.parse(certificate.valid_to);
+      if (
+        !Number.isFinite(validFrom) ||
+        !Number.isFinite(validTo) ||
+        now < validFrom ||
+        now > validTo
+      ) {
+        const error = new Error("Firewall certificate is expired or not yet valid");
+        error.code = "FIREWALL_CERT_INVALID_DATE";
+        finish(error);
+        return;
+      }
+      finish();
+    });
+    socket.once("error", finish);
+  };
+  return agent;
+}
+
 async function firewallRequest(url, headers, tls = {}) {
   const target = new URL(url);
   const isHttps = target.protocol === "https:";
   const allowSelfSigned = tls.allowSelfSigned === true;
   const caPath = tls.caPath;
+  const certSha256 = tls.certSha256;
   if (allowSelfSigned && process.env.NODE_ENV === "production")
     throw new Error("Self-signed firewall certificate bypass is disabled in production");
   const options = { method: "GET", headers, timeout: 10000 };
   if (isHttps) {
-    options.rejectUnauthorized = !allowSelfSigned;
-    if (caPath) options.ca = readFileSync(caPath);
+    if (certSha256) options.agent = pinnedFirewallAgent(certSha256);
+    else {
+      options.rejectUnauthorized = !allowSelfSigned;
+      if (caPath) options.ca = readFileSync(caPath);
+    }
   }
   return new Promise((resolve, reject) => {
     const request = (isHttps ? httpsRequest : httpRequest)(
@@ -176,6 +261,88 @@ async function firewallRequest(url, headers, tls = {}) {
     request.on("error", reject);
     request.end();
   });
+}
+
+const FIREWALL_HEALTH_MONITOR_KEY = Symbol.for(
+  "ticketflow.firewallHealthMonitor",
+);
+
+async function probeFirewallAvailability(db, firewallId) {
+  const profile = firewallProfile(firewallId);
+  const fw = profile.value;
+  const baseUrl = String(fw("API_URL")).replace(/\/$/, "");
+  const apiKey = fw("API_KEY");
+  if (!baseUrl || !apiKey) {
+    await recordFirewallHealth(db, profile, "unconfigured");
+    return;
+  }
+  const headerName = fw("API_HEADER", "Authorization");
+  const prefix = fw("API_PREFIX", "Bearer");
+  const headers = {
+    Accept: "application/json",
+    [headerName]: prefix ? `${prefix} ${apiKey}` : apiKey,
+  };
+  const tls = {
+    allowSelfSigned: fw("ALLOW_SELF_SIGNED", "false") === "true",
+    caPath: fw("CA_CERT_PATH", ""),
+    certSha256: fw("CERT_SHA256", ""),
+  };
+  const paths = {
+    status: fw("STATUS_PATH", "/api/system/status"),
+    configuration: fw("CONFIG_PATH", "/api/system/configuration"),
+    statistics: fw("STATISTICS_PATH", "/api/statistics"),
+  };
+  const results = await Promise.all(
+    Object.entries(paths).map(async ([name, path]) => {
+      try {
+        await firewallRequest(
+          `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`,
+          headers,
+          tls,
+        );
+        return [name, true];
+      } catch {
+        return [name, false];
+      }
+    }),
+  );
+  const successfulSections = results.filter(([, successful]) => successful).length;
+  const failedSections = results
+    .filter(([, successful]) => !successful)
+    .map(([name]) => name);
+  const state =
+    successfulSections === 0
+      ? "down"
+      : failedSections.length
+        ? "degraded"
+        : "online";
+  await recordFirewallHealth(db, profile, state, {
+    successfulSections,
+    failedSections,
+  });
+}
+
+function startFirewallHealthMonitor(db) {
+  if (
+    process.env.NODE_ENV === "test" ||
+    globalThis[FIREWALL_HEALTH_MONITOR_KEY]
+  )
+    return;
+  const configuredInterval = Number(
+    process.env.FIREWALL_HEALTH_INTERVAL_MS || 60_000,
+  );
+  const intervalMs = Number.isFinite(configuredInterval)
+    ? Math.min(15 * 60_000, Math.max(30_000, configuredInterval))
+    : 60_000;
+  const run = () =>
+    Promise.all([
+      probeFirewallAvailability(db, "hq"),
+      probeFirewallAvailability(db, "hq2"),
+    ]).catch((error) => console.error("Firewall health monitor failed:", error));
+  const timer = setInterval(run, intervalMs);
+  timer.unref?.();
+  globalThis[FIREWALL_HEALTH_MONITOR_KEY] = { timer, intervalMs };
+  void run();
 }
 
 function sanitizeFirewallPayload(value) {
@@ -463,6 +630,12 @@ function normalizedFirewallRecord(row) {
     employee_code: row.employee_code || "",
     destination_ip: row.dstip || row.destination_ip || "",
     destination_country: row.dstcountry || row.destination_country || "",
+    source_interface: Array.isArray(row.srcintf)
+      ? row.srcintf.join(", ")
+      : String(row.srcintf || row.interface || ""),
+    destination_interface: Array.isArray(row.dstintf)
+      ? row.dstintf.join(", ")
+      : String(row.dstintf || ""),
     application:
       row.app || row.appname || row.application || row.service || "",
     category: row.appcat || row.category || "",
@@ -531,12 +704,211 @@ function firewallRecordFingerprint(row) {
     row.source_ip,
     row.source_mac,
     row.destination_ip,
+    row.source_interface,
+    row.destination_interface,
     row.application,
     row.action,
     row.sent_bytes,
     row.received_bytes,
     row.message,
   ].join("|");
+}
+
+async function recordFirewallHealth(
+  db,
+  profile,
+  state,
+  { successfulSections = 0, failedSections = [] } = {},
+) {
+  const now = new Date();
+  const healthCollection = db.collection("firewall_health");
+  const outageCollection = db.collection("firewall_outages");
+  const previous = await healthCollection.findOne({ firewall_id: profile.id });
+  const stateChanged = previous?.current_state !== state;
+  let recoveredAt = null;
+
+  if (state === "down") {
+    try {
+      await outageCollection.updateOne(
+        { firewall_id: profile.id, open: true },
+        {
+          $set: {
+            last_probe_at: now,
+            successful_sections: successfulSections,
+            failed_sections: failedSections,
+            updated_at: now,
+          },
+          $setOnInsert: {
+            id: uuidv4(),
+            firewall_id: profile.id,
+            firewall_label: profile.label,
+            open: true,
+            started_at: now,
+            created_at: now,
+          },
+        },
+        { upsert: true },
+      );
+    } catch (error) {
+      // Concurrent HQ/HQ2 comparison refreshes can race on the first failed probe.
+      if (error?.code !== 11000) throw error;
+      await outageCollection.updateOne(
+        { firewall_id: profile.id, open: true },
+        { $set: { last_probe_at: now, updated_at: now } },
+      );
+    }
+  } else {
+    const openOutage = await outageCollection.findOne({
+      firewall_id: profile.id,
+      open: true,
+    });
+    if (openOutage) {
+      recoveredAt = now;
+      await outageCollection.updateOne(
+        { _id: openOutage._id, open: true },
+        {
+          $set: {
+            open: false,
+            ended_at: now,
+            recovered_state: state,
+            duration_ms: Math.max(0, now.getTime() - openOutage.started_at.getTime()),
+            updated_at: now,
+          },
+        },
+      );
+    }
+  }
+
+  await healthCollection.updateOne(
+    { firewall_id: profile.id },
+    {
+      $set: {
+        firewall_id: profile.id,
+        firewall_label: profile.label,
+        current_state: state,
+        state_since:
+          stateChanged || !previous?.state_since ? now : previous.state_since,
+        last_probe_at: now,
+        successful_sections: successfulSections,
+        failed_sections: failedSections,
+        ...(state === "down" ? { last_failure_at: now } : {}),
+        ...(["online", "degraded"].includes(state)
+          ? { last_success_at: now }
+          : {}),
+        ...(recoveredAt ? { last_recovered_at: recoveredAt } : {}),
+        updated_at: now,
+      },
+      $setOnInsert: { id: uuidv4(), created_at: now },
+    },
+    { upsert: true },
+  );
+}
+
+async function firewallDowntimeSummary(db, profile, days) {
+  const now = new Date();
+  const requestedStart = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+  const health = await db
+    .collection("firewall_health")
+    .findOne({ firewall_id: profile.id });
+  const trackedStart = health?.created_at
+    ? new Date(Math.max(requestedStart.getTime(), health.created_at.getTime()))
+    : null;
+  const outageFilter = {
+    firewall_id: profile.id,
+    started_at: { $lt: now },
+    $or: [{ open: true }, { ended_at: { $gt: trackedStart || requestedStart } }],
+  };
+  const outages = await db
+    .collection("firewall_outages")
+    .find(outageFilter)
+    .sort({ started_at: -1 })
+    .limit(1000)
+    .toArray();
+  const periodMs = trackedStart
+    ? Math.max(0, now.getTime() - trackedStart.getTime())
+    : 0;
+  const totalDowntimeMs = trackedStart
+    ? outages.reduce((total, outage) => {
+        const startedAt = new Date(outage.started_at).getTime();
+        const endedAt = outage.open || !outage.ended_at
+          ? now.getTime()
+          : new Date(outage.ended_at).getTime();
+        const overlapStart = Math.max(startedAt, trackedStart.getTime());
+        const overlapEnd = Math.min(endedAt, now.getTime());
+        return total + Math.max(0, overlapEnd - overlapStart);
+      }, 0)
+    : 0;
+  const currentOutage = outages.find((outage) => outage.open) || null;
+  const lastCompletedOutage =
+    outages.find((outage) => !outage.open && outage.ended_at) || null;
+  const availabilityPercent = periodMs
+    ? Math.max(0, ((periodMs - totalDowntimeMs) / periodMs) * 100)
+    : null;
+
+  return {
+    firewall: { id: profile.id, label: profile.label },
+    current: health
+      ? {
+          state: health.current_state,
+          state_since: health.state_since,
+          last_probe_at: health.last_probe_at,
+          successful_sections: health.successful_sections || 0,
+          failed_sections: health.failed_sections || [],
+        }
+      : {
+          state: "unknown",
+          state_since: null,
+          last_probe_at: null,
+          successful_sections: 0,
+          failed_sections: [],
+        },
+    period: {
+      requested_days: days,
+      requested_start: requestedStart,
+      tracked_start: trackedStart,
+      end: now,
+      tracked_ms: periodMs,
+    },
+    summary: {
+      availability_percent:
+        availabilityPercent === null ? null : Number(availabilityPercent.toFixed(3)),
+      total_downtime_ms: totalDowntimeMs,
+      outage_count: outages.length,
+    },
+    current_outage: currentOutage
+      ? {
+          id: currentOutage.id,
+          started_at: currentOutage.started_at,
+          duration_ms: Math.max(
+            0,
+            now.getTime() - new Date(currentOutage.started_at).getTime(),
+          ),
+        }
+      : null,
+    last_outage: lastCompletedOutage
+      ? {
+          id: lastCompletedOutage.id,
+          started_at: lastCompletedOutage.started_at,
+          ended_at: lastCompletedOutage.ended_at,
+          duration_ms:
+            lastCompletedOutage.duration_ms ||
+            Math.max(
+              0,
+              new Date(lastCompletedOutage.ended_at).getTime() -
+                new Date(lastCompletedOutage.started_at).getTime(),
+            ),
+        }
+      : null,
+    recent_outages: outages.slice(0, 10).map((outage) => ({
+      id: outage.id,
+      open: outage.open,
+      started_at: outage.started_at,
+      ended_at: outage.ended_at || null,
+      duration_ms: outage.open
+        ? Math.max(0, now.getTime() - new Date(outage.started_at).getTime())
+        : outage.duration_ms || 0,
+    })),
+  };
 }
 
 async function archiveFirewallRecords(db, profile, firewallName, records, capturedAt) {
@@ -557,7 +929,10 @@ async function archiveFirewallRecords(db, profile, firewallName, records, captur
     for (const record of [...(existing?.records || []), ...dayRecords])
       merged.set(firewallRecordFingerprint(record), record);
     const stored = [...merged.values()]
-      .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+      .sort(
+        (a, b) =>
+          new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+      )
       .slice(0, 2500);
     const { summary, escalations } = firewallArchiveSummary(stored);
     const escalationSignature = escalations.map((item) => item.title).join("|");
@@ -972,23 +1347,15 @@ async function uploadAttachment(db, file, session) {
   if (bytes.length !== file.size || !hasValidFileSignature(extension, bytes))
     throw requestError(`${name}: file content does not match its extension`, 415);
   const id = uuidv4();
-  const bucket = new GridFSBucket(db, { bucketName: "ticket_attachments" });
-  const stream = bucket.openUploadStream(name, {
-    contentType,
-    metadata: { attachment_id: id, owner_id: session.id },
-  });
-  await new Promise((resolve, reject) => {
-    stream.once("error", reject);
-    stream.once("finish", resolve);
-    stream.end(bytes);
-  });
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  await db.storeBlob(id, bytes, sha256);
   const attachment = {
     id,
-    gridfs_id: stream.id,
+    blob_storage: "postgresql",
     name,
     content_type: contentType,
     size: bytes.length,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
+    sha256,
     owner_id: session.id,
     owner_name: session.name,
     linked_entity: null,
@@ -996,7 +1363,12 @@ async function uploadAttachment(db, file, session) {
     ticket_id: null,
     created_at: new Date(),
   };
-  await db.collection("attachments").insertOne(attachment);
+  try {
+    await db.collection("attachments").insertOne(attachment);
+  } catch (error) {
+    await db.deleteBlob(id);
+    throw error;
+  }
   return attachment;
 }
 
@@ -1262,13 +1634,28 @@ async function slaEscalationRecipients(db, ticket) {
       $or: [{ role: "super_admin" }, { role: teamRole }],
     })
     .toArray();
-  if (ticket.assignee_id && !users.some((user) => user.id === ticket.assignee_id)) {
+  const scopedUsers = users.filter(
+    (user) =>
+      user.role === "super_admin" ||
+      canAccessTicket(
+        {
+          ...user,
+          is_team_head: Boolean(user.is_team_head),
+          managed_locations: user.managed_locations || [],
+        },
+        ticket,
+      ),
+  );
+  if (
+    ticket.assignee_id &&
+    !scopedUsers.some((user) => user.id === ticket.assignee_id)
+  ) {
     const assignee = await db
       .collection("users")
       .findOne({ id: ticket.assignee_id, active: { $ne: false } });
-    if (assignee) users.push(assignee);
+    if (assignee) scopedUsers.push(assignee);
   }
-  return users;
+  return scopedUsers;
 }
 
 async function recordSlaBreach(db, ticket, kind, at) {
@@ -1433,10 +1820,151 @@ const STATUSES = [
 ];
 const TERMINAL_TICKET_STATUSES = ["Resolved", "Closed", "Cancelled"];
 
+const DESIGNATED_IT_MANAGERS = Object.freeze({
+  "hukum@ethara.ai": "Lotus",
+  "virendra.shukla@ethara.ai": "Tulip",
+});
+
+function normalizedEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function ticketLocationSite(value) {
+  const location = String(value || "").trim();
+  if (/\blotus\b/i.test(location)) return "Lotus";
+  if (/\btulip\b/i.test(location)) return "Tulip";
+  return null;
+}
+
+function designatedManagerSite(email) {
+  return DESIGNATED_IT_MANAGERS[normalizedEmail(email)] || null;
+}
+
+function managedItSites(user) {
+  const designatedSite = designatedManagerSite(user?.email);
+  if (designatedSite) return [designatedSite];
+  const configuredSites = Array.isArray(user?.managed_locations)
+    ? user.managed_locations.map(ticketLocationSite).filter(Boolean)
+    : [];
+  if (configuredSites.length) return [...new Set(configuredSites)];
+  const ownSite = ticketLocationSite(user?.location);
+  return ownSite ? [ownSite] : [];
+}
+
+function ticketSite(ticket) {
+  return ticketLocationSite(ticket?.routing_site || ticket?.location);
+}
+
+function siteTicketFilter(site) {
+  return {
+    $or: [
+      { routing_site: site },
+      { location: { $regex: `\\b${site}\\b`, $options: "i" } },
+    ],
+  };
+}
+
+function itTicketScope(session) {
+  const sites = session?.is_team_head
+    ? managedItSites(session)
+    : [ticketLocationSite(session?.location)].filter(Boolean);
+  if (!sites.length) return { department: "IT" };
+  return {
+    $and: [
+      { department: "IT" },
+      {
+        $or: [
+          { assignee_id: session.id },
+          ...sites.map((site) => siteTicketFilter(site)),
+        ],
+      },
+    ],
+  };
+}
+
+function canAccessTicket(session, ticket) {
+  if (session.role === "super_admin") return true;
+  if (session.role === "employee")
+    return (
+      ticket.raised_by_id === session.id || ticket.issue_user_id === session.id
+    );
+  if (session.role === "admin") return ticket.department === "Admin";
+  if (session.role !== "it" || ticket.department !== "IT") return false;
+  if (ticket.assignee_id === session.id) return true;
+  const site = ticketSite(ticket);
+  if (!site) return true;
+  const allowedSites = session.is_team_head
+    ? managedItSites(session)
+    : [ticketLocationSite(session.location)].filter(Boolean);
+  return allowedSites.includes(site);
+}
+
+function isTicketTeamHead(user, ticket) {
+  if (user?.role === "super_admin") return true;
+  if (!user?.is_team_head) return false;
+  const teamRole = ticket.department === "Admin" ? "admin" : "it";
+  if (user.role !== teamRole) return false;
+  if (teamRole === "admin") return true;
+  const site = ticketSite(ticket);
+  if (!site) return true;
+  return managedItSites(user).includes(site);
+}
+
+async function ensureDesignatedItManagers(database) {
+  await Promise.all(
+    Object.entries(DESIGNATED_IT_MANAGERS).map(([email, site]) =>
+      database.collection("users").updateOne(
+        { email },
+        {
+          $set: {
+            role: "it",
+            department: "IT",
+            is_team_head: true,
+            managed_locations: [site],
+            updated_at: new Date(),
+          },
+        },
+      ),
+    ),
+  );
+}
+
+async function ensureTicketRoutingData(database) {
+  const tickets = database.collection("tickets");
+  await Promise.all([
+    tickets.updateMany(
+      { routing_site: { $exists: false }, location: { $regex: "\\blotus\\b", $options: "i" } },
+      { $set: { routing_site: "Lotus" } },
+    ),
+    tickets.updateMany(
+      { routing_site: { $exists: false }, location: { $regex: "\\btulip\\b", $options: "i" } },
+      { $set: { routing_site: "Tulip" } },
+    ),
+    tickets.updateMany(
+      { assignee_id: null },
+      { $set: { allocation_status: "unallocated", queue_state: "pending" } },
+    ),
+    tickets.updateMany(
+      { assignee_id: { $ne: null } },
+      { $set: { allocation_status: "allocated", queue_state: "assigned" } },
+    ),
+  ]);
+  await Promise.all(
+    ["IT", "Admin"].flatMap((department) =>
+      ["Lotus", "Tulip"].map((site) =>
+        tickets.updateMany(
+          { department, routing_site: site },
+          { $set: { routed_team: `${department}:${site}` } },
+        ),
+      ),
+    ),
+  );
+}
+
 // role-based ticket filter
 function scopeFilter(session) {
   if (session.role === "super_admin") return {};
-  if (session.role === "it") return { department: "IT" };
+  if (session.role === "it") return itTicketScope(session);
   if (session.role === "admin") return { department: "Admin" };
   // Employees can see tickets they raised and tickets explicitly raised for them.
   return { $or: [{ raised_by_id: session.id }, { issue_user_id: session.id }] };
@@ -2351,7 +2879,7 @@ async function handleRoute(request, { params }) {
   const seg = path;
 
   try {
-    const db = await connectToMongo();
+    const db = await connectToDatabase();
 
     // health
     if (route === "/" || route === "/root")
@@ -2453,7 +2981,7 @@ async function handleRoute(request, { params }) {
         .toLowerCase()
         .trim();
       const password = typeof body.password === "string" ? body.password : "";
-      if (loginRateLimited(request, email))
+      if (await loginRateLimited(db, request, email))
         return json({ error: "Too many login attempts. Try again later." }, 429);
       if (!email.endsWith("@ethara.ai")) {
         return json(
@@ -2469,7 +2997,7 @@ async function handleRoute(request, { params }) {
         return json({ error: "Verify your email address before signing in" }, 403);
       if (user.active === false)
         return json({ error: "This account is awaiting approval or has been disabled" }, 403);
-      clearLoginAttempts(request, email);
+      await clearLoginAttempts(db, request, email);
       const token = await new SignJWT({
         id: user.id,
         name: user.name,
@@ -2554,7 +3082,12 @@ async function handleRoute(request, { params }) {
           400,
         );
       }
-      const role = ["employee", "it", "admin"].includes(b.role) ? b.role : null;
+      const managerSite = designatedManagerSite(email);
+      const role = managerSite
+        ? "it"
+        : ["employee", "it", "admin"].includes(b.role)
+          ? b.role
+          : null;
       if (!role)
         return json(
           { error: "Please select a valid role (Employee, IT, or Admin)" },
@@ -2583,6 +3116,8 @@ async function handleRoute(request, { params }) {
         password_hash: hash,
         employee_id: b.employee_id || "",
         location: b.location || "Tulip - Ground Floor",
+        is_team_head: Boolean(managerSite),
+        managed_locations: managerSite ? [managerSite] : [],
         active: role === "employee" && !requiresEmailVerification,
         activation_pending_reason: requiresEmailVerification
           ? "email_verification"
@@ -2662,6 +3197,9 @@ async function handleRoute(request, { params }) {
       email: sessionUser.email,
       role: sessionUser.role,
       department: sessionUser.department,
+      location: sessionUser.location,
+      is_team_head: Boolean(sessionUser.is_team_head),
+      managed_locations: sessionUser.managed_locations || [],
     };
 
     if (route === "/sla/process" && method === "POST") {
@@ -2716,16 +3254,18 @@ async function handleRoute(request, { params }) {
         for (const file of files)
           uploaded.push(await uploadAttachment(db, file, session));
       } catch (error) {
-        const bucket = new GridFSBucket(db, { bucketName: "ticket_attachments" });
-        for (const attachment of uploaded) {
+        if (uploaded.length) {
           try {
-            await bucket.delete(attachment.gridfs_id);
+            await db.collection("attachments").deleteMany({
+              id: { $in: uploaded.map((item) => item.id) },
+            });
           } catch {}
         }
-        if (uploaded.length)
-          await db.collection("attachments").deleteMany({
-            id: { $in: uploaded.map((item) => item.id) },
-          });
+        for (const attachment of uploaded) {
+          try {
+            await db.deleteBlob(attachment.id);
+          } catch {}
+        }
         throw error;
       }
       await audit(db, session, "attachment.upload", "attachment", uploaded[0].id, {
@@ -2747,24 +3287,14 @@ async function handleRoute(request, { params }) {
           .findOne({ id: attachment.ticket_id });
         authorized = Boolean(
           linkedTicket &&
-            (session.role === "super_admin" ||
-              (session.role === "it" && linkedTicket.department === "IT") ||
-              (session.role === "admin" && linkedTicket.department === "Admin") ||
-              (session.role === "employee" &&
-                (linkedTicket.raised_by_id === session.id ||
-                  linkedTicket.issue_user_id === session.id))),
+            canAccessTicket(session, linkedTicket),
         );
       }
       if (!authorized) return json({ error: "Forbidden" }, 403);
-      const bucket = new GridFSBucket(db, { bucketName: "ticket_attachments" });
-      const chunks = [];
-      try {
-        for await (const chunk of bucket.openDownloadStream(attachment.gridfs_id))
-          chunks.push(Buffer.from(chunk));
-      } catch {
+      const body = await db.getBlob(attachment.id);
+      if (!body) {
         return json({ error: "Stored attachment is unavailable" }, 404);
       }
-      const body = Buffer.concat(chunks);
       const response = new NextResponse(body, {
         status: 200,
         headers: {
@@ -2786,11 +3316,10 @@ async function handleRoute(request, { params }) {
       });
       if (!attachment)
         return json({ error: "Pending attachment not found" }, 404);
-      const bucket = new GridFSBucket(db, { bucketName: "ticket_attachments" });
-      try {
-        await bucket.delete(attachment.gridfs_id);
-      } catch {}
       await db.collection("attachments").deleteOne({ id: attachment.id });
+      try {
+        await db.deleteBlob(attachment.id);
+      } catch {}
       await audit(db, session, "attachment.delete", "attachment", attachment.id);
       return json({ ok: true });
     }
@@ -2834,6 +3363,24 @@ async function handleRoute(request, { params }) {
       if (b.employee_id !== undefined)
         set.employee_id = String(b.employee_id).trim();
       if (b.location !== undefined) set.location = String(b.location).trim();
+      const managerSite = designatedManagerSite(user.email);
+      if (managerSite) {
+        set.role = "it";
+        set.department = "IT";
+        set.is_team_head = true;
+        set.managed_locations = [managerSite];
+      } else if (
+        set.role &&
+        !["it", "admin"].includes(set.role)
+      ) {
+        set.is_team_head = false;
+        set.managed_locations = [];
+      } else if (typeof b.is_team_head === "boolean") {
+        const effectiveLocation =
+          b.location !== undefined ? String(b.location).trim() : user.location;
+        const site = ticketLocationSite(effectiveLocation);
+        set.managed_locations = b.is_team_head && site ? [site] : [];
+      }
       if (b.password) {
         if (String(b.password).length < 8)
           return json({ error: "Password must be at least 8 characters" }, 400);
@@ -2892,10 +3439,16 @@ async function handleRoute(request, { params }) {
         ),
         threat_dns: withLogRows(fw("DNSFILTER_PATH", "/api/v2/log/memory/dns")),
       };
-      if (!configured)
+      if (!configured) {
+        try {
+          await recordFirewallHealth(db, profile, "unconfigured");
+        } catch (error) {
+          console.error("Firewall health tracking failed:", error);
+        }
         return json({
           configured: false,
           connected: false,
+          operational_state: "unconfigured",
           id: profile.id,
           label: profile.label,
           name: fw("NAME", profile.label),
@@ -2903,6 +3456,7 @@ async function handleRoute(request, { params }) {
           errors: {},
           last_updated: null,
         });
+      }
       const headerName = fw("API_HEADER", "Authorization");
       const prefix = fw("API_PREFIX", "Bearer");
       const headers = {
@@ -2912,6 +3466,7 @@ async function handleRoute(request, { params }) {
       const tls = {
         allowSelfSigned: fw("ALLOW_SELF_SIGNED", "false") === "true",
         caPath: fw("CA_CERT_PATH", ""),
+        certSha256: fw("CERT_SHA256", ""),
       };
       const results = await Promise.all(
         Object.entries(paths).map(async ([name, path]) => {
@@ -2935,6 +3490,25 @@ async function handleRoute(request, { params }) {
         else if (error) errors[name] = error;
         else sections[name] = payload;
       });
+      const successfulSectionCount = Object.keys(sections).length;
+      const failedSections = [
+        ...Object.keys(errors),
+        ...Object.keys(threat_errors),
+      ];
+      const operationalState =
+        successfulSectionCount === 0
+          ? "down"
+          : failedSections.length
+            ? "degraded"
+            : "online";
+      try {
+        await recordFirewallHealth(db, profile, operationalState, {
+          successfulSections: successfulSectionCount,
+          failedSections,
+        });
+      } catch (error) {
+        console.error("Firewall health tracking failed:", error);
+      }
       if (sections.events !== undefined)
         sections.events = await enrichFirewallSecurityEvents(sections.events);
       if (sections.dhcp !== undefined) {
@@ -2985,7 +3559,8 @@ async function handleRoute(request, { params }) {
       }
       return json({
         configured: true,
-        connected: Object.keys(sections).length > 0,
+        connected: successfulSectionCount > 0,
+        operational_state: operationalState,
         id: profile.id,
         label: profile.label,
         name: fw("NAME", profile.label),
@@ -2994,6 +3569,19 @@ async function handleRoute(request, { params }) {
         threat_errors,
         last_updated: new Date().toISOString(),
       });
+    }
+
+    if (route === "/firewall/downtime" && method === "GET") {
+      if (!["it", "admin", "super_admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      const profile = firewallProfile(request);
+      const requestedDays = Number(
+        new URL(request.url).searchParams.get("days") || 7,
+      );
+      if (!Number.isFinite(requestedDays))
+        return json({ error: "Invalid downtime period" }, 400);
+      const days = Math.min(90, Math.max(1, Math.round(requestedDays)));
+      return json(clean(await firewallDowntimeSummary(db, profile, days)));
     }
 
     if (route === "/firewall/report" && method === "GET") {
@@ -3012,12 +3600,22 @@ async function handleRoute(request, { params }) {
       );
       const requestedHours = Number(url.searchParams.get("hours") || 0);
       const selectedDate = url.searchParams.get("date");
+      const todayRequested = url.searchParams.get("today") === "true";
+      if (selectedDate && !/^\d{4}-\d{2}-\d{2}$/.test(selectedDate))
+        return json({ error: "Invalid firewall report date" }, 400);
       const end = new Date();
       let start = new Date(end.getTime() - days * 86400000);
       let periodHours = days * 24;
       if (requestedHours > 0) {
         periodHours = Math.min(168, Math.max(1, requestedHours));
         start = new Date(end.getTime() - periodHours * 3600000);
+      } else if (todayRequested) {
+        const today = firewallArchiveDate(end);
+        start = new Date(`${today}T00:00:00.000+05:30`);
+        periodHours = Math.max(
+          0,
+          (end.getTime() - start.getTime()) / 3600000,
+        );
       } else if (/^\d{4}-\d{2}-\d{2}$/.test(selectedDate || "")) {
         start = new Date(`${selectedDate}T00:00:00.000+05:30`);
         end.setTime(new Date(`${selectedDate}T23:59:59.999+05:30`).getTime());
@@ -3035,7 +3633,11 @@ async function handleRoute(request, { params }) {
         fw("REPORT_END_PARAM", "end"),
         end.toISOString(),
       );
-      reportUrl.searchParams.set("rows", fw("REPORT_ROWS", "10000"));
+      const configuredReportRows = Number(fw("REPORT_ROWS", "10000"));
+      const reportRowLimit = Number.isFinite(configuredReportRows)
+        ? Math.min(100000, Math.max(1, Math.round(configuredReportRows)))
+        : 10000;
+      reportUrl.searchParams.set("rows", String(reportRowLimit));
       const headerName = fw("API_HEADER", "Authorization");
       const prefix = fw("API_PREFIX", "Bearer");
       const payload = await firewallRequest(
@@ -3047,6 +3649,7 @@ async function handleRoute(request, { params }) {
         {
           allowSelfSigned: fw("ALLOW_SELF_SIGNED", "false") === "true",
           caPath: fw("CA_CERT_PATH", ""),
+          certSha256: fw("CERT_SHA256", ""),
         },
       );
       const allRows = firewallRows(payload);
@@ -3077,6 +3680,9 @@ async function handleRoute(request, { params }) {
         },
         summary: {
           records: records.length,
+          api_rows_returned: allRows.length,
+          api_row_limit: reportRowLimit,
+          record_limit_reached: allRows.length >= reportRowLimit,
           blocked: records.filter((row) => /block|deny|drop/i.test(row.action))
             .length,
           threats: records.filter((row) =>
@@ -3249,10 +3855,7 @@ async function handleRoute(request, { params }) {
     if (route === "/approvals" && method === "GET") {
       if (!["it", "admin", "super_admin"].includes(session.role))
         return json({ error: "Forbidden" }, 403);
-      const ticketFilter =
-        session.role === "super_admin"
-          ? {}
-          : { department: session.role === "admin" ? "Admin" : "IT" };
+      const ticketFilter = scopeFilter(session);
       const tickets = await db
         .collection("tickets")
         .find(ticketFilter)
@@ -3333,6 +3936,11 @@ async function handleRoute(request, { params }) {
           (t) => t.created_at && new Date(t.created_at) >= startOfDay,
         ).length,
         open: count((t) => t.status === "Open"),
+        unallocated: count(
+          (t) =>
+            !t.assignee_id &&
+            !TERMINAL_TICKET_STATUSES.includes(t.status),
+        ),
         assigned: count((t) => t.status === "Assigned"),
         in_progress: count((t) => t.status === "In Progress"),
         pending_user: count((t) => t.status === "Pending User Response"),
@@ -3633,7 +4241,12 @@ async function handleRoute(request, { params }) {
       if (p.get("priority")) filter.priority = p.get("priority");
       if (p.get("category")) filter.category = p.get("category");
       if (p.get("location")) filter.location = p.get("location");
-      if (p.get("assignee_id")) filter.assignee_id = p.get("assignee_id");
+      if (p.get("assignee_id") === "unassigned")
+        filter.assignee_id = null;
+      else if (p.get("assignee_id"))
+        filter.assignee_id = p.get("assignee_id");
+      if (p.get("allocation") === "unallocated")
+        filter.assignee_id = null;
       if (p.get("search")) {
         const rx = new RegExp(
           p.get("search").replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
@@ -3690,6 +4303,18 @@ async function handleRoute(request, { params }) {
       const description = textValue(b.description, 10000);
       if (!title || !description)
         return json({ error: "Title and description are required" }, 400);
+      const category = textValue(b.category, 100);
+      if (!category)
+        return json({ error: "Select a ticket category" }, 400);
+      const validCategory = await db.collection("categories").findOne({
+        department,
+        name: category,
+      });
+      if (!validCategory)
+        return json(
+          { error: `Select a valid ${department} ticket category` },
+          400,
+        );
       // employees can raise; IT/Admin can raise for others
       const id = uuidv4();
       const prefix = department === "Admin" ? "ADM" : "IT";
@@ -3712,16 +4337,6 @@ async function handleRoute(request, { params }) {
           : null;
       if (b.assignee_id && !requestedAssignee)
         return json({ error: "Valid department member not found" }, 400);
-      if (
-        requestedAssignee &&
-        session.role !== "super_admin" &&
-        (session.role !== requestedAssignee.role ||
-          (!sessionUser.is_team_head && requestedAssignee.id !== session.id))
-      )
-        return json(
-          { error: "Only team heads can allocate tickets to other members" },
-          403,
-        );
       const hasExplicitIssueUser = Boolean(
         b.raised_for_id ||
           textValue(b.raised_for_name, 150) ||
@@ -3759,6 +4374,37 @@ async function handleRoute(request, { params }) {
           : textValue(b.email, 254).toLowerCase() || session.email);
       const issueEmployeeCode =
         issueUser?.employee_id || textValue(b.employee_id, 50);
+      const explicitLocation = textValue(b.location, 150);
+      if (explicitLocation) {
+        const validLocation = await db
+          .collection("locations")
+          .findOne({ name: explicitLocation });
+        if (!validLocation)
+          return json({ error: "Select a valid ticket location" }, 400);
+      }
+      const location =
+        explicitLocation || issueUser?.location || sessionUser.location || "HQ1";
+      const routingSite = ticketLocationSite(location);
+      const routingTicket = { department, location, routing_site: routingSite };
+      if (requestedAssignee && session.role !== "super_admin") {
+        if (session.role !== requestedAssignee.role)
+          return json({ error: "You can only assign within your team" }, 403);
+        const assigningToSelf = requestedAssignee.id === session.id;
+        if (
+          (!assigningToSelf && !isTicketTeamHead(sessionUser, routingTicket)) ||
+          (assigningToSelf && !canAccessTicket(session, routingTicket))
+        )
+          return json(
+            {
+              error: assigningToSelf
+                ? "You can only claim tickets routed to your location"
+                : department === "IT"
+                  ? "Only the location IT head can allocate this ticket to another member"
+                  : "Only an Admin team head can allocate this ticket to another member",
+            },
+            403,
+          );
+      }
       const statusTimestamps = { raised: now, open: now };
       if (requestedAssignee) {
         statusTimestamps.assigned = now;
@@ -3769,7 +4415,7 @@ async function handleRoute(request, { params }) {
         human_id: hid,
         sla_schema_version: 1,
         department,
-        category: textValue(b.category, 100),
+        category,
         subcategory: textValue(b.subcategory, 100),
         title,
         description,
@@ -3784,8 +4430,11 @@ async function handleRoute(request, { params }) {
         issue_user_name: issueUserName,
         issue_user_email: issueUserEmail,
         issue_user_employee_code: issueEmployeeCode,
-        location:
-          textValue(b.location, 150) || issueUser?.location || sessionUser.location || "HQ1",
+        location,
+        routing_site: routingSite,
+        routed_team: routingSite ? `${department}:${routingSite}` : department,
+        allocation_status: requestedAssignee ? "allocated" : "unallocated",
+        queue_state: requestedAssignee ? "assigned" : "pending",
         assignee_id: requestedAssignee?.id || null,
         assignee_name: requestedAssignee?.name || null,
         raised_at: now,
@@ -3846,8 +4495,15 @@ async function handleRoute(request, { params }) {
         .collection("users")
         .find({ role: deptRole, active: { $ne: false } })
         .toArray();
-      const teamHeads = staff.filter((user) => user.is_team_head);
-      const intakeRecipients = teamHeads.length ? teamHeads : staff;
+      const locationStaff =
+        department === "IT" && routingSite
+          ? staff.filter(
+              (user) =>
+                ticketLocationSite(user.location) === routingSite ||
+                (user.is_team_head && managedItSites(user).includes(routingSite)),
+            )
+          : staff;
+      const intakeRecipients = locationStaff.length ? locationStaff : staff;
       await notify(
         db,
         intakeRecipients.map((u) => u.id),
@@ -3869,17 +4525,8 @@ async function handleRoute(request, { params }) {
       const ticketId = seg[1];
       const ticket = await db.collection("tickets").findOne({ id: ticketId });
       if (!ticket) return json({ error: "Not found" }, 404);
-      // object-level authorization
-      const scope = scopeFilter(session);
-      if (
-        session.role === "employee" &&
-        ticket.raised_by_id !== session.id &&
-        ticket.issue_user_id !== session.id
-      )
-        return json({ error: "Forbidden" }, 403);
-      if (session.role === "it" && ticket.department !== "IT")
-        return json({ error: "Forbidden" }, 403);
-      if (session.role === "admin" && ticket.department !== "Admin")
+      // Object-level authorization includes the routed IT location.
+      if (!canAccessTicket(session, ticket))
         return json({ error: "Forbidden" }, 403);
 
       // GET detail
@@ -3978,20 +4625,37 @@ async function handleRoute(request, { params }) {
                 { error: "You can only assign within your team" },
                 403,
               );
+            const actorIsTicketHead = isTicketTeamHead(actor, ticket);
+            if (u?.id === session.id) {
+              if (
+                ticket.assignee_id &&
+                ticket.assignee_id !== session.id &&
+                !actorIsTicketHead
+              )
+                return json(
+                  { error: "This ticket is already allocated to another member" },
+                  409,
+                );
+            } else if (u && !actorIsTicketHead)
+              return json(
+                { error: "Only the location team head can assign another member" },
+                403,
+              );
             if (
-              !actor?.is_team_head &&
-              ((u && u.id !== session.id) ||
-                (!u && ticket.assignee_id !== session.id))
+              !u &&
+              ticket.assignee_id &&
+              ticket.assignee_id !== session.id &&
+              !actorIsTicketHead
             )
               return json(
-                {
-                  error: "Only team heads can assign tickets to other members",
-                },
+                { error: "You can only unassign a ticket allocated to you" },
                 403,
               );
           }
           set.assignee_id = u?.id || null;
           set.assignee_name = u?.name || null;
+          set.allocation_status = u ? "allocated" : "unallocated";
+          set.queue_state = u ? "assigned" : "pending";
           if ((ticket.assignee_id || null) !== (u?.id || null)) {
             if (u) {
               if (ticket.status === "Open") set.status = "Assigned";
@@ -4264,10 +4928,23 @@ async function handleRoute(request, { params }) {
         );
         // notify other party
         if (session.role === "employee") {
-          const staff = await db
+          const allStaff = await db
             .collection("users")
-            .find({ role: ticket.department === "Admin" ? "admin" : "it" })
+            .find({
+              role: ticket.department === "Admin" ? "admin" : "it",
+              active: { $ne: false },
+            })
             .toArray();
+          const staff = allStaff.filter((user) =>
+            canAccessTicket(
+              {
+                ...user,
+                is_team_head: Boolean(user.is_team_head),
+                managed_locations: user.managed_locations || [],
+              },
+              ticket,
+            ),
+          );
           await notify(
             db,
             staff.map((u) => u.id),

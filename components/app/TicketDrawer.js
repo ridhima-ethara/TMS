@@ -50,6 +50,12 @@ function Bar({ children }) {
   return <div className="flex flex-wrap items-center gap-2">{children}</div>;
 }
 
+const locationSite = (value) => {
+  if (/\blotus\b/i.test(String(value || ""))) return "Lotus";
+  if (/\btulip\b/i.test(String(value || ""))) return "Tulip";
+  return null;
+};
+
 export default function TicketDrawer({
   ticketId,
   user,
@@ -68,6 +74,25 @@ export default function TicketDrawer({
   const deptUsers = users.filter((u) =>
     t?.department === "Admin" ? u.role === "admin" : u.role === "it",
   );
+  const ticketSite = locationSite(t?.routing_site || t?.location);
+  const managedSites = (user.managed_locations || [])
+    .map(locationSite)
+    .filter(Boolean);
+  const canAssignOthers =
+    user.role === "super_admin" ||
+    (user.is_team_head &&
+      (t?.department === "Admin" ||
+        !ticketSite ||
+        managedSites.includes(ticketSite) ||
+        locationSite(user.location) === ticketSite));
+  const canUnassign =
+    canAssignOthers || !t?.assignee_id || t?.assignee_id === user.id;
+  const assignmentLocked =
+    Boolean(t?.assignee_id) &&
+    t.assignee_id !== user.id &&
+    !canAssignOthers;
+  const canControlTicket =
+    canAssignOthers || t?.assignee_id === user.id;
 
   const load = async () => {
     if (!ticketId) return;
@@ -389,6 +414,7 @@ export default function TicketDrawer({
                         <Label className="text-xs">Assignee</Label>
                         <Select
                           value={t.assignee_id || "none"}
+                          disabled={assignmentLocked || busy}
                           onValueChange={(v) =>
                             patch(
                               { assignee_id: v === "none" ? null : v },
@@ -400,10 +426,18 @@ export default function TicketDrawer({
                             <SelectValue placeholder="Assign" />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="none">Unassigned</SelectItem>
-                            {(user.role === "super_admin" || user.is_team_head
+                            {canUnassign && (
+                              <SelectItem value="none">
+                                Pending / unallocated
+                              </SelectItem>
+                            )}
+                            {(canAssignOthers
                               ? deptUsers
-                              : deptUsers.filter((u) => u.id === user.id)
+                              : deptUsers.filter(
+                                  (u) =>
+                                    u.id === user.id &&
+                                    (!t.assignee_id || t.assignee_id === user.id),
+                                )
                             ).map((u) => (
                               <SelectItem key={u.id} value={u.id}>
                                 {u.name}
@@ -417,6 +451,7 @@ export default function TicketDrawer({
                         <Label className="text-xs">Priority</Label>
                         <Select
                           value={t.priority}
+                          disabled={!canControlTicket || busy}
                           onValueChange={(v) =>
                             patch({ priority: v }, "Priority updated")
                           }
@@ -437,6 +472,7 @@ export default function TicketDrawer({
                         <Label className="text-xs">Status</Label>
                         <Select
                           value={t.status}
+                          disabled={!canControlTicket || busy}
                           onValueChange={(v) =>
                             patch({ status: v }, "Status updated")
                           }
@@ -470,8 +506,14 @@ export default function TicketDrawer({
                       onSubmit={(r) =>
                         patch({ resolution: r }, "Ticket resolved")
                       }
-                      disabled={busy}
+                      disabled={busy || !canControlTicket}
                     />
+                    {assignmentLocked && (
+                      <p className="text-xs text-amber-700">
+                        This ticket is allocated to another member. Only its
+                        assignee or the location team head can change it.
+                      </p>
+                    )}
                   </div>
                 )}
 

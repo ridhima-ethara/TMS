@@ -723,11 +723,19 @@ function TicketActionMenu({ ticket, done, user, onOpenTicket, onUpdated }) {
     }
   };
   const actionLabel =
-    {
-      Acknowledged: "Acknowledged",
-      "In Progress": "In progress",
-      "Pending User Response": "Awaiting user",
-    }[ticket.status] || "Resolve";
+    !ticket.assignee_id
+      ? "Claim ticket"
+      : ticket.assignee_id !== user.id && !user.is_team_head
+        ? "View"
+        : {
+            Acknowledged: "Acknowledged",
+            "In Progress": "In progress",
+            "Pending User Response": "Awaiting user",
+          }[ticket.status] || "Resolve";
+  const canWorkTicket =
+    !ticket.assignee_id ||
+    ticket.assignee_id === user.id ||
+    user.is_team_head;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -741,60 +749,81 @@ function TicketActionMenu({ ticket, done, user, onOpenTicket, onUpdated }) {
         <DropdownMenuItem onSelect={() => onOpenTicket(ticket.id)}>
           View details
         </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={ticket.status === "Acknowledged"}
-          onSelect={() =>
-            update(
-              {
-                status: "Acknowledged",
-                assignee_id: ticket.assignee_id || user.id,
-              },
-              `${ticket.human_id} acknowledged`,
-            )
-          }
-        >
-          Acknowledge
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={ticket.status === "In Progress"}
-          onSelect={() =>
-            update(
-              { status: "In Progress" },
-              `${ticket.human_id} moved to In Progress`,
-            )
-          }
-        >
-          Start progress
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={ticket.status === "Pending User Response"}
-          onSelect={() =>
-            update(
-              { status: "Pending User Response" },
-              `${ticket.human_id} is awaiting user response`,
-            )
-          }
-        >
-          Await user response
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          className="text-green-700 focus:text-green-800"
-          onSelect={() =>
-            update(
-              {
-                resolution: {
-                  summary: "Resolved from agent queue",
-                  action_taken: "Issue completed by assigned agent",
-                  root_cause: "",
-                },
-              },
-              `${ticket.human_id} resolved`,
-            )
-          }
-        >
-          Mark resolved
-        </DropdownMenuItem>
+        {canWorkTicket && (
+          <>
+            <DropdownMenuItem
+              disabled={ticket.status === "Acknowledged" && !!ticket.assignee_id}
+              onSelect={() =>
+                update(
+                  {
+                    status: "Acknowledged",
+                    assignee_id: ticket.assignee_id || user.id,
+                  },
+                  ticket.assignee_id
+                    ? `${ticket.human_id} acknowledged`
+                    : `${ticket.human_id} claimed and acknowledged`,
+                )
+              }
+            >
+              {ticket.assignee_id ? "Acknowledge" : "Claim for myself"}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!ticket.assignee_id || ticket.status === "In Progress"}
+              onSelect={() =>
+                update(
+                  { status: "In Progress" },
+                  `${ticket.human_id} moved to In Progress`,
+                )
+              }
+            >
+              Start progress
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!ticket.assignee_id || ticket.status === "Pending User Response"}
+              onSelect={() =>
+                update(
+                  { status: "Pending User Response" },
+                  `${ticket.human_id} is awaiting user response`,
+                )
+              }
+            >
+              Await user response
+            </DropdownMenuItem>
+            {!!ticket.assignee_id &&
+              (ticket.assignee_id === user.id || user.is_team_head) && (
+                <DropdownMenuItem
+                  className="text-amber-700 focus:text-amber-800"
+                  onSelect={() =>
+                    update(
+                      { assignee_id: null },
+                      `${ticket.human_id} returned to the pending team queue`,
+                    )
+                  }
+                >
+                  Unassign to team queue
+                </DropdownMenuItem>
+              )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              disabled={!ticket.assignee_id}
+              className="text-green-700 focus:text-green-800"
+              onSelect={() =>
+                update(
+                  {
+                    resolution: {
+                      summary: "Resolved from agent queue",
+                      action_taken: "Issue completed by assigned agent",
+                      root_cause: "",
+                    },
+                  },
+                  `${ticket.human_id} resolved`,
+                )
+              }
+            >
+              Mark resolved
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -855,17 +884,20 @@ export function AgentTickets({ user, onOpenTicket }) {
   const kanbanColumns = [
     {
       key: "new",
-      label: "New / Unassigned",
+      label: "Pending / Unallocated",
       color: "#6C5CE7",
       soft: "bg-[#F4F2FF]",
-      matches: (ticket) => ["Open", "Assigned"].includes(ticket.status),
+      matches: (ticket) =>
+        !ticket.assignee_id && !DONE.includes(ticket.status),
     },
     {
       key: "acknowledged",
-      label: "Acknowledged",
+      label: "Allocated / Acknowledged",
       color: "#2E7CD6",
       soft: "bg-[#EEF5FD]",
-      matches: (ticket) => ticket.status === "Acknowledged",
+      matches: (ticket) =>
+        Boolean(ticket.assignee_id) &&
+        ["Open", "Assigned", "Acknowledged"].includes(ticket.status),
     },
     {
       key: "progress",
@@ -873,6 +905,7 @@ export function AgentTickets({ user, onOpenTicket }) {
       color: "#E8930C",
       soft: "bg-[#FFF8EA]",
       matches: (ticket) =>
+        Boolean(ticket.assignee_id) &&
         ["In Progress", "Approved - Ready for Action"].includes(ticket.status),
     },
     {
@@ -881,6 +914,7 @@ export function AgentTickets({ user, onOpenTicket }) {
       color: "#9B59B6",
       soft: "bg-[#FAF3FC]",
       matches: (ticket) =>
+        Boolean(ticket.assignee_id) &&
         [
           "Approval Preparation",
           "Pending Super Admin Approval",
@@ -988,7 +1022,7 @@ export function AgentTickets({ user, onOpenTicket }) {
               {kanbanColumns.map((column) => {
                 const rows = filtered.filter(column.matches);
                 return (
-                  <section key={column.key} className="w-[285px] shrink-0">
+                  <section key={column.key} className="w-[300px] shrink-0">
                     <div
                       className={`mb-3 flex items-center rounded-xl border border-white px-3 py-3 shadow-sm ${column.soft}`}
                     >
@@ -1008,48 +1042,22 @@ export function AgentTickets({ user, onOpenTicket }) {
                         return (
                           <Card
                             key={ticket.id}
-                            className={`group cursor-pointer border-[#E5E9EF] p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${sla.breach && !done ? "border-l-[3px] border-l-[#DC3D3D]" : ""}`}
+                            className={`group cursor-pointer overflow-hidden border-[#E5E9EF] p-0 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${sla.breach && !done ? "border-l-[3px] border-l-[#DC3D3D]" : ""}`}
                             onClick={() => onOpenTicket(ticket.id)}
                           >
-                            <div className="flex items-start gap-2">
-                              <span className="font-mono text-[11px] text-[#9CA3AF]">
-                                {ticket.human_id}
-                              </span>
-                              <Badge
-                                className={`ml-auto ${PRIORITY_META[ticket.priority]?.badge}`}
-                              >
-                                {ticket.priority}
-                              </Badge>
-                            </div>
-                            <h4 className="mt-2 line-clamp-2 text-sm font-bold leading-5">
-                              {ticket.title}
-                            </h4>
-                            <p className="mt-1 truncate text-xs text-[#9CA3AF]">
-                              {ticket.category} ·{" "}
-                              {ticket.location || "No location"}
-                            </p>
-                            <div className="mt-3 flex flex-wrap gap-1.5">
-                              <Badge
-                                variant="outline"
-                                className={statusClass(ticket.status)}
-                              >
-                                {ticket.status}
-                              </Badge>
-                              {!done && (
-                                <span
-                                  className={`rounded-full px-2 py-1 text-[10px] font-semibold ${sla.breach ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"}`}
-                                >
-                                  {sla.text}
-                                </span>
-                              )}
-                            </div>
-                            <div className="mt-3 flex items-center gap-2 border-t border-[#EDF0F4] pt-3">
+                            <div
+                              className={`flex items-start gap-3 border-b px-4 py-3 ${
+                                ticket.assignee_name
+                                  ? "border-[#DCE8F5] bg-[#F4F8FC]"
+                                  : "border-[#E7E1FA] bg-[#F7F4FF]"
+                              }`}
+                            >
                               <span
-                                className="grid h-7 w-7 place-items-center rounded-full text-[10px] font-semibold text-white"
+                                className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-[11px] font-bold text-white shadow-sm"
                                 style={{
                                   background: ticket.assignee_name
                                     ? meta.accent
-                                    : "#9CA3AF",
+                                    : "#6C5CE7",
                                 }}
                               >
                                 {ticket.assignee_name
@@ -1058,26 +1066,83 @@ export function AgentTickets({ user, onOpenTicket }) {
                                       .map((part) => part[0])
                                       .slice(0, 2)
                                       .join("")
-                                  : "?"}
+                                  : "U"}
                               </span>
                               <div className="min-w-0 flex-1">
-                                <p className="truncate text-[11px] font-semibold">
-                                  {ticket.assignee_name || "Team queue"}
+                                <p className="text-[9.5px] font-semibold uppercase tracking-wider text-[#8B93A1]">
+                                  {ticket.assignee_name
+                                    ? "Assigned to"
+                                    : "Assignment"}
                                 </p>
-                                <p className="text-[10px] text-[#9CA3AF]">
-                                  {done
-                                    ? "Completed"
-                                    : `${age(ticket.created_at)} old`}
+                                <p className="break-words text-[13px] font-bold leading-5 text-[#1F2937]">
+                                  {ticket.assignee_name || "Unallocated"}
+                                </p>
+                                {!ticket.assignee_name && (
+                                  <p className="text-[10.5px] font-medium text-[#6C5CE7]">
+                                    Pending team claim
+                                  </p>
+                                )}
+                              </div>
+                              {ticket.assignee_id === user.id && (
+                                <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[9.5px] font-bold text-[#2E7CD6] shadow-sm">
+                                  Mine
+                                </span>
+                              )}
+                            </div>
+                            <div className="p-4">
+                              <div className="flex items-start gap-2">
+                                <span className="font-mono text-[11px] font-semibold text-[#7B8495]">
+                                  {ticket.human_id}
+                                </span>
+                                <Badge
+                                  className={`ml-auto ${PRIORITY_META[ticket.priority]?.badge}`}
+                                >
+                                  {ticket.priority}
+                                </Badge>
+                              </div>
+                              <h4 className="mt-2 line-clamp-2 min-h-10 text-sm font-bold leading-5">
+                                {ticket.title}
+                              </h4>
+                              <div className="mt-2 space-y-1 text-[11.5px] text-[#69738B]">
+                                <p className="line-clamp-1">
+                                  <span className="font-semibold text-[#4B5563]">Category:</span>{" "}
+                                  {ticket.category || "Not specified"}
+                                </p>
+                                <p className="line-clamp-2">
+                                  <span className="font-semibold text-[#4B5563]">Location:</span>{" "}
+                                  {ticket.location || "Not specified"}
                                 </p>
                               </div>
-                              <div onClick={(event) => event.stopPropagation()}>
-                                <TicketActionMenu
-                                  ticket={ticket}
-                                  done={done}
-                                  user={user}
-                                  onOpenTicket={onOpenTicket}
-                                  onUpdated={load}
-                                />
+                              <div className="mt-3 flex flex-wrap gap-1.5">
+                                <Badge
+                                  variant="outline"
+                                  className={statusClass(ticket.status)}
+                                >
+                                  {ticket.status}
+                                </Badge>
+                                {!done && (
+                                  <span
+                                    className={`rounded-full px-2 py-1 text-[10px] font-semibold ${sla.breach ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"}`}
+                                  >
+                                    {sla.text}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="mt-3 flex items-center gap-2 border-t border-[#EDF0F4] pt-3">
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-[10.5px] font-semibold text-[#69738B]">
+                                    {done ? "Completed" : `Raised ${age(ticket.created_at)} ago`}
+                                  </p>
+                                </div>
+                                <div onClick={(event) => event.stopPropagation()}>
+                                  <TicketActionMenu
+                                    ticket={ticket}
+                                    done={done}
+                                    user={user}
+                                    onOpenTicket={onOpenTicket}
+                                    onUpdated={load}
+                                  />
+                                </div>
                               </div>
                             </div>
                           </Card>

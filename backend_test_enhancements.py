@@ -5,10 +5,11 @@ Tests NEW endpoints: Dashboard dept scoping, Member SLA report, IT approval subm
 """
 import requests
 import json
+import os
 from typing import Dict, Any, Optional
 
 # Base URL from .env
-BASE_URL = "https://ticket-flow-pro-8.preview.emergentagent.com/api"
+BASE_URL = os.getenv("BASE_URL", "http://localhost:3004/api")
 
 # Demo users
 USERS = {
