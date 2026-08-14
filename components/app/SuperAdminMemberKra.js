@@ -36,6 +36,8 @@ import {
   Check,
   Clock3,
   Copy,
+  FileSpreadsheet,
+  Loader2,
   Plus,
   Trash2,
   X,
@@ -54,6 +56,9 @@ const statusStyle = {
   Completed: "bg-[#E4F5EE] text-[#0E6B47]",
   Partial: "bg-[#FDF3E0] text-[#8A5A06]",
   "Not submitted": "bg-[#FDECEC] text-[#A32D2D]",
+  "Not Submitted": "bg-[#FDECEC] text-[#A32D2D]",
+  Issue: "bg-[#FDECEC] text-[#A32D2D]",
+  Late: "bg-[#FDECEC] text-[#A32D2D]",
 };
 
 function Summary({ lists, submissions }) {
@@ -78,7 +83,7 @@ function Summary({ lists, submissions }) {
       0,
     );
   const compliance = expected ? Math.round((submitted / expected) * 100) : 0;
-  const remaining = Math.max(0, new Date().setHours(18, 0, 0, 0) - Date.now());
+  const remaining = Math.max(0, new Date().setHours(19, 0, 0, 0) - Date.now());
   const remainingHours = Math.floor(remaining / 3600000);
   const remainingMinutes = Math.floor((remaining % 3600000) / 60000);
   return (
@@ -136,7 +141,7 @@ function Summary({ lists, submissions }) {
         </p>
         <p className="mt-1 flex items-center gap-1.5 text-sm font-semibold text-[#4B5563]">
           <Clock3 className="h-4 w-4" />
-          6:00 PM ·{" "}
+          7:00 PM ·{" "}
           {remaining ? `in ${remainingHours}h ${remainingMinutes}m` : "closed"}
         </p>
       </div>
@@ -173,7 +178,7 @@ function Streak({ list, submissions }) {
           <span
             key={days[index]}
             title={`${days[index]}: ${record?.status || "Missed"}`}
-            className={`h-3 w-3 rounded-[3px] ${index === 6 && !record ? "bg-[#EDF0F4]" : record?.status === "Completed" ? "bg-[#1E9E6A]" : record?.status === "Partial" ? "bg-[#E8930C]" : "bg-[#DC3D3D]"}`}
+            className={`h-3 w-3 rounded-[3px] ${index === 6 && !record ? (list.overdue ? "bg-[#DC3D3D]" : "bg-[#EDF0F4]") : record?.status === "Completed" ? "bg-[#1E9E6A]" : record?.status === "Partial" ? "bg-[#E8930C]" : "bg-[#DC3D3D]"}`}
           />
         ))}
       </div>
@@ -190,7 +195,7 @@ function KraCard({ list, member, submissions, onDelete, onDuplicate }) {
       submission.checklist_id === list.id &&
       submission.date === dayKey(new Date()),
   );
-  const status = todaySubmission?.status || "Not submitted";
+  const status = list.today_status || todaySubmission?.status || "Not submitted";
   const done = todaySubmission?.done_count || 0;
   const avatar = list.member_role === "it" ? "bg-[#2E7CD6]" : "bg-[#6C5CE7]";
   return (
@@ -274,10 +279,12 @@ function AssignChecklist({ members, lists, locations, onCreated }) {
     title: "",
     items: [],
     repeat: "Daily",
-    cutoff: "18:00",
+    cutoff: "19:00",
     location: "",
   });
   const [newTask, setNewTask] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importedFile, setImportedFile] = useState("");
   const templates = {
     support: [
       "Review assigned tickets",
@@ -311,17 +318,46 @@ function AssignChecklist({ members, lists, locations, onCreated }) {
       });
       toast.success("Checklist assigned");
       setOpen(false);
+      setImportedFile("");
       setForm({
         member_id: "",
         title: "",
         items: [],
         repeat: "Daily",
-        cutoff: "18:00",
+        cutoff: "19:00",
         location: "",
       });
       onCreated();
     } catch (error) {
       toast.error(error.message);
+    }
+  };
+  const importSpreadsheet = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const data = new FormData();
+    data.append("file", file);
+    setImporting(true);
+    try {
+      const result = await api("/member-checklists/import-preview", {
+        method: "POST",
+        body: data,
+        timeout: 30000,
+      });
+      setForm((current) => ({
+        ...current,
+        title:
+          current.title ||
+          file.name.replace(/\.(xlsx|csv)$/i, "").replace(/[_-]+/g, " "),
+        items: result.items,
+      }));
+      setImportedFile(file.name);
+      toast.success(`${result.rows_imported} daily work items imported`);
+    } catch (error) {
+      toast.error(error.message);
+    } finally {
+      setImporting(false);
     }
   };
   return (
@@ -437,6 +473,39 @@ function AssignChecklist({ members, lists, locations, onCreated }) {
               </SelectContent>
             </Select>
           </div>
+          <div className="rounded-xl border border-dashed border-[#CFC8F8] bg-[#FAF9FF] p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <span className="grid h-10 w-10 place-items-center rounded-lg bg-[#ECE9FF] text-[#6C5CE7]">
+                <FileSpreadsheet className="h-5 w-5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold">Import daily work from Excel</p>
+                <p className="text-xs text-[#9CA3AF]">
+                  Upload .xlsx or .csv with a Task, Daily Work, Activity or Responsibility column.
+                </p>
+                {importedFile && (
+                  <p className="mt-1 truncate text-xs font-medium text-[#6C5CE7]">
+                    {importedFile} · {form.items.length} items populated below
+                  </p>
+                )}
+              </div>
+              <label className="inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-md border bg-white px-3 text-xs font-semibold shadow-sm hover:bg-[#F7F7FA]">
+                {importing ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <FileSpreadsheet className="h-4 w-4" />
+                )}
+                {importing ? "Reading…" : "Choose sheet"}
+                <input
+                  type="file"
+                  className="sr-only"
+                  accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+                  disabled={importing}
+                  onChange={importSpreadsheet}
+                />
+              </label>
+            </div>
+          </div>
           <div>
             <Label>Tasks</Label>
             <div className="mt-2 space-y-2">
@@ -509,14 +578,12 @@ function AssignChecklist({ members, lists, locations, onCreated }) {
             </div>
             <div>
               <Label>Daily cut-off</Label>
-              <Input
-                type="time"
-                className="mt-1"
-                value={form.cutoff}
-                onChange={(event) =>
-                  setForm({ ...form, cutoff: event.target.value })
-                }
-              />
+              <div className="mt-1 rounded-md border bg-[#FAFBFC] px-3 py-2">
+                <p className="text-sm font-semibold">7:00 PM</p>
+                <p className="text-[10px] text-[#9CA3AF]">
+                  Incomplete work is marked red and escalated after cut-off.
+                </p>
+              </div>
             </div>
           </div>
         </div>

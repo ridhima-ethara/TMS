@@ -540,8 +540,8 @@ function SuperInbox({ rows, load }) {
               {initials(row.ticket?.raised_by_name)}
             </span>
             <div className="min-w-0 flex-1 sm:min-w-64">
-              <p className="font-bold">
-                {row.ticket?.title}{" "}
+              <div className="flex flex-wrap items-center gap-1.5 font-bold">
+                {row.ticket?.title}
                 <Badge
                   className={
                     row.ticket?.department === "IT"
@@ -550,11 +550,11 @@ function SuperInbox({ rows, load }) {
                   }
                 >
                   {row.ticket?.department}
-                </Badge>{" "}
+                </Badge>
                 <Badge className="bg-amber-100 text-amber-800">
                   {row.ticket?.priority}
                 </Badge>
-              </p>
+              </div>
               <p className="text-xs text-[#9CA3AF]">
                 {row.human_id} · {row.ticket?.raised_by_name} ·{" "}
                 {row.vendor || "No vendor"} · required by{" "}

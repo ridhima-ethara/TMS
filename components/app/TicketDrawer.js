@@ -15,6 +15,7 @@ import {
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
@@ -150,6 +151,14 @@ export default function TicketDrawer({
       }}
     >
       <SheetContent className="w-full overflow-y-auto p-0 sm:max-w-2xl">
+        <SheetTitle className="sr-only">
+          {t?.title || "Ticket details"}
+        </SheetTitle>
+        <SheetDescription className="sr-only">
+          {loading
+            ? "Loading ticket details"
+            : `Details and activity for ${t?.human_id || "the selected ticket"}`}
+        </SheetDescription>
         {loading || !t ? (
           <div className="flex h-full items-center justify-center">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -169,9 +178,9 @@ export default function TicketDrawer({
                   {t.status}
                 </Badge>
               </div>
-              <SheetTitle className="text-left text-lg mt-1">
+              <h2 className="mt-1 text-left text-lg font-semibold text-foreground">
                 {t.title}
-              </SheetTitle>
+              </h2>
               <p className="text-sm text-muted-foreground text-left">
                 {t.category}
                 {t.subcategory ? ` › ${t.subcategory}` : ""} · {t.location}

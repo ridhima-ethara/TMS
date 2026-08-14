@@ -2,12 +2,20 @@ import { connectToPostgres } from "@/lib/postgres-document-db";
 import { v4 as uuidv4 } from "uuid";
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
+import nodemailer from "nodemailer";
+import ExcelJS from "exceljs";
 import { SignJWT, jwtVerify } from "jose";
 import { request as httpRequest } from "node:http";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { connect as tlsConnect } from "node:tls";
 import { readFileSync } from "node:fs";
-import { createHash, randomBytes } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomInt,
+  timingSafeEqual,
+} from "node:crypto";
 import {
   slaDates,
   isBusinessTime,
@@ -51,6 +59,18 @@ async function connectToDatabase() {
           { expires_at: 1 },
           { expireAfterSeconds: 0 },
         ),
+        db.collection("login_otp_challenges").createIndex(
+          { id: 1 },
+          { unique: true },
+        ),
+        db.collection("login_otp_challenges").createIndex({
+          user_id: 1,
+          expires_at: -1,
+        }),
+        db.collection("kra_escalations").createIndex(
+          { checklist_id: 1, date: 1 },
+          { unique: true },
+        ),
         db.collection("attachments").createIndex({ id: 1 }, { unique: true }),
         db.collection("attachments").createIndex({ owner_id: 1, linked_entity: 1, created_at: -1 }),
         db.collection("firewall_daily_archives").createIndex(
@@ -71,9 +91,12 @@ async function connectToDatabase() {
       ]);
       await ensureDesignatedItManagers(db);
       await ensureTicketRoutingData(db);
+      await ensureKraDefaults(db);
       await migrateTicketSlaData(db);
       startSlaMonitor(db);
+      startEmailDeliveryMonitor(db);
       startFirewallHealthMonitor(db);
+      startFirewallArchiveMonitor(db);
       return db;
     })().catch((error) => {
       connecting = null;
@@ -111,16 +134,94 @@ function json(data, status = 200) {
   return res;
 }
 
-function loginRateLimitKey(request, email) {
-  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
-  return createHash("sha256").update(`${ip}:${email}`).digest("hex");
+function requestClientAddress(request) {
+  // Forwarded headers are attacker-controlled unless the deployment explicitly
+  // confirms that a trusted reverse proxy replaces them.
+  if (process.env.TRUST_PROXY === "true") {
+    const forwarded = request.headers.get("x-forwarded-for");
+    const address = forwarded?.split(",")[0]?.trim();
+    if (address) return address;
+  }
+  return request.ip || "local";
+}
+
+function requestRateLimitKey(scope, request, identity = "") {
+  const ip = requestClientAddress(request);
+  return createHash("sha256")
+    .update(`${scope}:${ip}:${identity}`)
+    .digest("hex");
 }
 async function loginRateLimited(db, request, email) {
-  const result = await db.consumeRateLimit(loginRateLimitKey(request, email), 8, 15 * 60_000);
+  const result = await db.consumeRateLimit(
+    requestRateLimitKey("login", request, email),
+    8,
+    15 * 60_000,
+  );
   return result.limited;
 }
 async function clearLoginAttempts(db, request, email) {
-  await db.clearRateLimit(loginRateLimitKey(request, email));
+  await db.clearRateLimit(requestRateLimitKey("login", request, email));
+}
+
+function rejectsCrossSiteMutation(request) {
+  if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return false;
+  if (request.headers.get("sec-fetch-site") === "cross-site") return true;
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  const allowed = new Set([new URL(request.url).origin]);
+  if (process.env.TRUST_PROXY === "true") {
+    const forwardedHost = request.headers.get("x-forwarded-host");
+    const forwardedProtocol = request.headers.get("x-forwarded-proto");
+    if (forwardedHost && forwardedProtocol)
+      allowed.add(`${forwardedProtocol}://${forwardedHost}`);
+  }
+  if (process.env.PUBLIC_APP_URL) {
+    try {
+      allowed.add(new URL(process.env.PUBLIC_APP_URL).origin);
+    } catch {
+      return true;
+    }
+  }
+  try {
+    return !allowed.has(new URL(origin).origin);
+  } catch {
+    return true;
+  }
+}
+
+function requestBodyTooLarge(request, route) {
+  const contentLength = Number(request.headers.get("content-length") || 0);
+  if (!Number.isFinite(contentLength) || contentLength <= 0) return false;
+  const limit =
+    route === "/attachments"
+      ? 27 * 1024 * 1024
+      : route === "/member-checklists/import-preview"
+        ? 5 * 1024 * 1024
+        : 1024 * 1024;
+  return contentLength > limit;
+}
+
+function sessionVersionMatches(user, tokenSession) {
+  return (
+    Number(user?.session_version || 0) ===
+    Number(tokenSession?.session_version || 0)
+  );
+}
+
+function demoLoginAllowed(request) {
+  if (process.env.ALLOW_DEMO_LOGIN !== "true") return false;
+  if (process.env.ALLOW_DEMO_LOGIN_REMOTE === "true") return true;
+  try {
+    const loopback = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+    const requestHostname = new URL(request.url).hostname.toLowerCase();
+    const hostHeader = String(request.headers.get("host") || "").toLowerCase();
+    const headerHostname = hostHeader.startsWith("[")
+      ? hostHeader.slice(0, hostHeader.indexOf("]") + 1)
+      : hostHeader.split(":")[0];
+    return loopback.has(requestHostname) && loopback.has(headerHostname);
+  } catch {
+    return false;
+  }
 }
 
 let localFirewallProfiles;
@@ -263,8 +364,148 @@ async function firewallRequest(url, headers, tls = {}) {
   });
 }
 
+async function firewallPaginatedRequest(
+  url,
+  headers,
+  tls = {},
+  { pageSize = 10000, maxRows = 100000 } = {},
+) {
+  const target = new URL(url);
+  const safePageSize = Math.min(10000, Math.max(100, Number(pageSize) || 10000));
+  const safeMaxRows = Math.min(250000, Math.max(safePageSize, Number(maxRows) || 100000));
+  target.searchParams.set("rows", String(safePageSize));
+  target.searchParams.set("start", "0");
+  let firstPayload = null;
+  let start = 0;
+  let totalLines = 0;
+  let pages = 0;
+  let rawRowsFetched = 0;
+  let searchSession = "";
+  let stopReason = "row_limit";
+  let lastStart = start;
+  let lastNextIndex = null;
+  let lastPageRows = 0;
+  const merged = [];
+  const fingerprints = new Set();
+  while (rawRowsFetched < safeMaxRows) {
+    target.searchParams.set("start", String(start));
+    if (searchSession)
+      target.searchParams.set("session_id", searchSession);
+    const payload = await firewallRequest(target.toString(), headers, tls);
+    if (!firstPayload) {
+      firstPayload = payload;
+      if (payload?.session_id !== undefined && payload?.session_id !== null)
+        searchSession = String(payload.session_id);
+    }
+    const page = firewallRows(payload);
+    pages += 1;
+    rawRowsFetched += page.length;
+    lastStart = start;
+    lastPageRows = page.length;
+    lastNextIndex = payload?.next_idx ?? null;
+    totalLines = Math.max(
+      totalLines,
+      Number(payload?.total_lines || payload?.matched_count || payload?.size || 0),
+    );
+    for (const row of page) {
+      const fingerprint = [
+        row?.eventtime,
+        row?.logid,
+        row?.sessionid,
+        row?.date,
+        row?.time,
+        row?.srcip,
+        row?.dstip,
+        row?.sentbyte,
+        row?.rcvdbyte,
+      ].join("|");
+      if (!fingerprints.has(fingerprint)) {
+        fingerprints.add(fingerprint);
+        merged.push(row);
+      }
+      if (merged.length >= safeMaxRows) break;
+    }
+    if (!page.length) {
+      stopReason = "empty_page";
+      break;
+    }
+    if (totalLines && rawRowsFetched >= totalLines) {
+      stopReason = "source_exhausted";
+      break;
+    }
+    const nextStart = Number(payload?.next_idx);
+    const candidate =
+      Number.isFinite(nextStart) && nextStart > start
+        ? nextStart
+        : start + page.length;
+    if (candidate <= start) {
+      stopReason = "non_advancing_cursor";
+      break;
+    }
+    start = candidate;
+  }
+  const expectedRows = totalLines || merged.length;
+  return {
+    ...(firstPayload || {}),
+    results: merged,
+    start: 0,
+    total_lines: expectedRows,
+    rows_returned: merged.length,
+    raw_rows_fetched: rawRowsFetched,
+    duplicate_rows_removed: Math.max(0, rawRowsFetched - merged.length),
+    pages_fetched: pages,
+    pagination_stop_reason: stopReason,
+    pagination_last_start: lastStart,
+    pagination_last_next_idx: lastNextIndex,
+    pagination_last_page_rows: lastPageRows,
+    search_session_pinned: Boolean(searchSession),
+    pagination_complete: rawRowsFetched >= expectedRows,
+    row_limit_reached: rawRowsFetched >= safeMaxRows && rawRowsFetched < expectedRows,
+  };
+}
+
+function firewallSectionMetadata(payload, path, fetchedAt) {
+  const recordsReturned = firewallRows(payload).length;
+  const recordsAvailable = Number(
+    payload?.total_lines || payload?.matched_count || payload?.size || recordsReturned,
+  );
+  return {
+    source: "firewall_api",
+    path: String(path || "").split("?")[0],
+    fetched_at: fetchedAt.toISOString(),
+    vendor_status: payload?.status || "success",
+    records_returned: recordsReturned,
+    records_available: recordsAvailable,
+    complete:
+      payload?.pagination_complete !== undefined
+        ? Boolean(payload.pagination_complete)
+        : recordsReturned >= recordsAvailable,
+    pages_fetched: Number(payload?.pages_fetched || 1),
+    raw_rows_fetched: Number(payload?.raw_rows_fetched || recordsReturned),
+    duplicate_rows_removed: Number(payload?.duplicate_rows_removed || 0),
+    pagination_stop_reason: payload?.pagination_stop_reason || null,
+    pagination_last_start: payload?.pagination_last_start ?? null,
+    pagination_last_next_idx: payload?.pagination_last_next_idx ?? null,
+    pagination_last_page_rows: payload?.pagination_last_page_rows ?? null,
+    search_session_pinned: Boolean(payload?.search_session_pinned),
+    row_limit_reached: Boolean(payload?.row_limit_reached),
+    appliance_serial: payload?.serial || null,
+    firmware: payload?.version || null,
+    build: payload?.build ?? null,
+  };
+}
+
 const FIREWALL_HEALTH_MONITOR_KEY = Symbol.for(
   "ticketflow.firewallHealthMonitor",
+);
+const FIREWALL_ARCHIVE_MONITOR_KEY = Symbol.for(
+  "ticketflow.firewallArchiveMonitor",
+);
+const FIREWALL_ARCHIVE_SYNCS_KEY = Symbol.for(
+  "ticketflow.firewallArchiveSyncs",
+);
+const FIREWALL_ARCHIVE_WRITES_KEY = Symbol.for(
+  "ticketflow.firewallArchiveWrites",
 );
 
 async function probeFirewallAvailability(db, firewallId) {
@@ -320,6 +561,12 @@ async function probeFirewallAvailability(db, firewallId) {
     successfulSections,
     failedSections,
   });
+  if (state === "degraded")
+    void syncFirewallArchiveSnapshot(db, profile.id, {
+      reason: "degraded_pre_downtime",
+    }).catch((error) =>
+      console.error(`${profile.label} pre-downtime archive failed:`, error),
+    );
 }
 
 function startFirewallHealthMonitor(db) {
@@ -343,6 +590,151 @@ function startFirewallHealthMonitor(db) {
   timer.unref?.();
   globalThis[FIREWALL_HEALTH_MONITOR_KEY] = { timer, intervalMs };
   void run();
+}
+
+async function syncFirewallArchiveSnapshot(
+  db,
+  firewallId,
+  { reason = "scheduled" } = {},
+) {
+  if (!globalThis[FIREWALL_ARCHIVE_SYNCS_KEY])
+    globalThis[FIREWALL_ARCHIVE_SYNCS_KEY] = new Map();
+  const active = globalThis[FIREWALL_ARCHIVE_SYNCS_KEY];
+  if (active.has(firewallId)) return active.get(firewallId);
+
+  const task = (async () => {
+    const profile = firewallProfile(firewallId);
+    const fw = profile.value;
+    const baseUrl = String(fw("API_URL")).replace(/\/$/, "");
+    const apiKey = fw("API_KEY");
+    if (!baseUrl || !apiKey)
+      return { skipped: true, reason: "unconfigured" };
+    const basePath = fw("REPORT_PATH", fw("LOGS_PATH", "/api/logs"));
+    const endpoint = `${baseUrl}${basePath.startsWith("/") ? basePath : `/${basePath}`}`;
+    const configuredPageRows = Number(
+      fw("ARCHIVE_PAGE_ROWS", fw("REPORT_ROWS", "10000")),
+    );
+    const pageSize = Number.isFinite(configuredPageRows)
+      ? Math.min(10000, Math.max(100, Math.round(configuredPageRows)))
+      : 10000;
+    const configuredMaxRows = Number(fw("ARCHIVE_SYNC_MAX_ROWS", "100000"));
+    const maxRows = Number.isFinite(configuredMaxRows)
+      ? Math.min(250000, Math.max(pageSize, Math.round(configuredMaxRows)))
+      : 100000;
+    const headerName = fw("API_HEADER", "Authorization");
+    const prefix = fw("API_PREFIX", "Bearer");
+    const payload = await firewallPaginatedRequest(
+      endpoint,
+      {
+        Accept: "application/json",
+        [headerName]: prefix ? `${prefix} ${apiKey}` : apiKey,
+      },
+      {
+        allowSelfSigned: fw("ALLOW_SELF_SIGNED", "false") === "true",
+        caPath: fw("CA_CERT_PATH", ""),
+        certSha256: fw("CERT_SHA256", ""),
+      },
+      { pageSize, maxRows },
+    );
+    const rawRows = firewallRows(payload);
+    const inventory = await mapFirewallInventory(rawRows);
+    const capturedAt = new Date();
+    const archive = await archiveFirewallRecords(
+      db,
+      profile,
+      fw("NAME", profile.label),
+      inventory.devices,
+      capturedAt,
+      {
+        captureReason: reason,
+        sourceComplete: Boolean(payload?.pagination_complete),
+        sourceRowsFetched: Number(payload?.raw_rows_fetched || rawRows.length),
+        sourceRowsAvailable: Number(payload?.total_lines || rawRows.length),
+        sourcePagesFetched: Number(payload?.pages_fetched || 1),
+      },
+    );
+    await db.collection("firewall_health").updateOne(
+      { firewall_id: profile.id },
+      {
+        $set: {
+          last_archive_at: capturedAt,
+          last_archive_reason: reason,
+          last_archive_records: inventory.devices.length,
+          last_archive_source_complete: Boolean(payload?.pagination_complete),
+          last_archive_error: null,
+          updated_at: capturedAt,
+        },
+      },
+    );
+    return { ...archive, source_complete: Boolean(payload?.pagination_complete) };
+  })();
+  active.set(firewallId, task);
+  try {
+    return await task;
+  } catch (error) {
+    const profile = firewallProfile(firewallId);
+    await db.collection("firewall_health").updateOne(
+      { firewall_id: profile.id },
+      {
+        $set: {
+          last_archive_error: error.message || "Archive collection failed",
+          last_archive_error_at: new Date(),
+          updated_at: new Date(),
+        },
+      },
+    );
+    throw error;
+  } finally {
+    active.delete(firewallId);
+  }
+}
+
+function startFirewallArchiveMonitor(db) {
+  if (
+    process.env.NODE_ENV === "test" ||
+    globalThis[FIREWALL_ARCHIVE_MONITOR_KEY]
+  )
+    return;
+  const configuredInterval = Number(
+    process.env.FIREWALL_ARCHIVE_INTERVAL_MS || 15 * 60_000,
+  );
+  const intervalMs = Number.isFinite(configuredInterval)
+    ? Math.min(24 * 60 * 60_000, Math.max(5 * 60_000, configuredInterval))
+    : 15 * 60_000;
+  const configuredInitialDelay = Number(
+    process.env.FIREWALL_ARCHIVE_INITIAL_DELAY_MS || 5 * 60_000,
+  );
+  const initialDelayMs = Number.isFinite(configuredInitialDelay)
+    ? Math.min(intervalMs, Math.max(5_000, configuredInitialDelay))
+    : 5 * 60_000;
+  let running = false;
+  const run = async () => {
+    if (running) return;
+    running = true;
+    try {
+      // Run sequentially so two location profiles never overload an appliance.
+      for (const firewallId of ["hq", "hq2"]) {
+        try {
+          await syncFirewallArchiveSnapshot(db, firewallId, {
+            reason: "scheduled",
+          });
+        } catch (error) {
+          console.error(`${firewallId.toUpperCase()} archive monitor failed:`, error);
+        }
+      }
+    } finally {
+      running = false;
+    }
+  };
+  const initialTimer = setTimeout(() => void run(), initialDelayMs);
+  const timer = setInterval(() => void run(), intervalMs);
+  initialTimer.unref?.();
+  timer.unref?.();
+  globalThis[FIREWALL_ARCHIVE_MONITOR_KEY] = {
+    timer,
+    initialTimer,
+    intervalMs,
+  };
 }
 
 function sanitizeFirewallPayload(value) {
@@ -541,7 +933,7 @@ function activeDhcpLeases(payload) {
   };
   visit(payload);
   const now = Date.now();
-  return found
+  const active = found
     .filter((lease) => {
       const state = String(
         lease.status || lease.state || lease.lease_state || "active",
@@ -585,6 +977,12 @@ function activeDhcpLeases(payload) {
           : null),
       live_source: "dhcp",
     }));
+  const unique = new Map();
+  for (const lease of active) {
+    const key = `${normalizeMac(lease.mac)}|${String(lease.ipv4_address || "").trim()}`;
+    if (!unique.has(key)) unique.set(key, lease);
+  }
+  return [...unique.values()];
 }
 
 function firewallRecordTime(row) {
@@ -623,28 +1021,47 @@ function normalizedFirewallRecord(row) {
   const timestamp = firewallRecordTime(row);
   if (!timestamp) return null;
   return {
+    record_id:
+      row.record_id ||
+      [row.logid, row.sessionid, row.eventtime].filter(Boolean).join(":") ||
+      "",
     timestamp: timestamp.toISOString(),
     source_ip: row.srcip || row.source_ip || row.ip || "",
-    source_mac: row.srcmac || row.mastersrcmac || row.mac || "",
-    source_name: row.srcname || row.hostname || row.asset_user_name || "",
+    source_mac:
+      row.srcmac || row.source_mac || row.mastersrcmac || row.mac || "",
+    source_name:
+      row.srcname || row.source_name || row.hostname || row.asset_user_name || "",
+    source_device_type:
+      row.srcdevtype || row.source_device_type || row.device_type || "",
+    source_os_name: row.srcosname || row.source_os_name || row.os_name || "",
+    source_vendor:
+      row.srchwvendor || row.source_vendor || row.hardware_vendor || row.vendor || "",
+    asset_user_name: row.asset_user_name || "",
     employee_code: row.employee_code || "",
+    asset_email: row.asset_email || "",
+    av_status: row.av_status || "Unknown",
+    inventory_status: row.inventory_status || "Unmapped",
+    inventory_match: Boolean(row.inventory_match),
+    inventory_conflict: Boolean(row.inventory_conflict),
     destination_ip: row.dstip || row.destination_ip || "",
+    destination_port: row.dstport || row.destination_port || "",
     destination_country: row.dstcountry || row.destination_country || "",
     source_interface: Array.isArray(row.srcintf)
       ? row.srcintf.join(", ")
-      : String(row.srcintf || row.interface || ""),
+      : String(row.srcintf || row.source_interface || row.interface || ""),
     destination_interface: Array.isArray(row.dstintf)
       ? row.dstintf.join(", ")
-      : String(row.dstintf || ""),
+      : String(row.dstintf || row.destination_interface || ""),
     application:
       row.app || row.appname || row.application || row.service || "",
+    service: row.service || row.application || "",
     category: row.appcat || row.category || "",
     action: row.action || row.status || "",
     severity: row.level || row.severity || row.crlevel || "",
     policy: row.policyname || row.policy || row.policyid || "",
     sent_bytes: Number(row.sentbyte || row.sent_bytes || 0),
     received_bytes: Number(row.rcvdbyte || row.received_bytes || 0),
-    duration_seconds: Number(row.duration || 0),
+    duration_seconds: Number(row.duration || row.duration_seconds || 0),
     message: row.msg || row.message || row.event || row.logdesc || "",
   };
 }
@@ -700,6 +1117,7 @@ function firewallArchiveSummary(records) {
 
 function firewallRecordFingerprint(row) {
   return [
+    row.record_id,
     row.timestamp,
     row.source_ip,
     row.source_mac,
@@ -714,6 +1132,113 @@ function firewallRecordFingerprint(row) {
   ].join("|");
 }
 
+const FIREWALL_ARCHIVE_COLUMNS = [
+  "archive_date",
+  "timestamp",
+  "source_ip",
+  "source_mac",
+  "source_name",
+  "source_device_type",
+  "source_os_name",
+  "source_vendor",
+  "asset_user_name",
+  "employee_code",
+  "asset_email",
+  "av_status",
+  "inventory_status",
+  "destination_ip",
+  "destination_port",
+  "destination_country",
+  "source_interface",
+  "destination_interface",
+  "application",
+  "service",
+  "category",
+  "action",
+  "severity",
+  "policy",
+  "sent_bytes",
+  "received_bytes",
+  "duration_seconds",
+  "message",
+];
+
+function firewallArchiveCsvCell(value) {
+  const text = String(value ?? "");
+  const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
+  return `"${safe.replace(/"/g, '""')}"`;
+}
+
+function firewallArchiveCsvStream(records) {
+  const encoder = new TextEncoder();
+  let index = 0;
+  let headerSent = false;
+  return new ReadableStream({
+    pull(controller) {
+      let chunk = "";
+      if (!headerSent) {
+        chunk = `\uFEFF${FIREWALL_ARCHIVE_COLUMNS.map(firewallArchiveCsvCell).join(",")}\r\n`;
+        headerSent = true;
+      }
+      const end = Math.min(records.length, index + 250);
+      for (; index < end; index++) {
+        const record = records[index];
+        chunk += `${FIREWALL_ARCHIVE_COLUMNS.map((column) =>
+          firewallArchiveCsvCell(record[column]),
+        ).join(",")}\r\n`;
+      }
+      if (chunk) controller.enqueue(encoder.encode(chunk));
+      if (index >= records.length) controller.close();
+    },
+  });
+}
+
+async function preservePreDowntimeArchive(db, profile, detectedAt) {
+  const candidates = await db
+    .collection("firewall_daily_archives")
+    .find({ firewall_id: profile.id })
+    .sort({ date: -1 })
+    .limit(7)
+    .toArray();
+  const archive =
+    candidates.find(
+      (item) => Number(item.summary?.stored_records || item.records?.length) > 0,
+    ) || candidates[0];
+  if (!archive) return null;
+  const capturedAt = archive.captured_at
+    ? new Date(archive.captured_at)
+    : archive.updated_at
+      ? new Date(archive.updated_at)
+      : null;
+  const snapshot = {
+    archive_id: archive.id,
+    archive_date: archive.date,
+    captured_at: capturedAt,
+    latest_record_at: archive.latest_record_at || null,
+    stored_records: Number(
+      archive.summary?.stored_records || archive.records?.length || 0,
+    ),
+    source_complete: Boolean(archive.source_complete),
+    archive_complete: Boolean(archive.archive_complete),
+    protected_at: detectedAt,
+    gap_ms: capturedAt
+      ? Math.max(0, detectedAt.getTime() - capturedAt.getTime())
+      : null,
+  };
+  await db.collection("firewall_daily_archives").updateOne(
+    { id: archive.id, firewall_id: profile.id },
+    {
+      $set: {
+        protected_before_downtime: true,
+        last_pre_downtime_snapshot: snapshot,
+        last_pre_downtime_protected_at: detectedAt,
+        updated_at: detectedAt,
+      },
+    },
+  );
+  return snapshot;
+}
+
 async function recordFirewallHealth(
   db,
   profile,
@@ -726,6 +1251,10 @@ async function recordFirewallHealth(
   const previous = await healthCollection.findOne({ firewall_id: profile.id });
   const stateChanged = previous?.current_state !== state;
   let recoveredAt = null;
+  const preDowntimeSnapshot =
+    state === "down" && stateChanged
+      ? await preservePreDowntimeArchive(db, profile, now)
+      : null;
 
   if (state === "down") {
     try {
@@ -744,6 +1273,7 @@ async function recordFirewallHealth(
             firewall_label: profile.label,
             open: true,
             started_at: now,
+            pre_downtime_snapshot: preDowntimeSnapshot,
             created_at: now,
           },
         },
@@ -765,7 +1295,11 @@ async function recordFirewallHealth(
     if (openOutage) {
       recoveredAt = now;
       await outageCollection.updateOne(
-        { _id: openOutage._id, open: true },
+        {
+          id: openOutage.id,
+          firewall_id: profile.id,
+          open: true,
+        },
         {
           $set: {
             open: false,
@@ -796,6 +1330,12 @@ async function recordFirewallHealth(
           ? { last_success_at: now }
           : {}),
         ...(recoveredAt ? { last_recovered_at: recoveredAt } : {}),
+        ...(preDowntimeSnapshot
+          ? {
+              last_pre_downtime_snapshot: preDowntimeSnapshot,
+              last_pre_downtime_protected_at: now,
+            }
+          : {}),
         updated_at: now,
       },
       $setOnInsert: { id: uuidv4(), created_at: now },
@@ -879,6 +1419,7 @@ async function firewallDowntimeSummary(db, profile, days) {
       ? {
           id: currentOutage.id,
           started_at: currentOutage.started_at,
+          pre_downtime_snapshot: currentOutage.pre_downtime_snapshot || null,
           duration_ms: Math.max(
             0,
             now.getTime() - new Date(currentOutage.started_at).getTime(),
@@ -890,6 +1431,8 @@ async function firewallDowntimeSummary(db, profile, days) {
           id: lastCompletedOutage.id,
           started_at: lastCompletedOutage.started_at,
           ended_at: lastCompletedOutage.ended_at,
+          pre_downtime_snapshot:
+            lastCompletedOutage.pre_downtime_snapshot || null,
           duration_ms:
             lastCompletedOutage.duration_ms ||
             Math.max(
@@ -904,6 +1447,7 @@ async function firewallDowntimeSummary(db, profile, days) {
       open: outage.open,
       started_at: outage.started_at,
       ended_at: outage.ended_at || null,
+      pre_downtime_snapshot: outage.pre_downtime_snapshot || null,
       duration_ms: outage.open
         ? Math.max(0, now.getTime() - new Date(outage.started_at).getTime())
         : outage.duration_ms || 0,
@@ -911,7 +1455,32 @@ async function firewallDowntimeSummary(db, profile, days) {
   };
 }
 
-async function archiveFirewallRecords(db, profile, firewallName, records, capturedAt) {
+async function archiveFirewallRecords(...args) {
+  if (!globalThis[FIREWALL_ARCHIVE_WRITES_KEY])
+    globalThis[FIREWALL_ARCHIVE_WRITES_KEY] = new Map();
+  const writes = globalThis[FIREWALL_ARCHIVE_WRITES_KEY];
+  const profile = args[1];
+  const key = profile?.id || "default";
+  const previous = writes.get(key) || Promise.resolve();
+  const task = previous
+    .catch(() => {})
+    .then(() => archiveFirewallRecordsUnlocked(...args));
+  writes.set(key, task);
+  try {
+    return await task;
+  } finally {
+    if (writes.get(key) === task) writes.delete(key);
+  }
+}
+
+async function archiveFirewallRecordsUnlocked(
+  db,
+  profile,
+  firewallName,
+  records,
+  capturedAt,
+  capture = {},
+) {
   const normalized = records.map(normalizedFirewallRecord).filter(Boolean);
   const groups = new Map();
   for (const record of normalized) {
@@ -920,7 +1489,7 @@ async function archiveFirewallRecords(db, profile, firewallName, records, captur
     groups.get(date).push(record);
   }
   const capturedDate = firewallArchiveDate(capturedAt);
-  if (!groups.size) groups.set(capturedDate, []);
+  if (!groups.has(capturedDate)) groups.set(capturedDate, []);
   for (const [date, dayRecords] of groups) {
     const existing = await db
       .collection("firewall_daily_archives")
@@ -928,13 +1497,63 @@ async function archiveFirewallRecords(db, profile, firewallName, records, captur
     const merged = new Map();
     for (const record of [...(existing?.records || []), ...dayRecords])
       merged.set(firewallRecordFingerprint(record), record);
+    const configuredArchiveRows = Number(
+      profile.value("ARCHIVE_MAX_RECORDS", "250000"),
+    );
+    const archiveRowLimit = Number.isFinite(configuredArchiveRows)
+      ? Math.min(250000, Math.max(2500, Math.round(configuredArchiveRows)))
+      : 250000;
     const stored = [...merged.values()]
       .sort(
         (a, b) =>
           new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
       )
-      .slice(0, 2500);
+      .slice(0, archiveRowLimit);
     const { summary, escalations } = firewallArchiveSummary(stored);
+    const capturedAtDate = new Date(capturedAt);
+    const captureReason = capture.captureReason || "live_api";
+    const previousCapturedAt = existing?.captured_at
+      ? new Date(existing.captured_at)
+      : null;
+    const captureGapMs =
+      previousCapturedAt && firewallArchiveDate(previousCapturedAt) === date
+        ? Math.max(0, capturedAtDate.getTime() - previousCapturedAt.getTime())
+        : null;
+    const configuredCaptureInterval = Number(
+      process.env.FIREWALL_ARCHIVE_INTERVAL_MS || 15 * 60_000,
+    );
+    const expectedCaptureInterval = Number.isFinite(configuredCaptureInterval)
+      ? Math.min(
+          24 * 60 * 60_000,
+          Math.max(5 * 60_000, configuredCaptureInterval),
+        )
+      : 15 * 60_000;
+    const captureGapDetected = Boolean(
+      existing?.capture_gap_detected ||
+        existing?.record_limit_reached ||
+        (captureGapMs !== null && captureGapMs > expectedCaptureInterval * 2),
+    );
+    const currentRecordLimitReached = merged.size > archiveRowLimit;
+    const archiveComplete = Boolean(
+      capture.sourceComplete &&
+        !currentRecordLimitReached &&
+        !captureGapDetected,
+    );
+    const snapshot = {
+      captured_at: capturedAtDate,
+      reason: captureReason,
+      records_observed: dayRecords.length,
+      records_stored: stored.length,
+      source_complete: Boolean(capture.sourceComplete),
+      source_rows_fetched: Number(capture.sourceRowsFetched || normalized.length),
+      source_rows_available: Number(
+        capture.sourceRowsAvailable || normalized.length,
+      ),
+      source_pages_fetched: Number(capture.sourcePagesFetched || 1),
+      record_limit_reached: currentRecordLimitReached,
+      archive_complete: archiveComplete,
+      capture_gap_ms: captureGapMs,
+    };
     const escalationSignature = escalations.map((item) => item.title).join("|");
     const shouldNotify =
       date === capturedDate &&
@@ -951,13 +1570,29 @@ async function archiveFirewallRecords(db, profile, firewallName, records, captur
           date,
           timezone: "Asia/Kolkata",
           summary,
+          source_complete: Boolean(capture.sourceComplete),
+          archive_complete: archiveComplete,
+          capture_gap_detected: captureGapDetected,
+          latest_capture_gap_ms: captureGapMs,
+          capture_count: Number(existing?.capture_count || 0) + 1,
+          last_capture_reason: captureReason,
+          last_snapshot: snapshot,
+          first_captured_at: existing?.first_captured_at || capturedAtDate,
+          ...(capture.sourceComplete
+            ? { last_complete_capture_at: capturedAtDate }
+            : existing?.last_complete_capture_at
+              ? { last_complete_capture_at: existing.last_complete_capture_at }
+              : {}),
+          record_limit: archiveRowLimit,
+          record_limit_reached: currentRecordLimitReached,
           escalations,
           escalation_count: escalations.length,
           escalation_signature: escalationSignature,
           ...(shouldNotify ? { escalation_notified_at: new Date() } : {}),
           records: stored,
           latest_record_at: stored[0]?.timestamp || null,
-          captured_at: new Date(capturedAt),
+          first_record_at: stored.at(-1)?.timestamp || null,
+          captured_at: capturedAtDate,
           updated_at: new Date(),
         },
         $setOnInsert: { id: uuidv4(), created_at: new Date() },
@@ -1017,27 +1652,68 @@ const normalizeMac = (value) =>
   String(value || "")
     .toLowerCase()
     .replace(/[^0-9a-f]/g, "");
-function firewallInventory() {
+function inventoryCellText(value) {
+  if (value == null) return "";
+  if (typeof value === "object") {
+    if (value.text !== undefined) return String(value.text).trim();
+    if (Array.isArray(value.richText))
+      return value.richText.map((part) => part.text || "").join("").trim();
+    if (value.result !== undefined) return String(value.result).trim();
+  }
+  return String(value).trim();
+}
+
+async function inventoryRowsFrom(path) {
+  if (/\.xlsx$/i.test(path)) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(readFileSync(path));
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) return [];
+    const rows = [];
+    worksheet.eachRow((row) => {
+      rows.push(row.values.slice(1).map(inventoryCellText));
+    });
+    return rows;
+  }
+  return parseCsv(readFileSync(path, "utf8"));
+}
+
+async function firewallInventory() {
   if (firewallInventoryCache) return firewallInventoryCache;
+  firewallInventoryCache = (async () => {
   const files = [
     {
       source: "asset_inventory",
-      path:
-        process.env.FIREWALL_ASSET_INVENTORY_PATH ||
+      paths: [
+        process.env.FIREWALL_ASSET_INVENTORY_PATH,
         "/Users/macbookpro/Downloads/IT Asset Inventory.xlsx - Sheet1.csv",
+        "/Users/macbookpro/Downloads/IT Asset Inventory.xlsx",
+      ].filter(Boolean),
     },
     {
       source: "av_status",
-      path:
-        process.env.FIREWALL_AV_STATUS_PATH ||
+      paths: [
+        process.env.FIREWALL_AV_STATUS_PATH,
         "/Users/macbookpro/Downloads/AV Status and Mac Address_273.xlsx - Sheet1.csv",
+      ].filter(Boolean),
     },
   ];
   const index = new Map(),
     errors = [];
   for (const file of files) {
-    try {
-      const rows = parseCsv(readFileSync(file.path, "utf8"));
+    let rows = null;
+    let loadedPath = null;
+    let lastError = null;
+    for (const path of [...new Set(file.paths)]) {
+      try {
+        rows = await inventoryRowsFrom(path);
+        loadedPath = path;
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (rows) {
       const headers = (rows.shift() || []).map((header) =>
         header
           .trim()
@@ -1067,16 +1743,23 @@ function firewallInventory() {
         current.sources.add(file.source);
         index.set(mac, current);
       });
-    } catch (error) {
-      errors.push(`${file.source}: ${error.message}`);
+      continue;
     }
+    const assetContainsAv =
+      file.source === "av_status" &&
+      [...index.values()].some((entry) =>
+        entry.matches.some((match) => Boolean(match.av_status)),
+      );
+    if (!assetContainsAv)
+      errors.push(`${file.source}: ${lastError?.message || "inventory file not found"}`);
   }
-  firewallInventoryCache = { index, errors };
+  return { index, errors };
+  })();
   return firewallInventoryCache;
 }
 
-function mapFirewallInventory(devices) {
-  const inventory = firewallInventory();
+async function mapFirewallInventory(devices) {
+  const inventory = await firewallInventory();
   const mapped = devices.map((device) => {
     const mac = normalizeMac(
       device.mac || device.master_mac || device.srcmac || device.mastersrcmac,
@@ -1242,12 +1925,28 @@ function enrichFirewallDevices(devicesPayload, logsPayload) {
 function clean(doc) {
   if (!doc) return doc;
   if (Array.isArray(doc)) return doc.map(clean);
-  const { _id, password_hash, ...rest } = doc;
+  const { _id, password_hash, session_version, sessions_revoked_at, ...rest } =
+    doc;
   return rest;
 }
 
 function textValue(value, max = 2000) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+const PASSWORD_MIN_LENGTH = 12;
+
+function passwordPolicyError(password) {
+  if (typeof password !== "string" || password.length < PASSWORD_MIN_LENGTH)
+    return `Password must be at least ${PASSWORD_MIN_LENGTH} characters`;
+  if (
+    !/[a-z]/.test(password) ||
+    !/[A-Z]/.test(password) ||
+    !/\d/.test(password) ||
+    !/[^A-Za-z0-9]/.test(password)
+  )
+    return "Password must include uppercase, lowercase, a number and a symbol";
+  return null;
 }
 
 const ATTACHMENT_TYPES = Object.freeze({
@@ -1261,26 +1960,29 @@ const ATTACHMENT_TYPES = Object.freeze({
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const MAX_ATTACHMENT_TOTAL_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENTS = 10;
-const attachmentUploadUsage = new Map();
 
-function attachmentRateLimited(userId, files) {
-  const now = Date.now();
-  const recent = (attachmentUploadUsage.get(userId) || []).filter(
-    (entry) => now - entry.at < 60 * 60_000,
-  );
+async function attachmentRateLimited(database, userId, files) {
   const requestedBytes = files.reduce(
     (sum, file) => sum + Number(file.size || 0),
     0,
   );
-  if (
-    recent.reduce((sum, entry) => sum + entry.files, 0) + files.length > 30 ||
-    recent.reduce((sum, entry) => sum + entry.bytes, 0) + requestedBytes >
-      100 * 1024 * 1024
-  )
-    return true;
-  recent.push({ at: now, files: files.length, bytes: requestedBytes });
-  attachmentUploadUsage.set(userId, recent);
-  return false;
+  const key = (scope) =>
+    createHash("sha256").update(`${scope}:${userId}`).digest("hex");
+  const [fileRate, byteRate] = await Promise.all([
+    database.consumeRateLimit(
+      key("attachment-files"),
+      30,
+      60 * 60_000,
+      files.length,
+    ),
+    database.consumeRateLimit(
+      key("attachment-bytes"),
+      100 * 1024 * 1024,
+      60 * 60_000,
+      requestedBytes,
+    ),
+  ]);
+  return fileRate.limited || byteRate.limited;
 }
 
 function requestError(message, status = 400) {
@@ -1468,7 +2170,18 @@ async function audit(db, actor, action, entity, entityId, details = {}) {
     created_at: new Date(),
   });
 }
-async function notify(db, userIds, message, ticket) {
+function notificationKind(message = "") {
+  const value = String(message).toLowerCase();
+  if (/sla breach|escalat|overdue/.test(value)) return "escalation";
+  if (/resolved|closed|confirmed/.test(value)) return "resolution";
+  if (/assign|new .*ticket|ticket .*raised/.test(value)) return "assignment";
+  if (/comment|response/.test(value)) return "comment";
+  if (/approval|approved|rejected|clarification/.test(value)) return "approval";
+  if (/remind|pending/.test(value)) return "reminder";
+  return "general";
+}
+
+async function notify(db, userIds, message, ticket, kind, options = {}) {
   const ids = [
     ...new Set((Array.isArray(userIds) ? userIds : [userIds]).filter(Boolean)),
   ];
@@ -1478,13 +2191,185 @@ async function notify(db, userIds, message, ticket) {
     message,
     ticket_id: ticket?.id || null,
     ticket_human_id: ticket?.human_id || null,
+    kind: kind || notificationKind(message),
     read: false,
     created_at: new Date(),
   }));
   if (docs.length) await db.collection("notifications").insertMany(docs);
+  if (
+    docs.length &&
+    options.email !== false &&
+    process.env.EMAIL_NOTIFICATIONS_ENABLED !== "false"
+  ) {
+    const recipients = await db
+      .collection("users")
+      .find({ id: { $in: ids }, active: { $ne: false } })
+      .toArray();
+    const emailRecipients = recipients.filter(
+      (user) => user.email_notifications_disabled !== true,
+    );
+    if (emailRecipients.length) {
+      const eventId = uuidv4();
+      await queueEmail(
+        db,
+        emailRecipients,
+        ticket?.human_id
+          ? `[TicketFlow] ${ticket.human_id} update`
+          : "[TicketFlow] Service Hub notification",
+        `${message}${ticket?.human_id ? `\n\nTicket: ${ticket.human_id}` : ""}\n\nSign in to Ethara Service Hub to review the details.`,
+        `notification:${eventId}`,
+      );
+      if (emailDeliveryConfigured())
+        await deliverQueuedEmails(db, Math.min(10, emailRecipients.length));
+    }
+  }
 }
 
-async function queueEmail(db, recipients, subject, message, dedupePrefix) {
+function emailDeliveryConfigured() {
+  return Boolean(emailTransportConfiguration());
+}
+
+let smtpTransporter;
+let smtpTransporterKey;
+
+function emailTransportConfiguration() {
+  const from = String(process.env.MAIL_FROM || "").trim();
+  if (!from || /[\r\n]/.test(from)) return null;
+  const requested = String(process.env.EMAIL_TRANSPORT || "auto").toLowerCase();
+  if ((requested === "smtp" || requested === "auto") && process.env.SMTP_HOST) {
+    try {
+      smtpConnectionConfiguration();
+      return { mode: "smtp", from };
+    } catch {
+      return null;
+    }
+  }
+  if (
+    (requested === "resend" || requested === "auto") &&
+    process.env.RESEND_API_KEY
+  )
+    return { mode: "resend", from };
+  return null;
+}
+
+function smtpConnectionConfiguration() {
+  const host = String(process.env.SMTP_HOST || "").trim();
+  const port = Number(process.env.SMTP_PORT || 587);
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535)
+    throw new Error("SMTP_HOST and a valid SMTP_PORT are required");
+  const secure = process.env.SMTP_SECURE === "true" || port === 465;
+  const requireTLS = !secure && process.env.SMTP_REQUIRE_TLS !== "false";
+  const isLoopback = ["127.0.0.1", "::1", "localhost"].includes(
+    host.toLowerCase(),
+  );
+  if (
+    !secure &&
+    !requireTLS &&
+    !(isLoopback && process.env.SMTP_ALLOW_INSECURE_LOCAL === "true")
+  )
+    throw new Error(
+      "Unencrypted SMTP is allowed only for an explicitly enabled loopback test server",
+    );
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  if (Boolean(user) !== Boolean(pass))
+    throw new Error("SMTP_USER and SMTP_PASS must be configured together");
+  const caPath = String(process.env.SMTP_CA_CERT_PATH || "").trim();
+  const tls = {
+    minVersion: "TLSv1.2",
+    rejectUnauthorized: true,
+    ...(caPath ? { ca: [readFileSync(caPath)] } : {}),
+  };
+  return {
+    host,
+    port,
+    secure,
+    requireTLS,
+    auth: user && pass ? { user, pass } : undefined,
+    tls,
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 15_000,
+    disableFileAccess: true,
+    disableUrlAccess: true,
+  };
+}
+
+function getSmtpTransporter() {
+  const options = smtpConnectionConfiguration();
+  const key = JSON.stringify({
+    host: options.host,
+    port: options.port,
+    secure: options.secure,
+    requireTLS: options.requireTLS,
+    user: options.auth?.user || "",
+    ca: Boolean(process.env.SMTP_CA_CERT_PATH),
+  });
+  if (!smtpTransporter || smtpTransporterKey !== key) {
+    smtpTransporter = nodemailer.createTransport(options);
+    smtpTransporterKey = key;
+  }
+  return smtpTransporter;
+}
+
+function safeEmailHeader(value, fallback = "") {
+  const cleanValue = String(value || fallback).replace(/[\r\n]+/g, " ").trim();
+  return cleanValue.slice(0, 250);
+}
+
+function safeEmailAddress(value) {
+  const address = String(value || "").trim();
+  if (
+    address.length > 254 ||
+    /[\r\n]/.test(address) ||
+    !/^[^\s@]+@[^\s@]+$/.test(address)
+  )
+    throw new Error("Email recipient address is invalid");
+  return address;
+}
+
+const EMAIL_DELIVERY_MONITOR_KEY = Symbol.for(
+  "ticketflow.emailDeliveryMonitor",
+);
+
+function startEmailDeliveryMonitor(database) {
+  if (
+    process.env.NODE_ENV === "test" ||
+    process.env.EMAIL_DELIVERY_MONITOR_DISABLED === "true" ||
+    !emailDeliveryConfigured() ||
+    globalThis[EMAIL_DELIVERY_MONITOR_KEY]
+  )
+    return;
+  const configuredInterval = Number(
+    process.env.EMAIL_DELIVERY_INTERVAL_MS || 30_000,
+  );
+  const intervalMs = Number.isFinite(configuredInterval)
+    ? Math.min(5 * 60_000, Math.max(15_000, configuredInterval))
+    : 30_000;
+  const run = () =>
+    deliverQueuedEmails(database, 25).catch((error) =>
+      console.error("Email outbox delivery failed:", error.message),
+    );
+  const timer = setInterval(run, intervalMs);
+  timer.unref?.();
+  globalThis[EMAIL_DELIVERY_MONITOR_KEY] = { timer, intervalMs };
+  void run();
+}
+
+function loginOtpRequired() {
+  if (process.env.LOGIN_OTP_REQUIRED === "true") return true;
+  if (process.env.LOGIN_OTP_REQUIRED === "false") return false;
+  return emailDeliveryConfigured();
+}
+
+async function queueEmail(
+  db,
+  recipients,
+  subject,
+  message,
+  dedupePrefix,
+  options = {},
+) {
   const users = recipients.filter((user) => user?.email);
   if (!users.length) return 0;
   const now = new Date();
@@ -1500,6 +2385,8 @@ async function queueEmail(db, recipients, subject, message, dedupePrefix) {
           subject,
           message,
           status: "pending",
+          sensitive: options.sensitive === true,
+          expires_at: options.expiresAt || null,
           attempts: 0,
           next_attempt_at: now,
           created_at: now,
@@ -1515,10 +2402,24 @@ async function queueEmail(db, recipients, subject, message, dedupePrefix) {
   return result.upsertedCount || 0;
 }
 
-async function deliverQueuedEmails(db, limit = 10) {
-  const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.MAIL_FROM;
-  if (!apiKey || !from)
+async function deliverQueuedEmails(db, limit = 10, options = {}) {
+  const now = new Date();
+  await db.collection("email_outbox").updateMany(
+    {
+      sensitive: true,
+      expires_at: { $lte: now },
+      status: { $in: ["pending", "retry"] },
+    },
+    {
+      $set: {
+        status: "expired",
+        message: "[Expired sensitive email removed]",
+        updated_at: now,
+      },
+    },
+  );
+  const transport = emailTransportConfiguration();
+  if (!transport)
     return {
       configured: false,
       delivered: 0,
@@ -1527,14 +2428,18 @@ async function deliverQueuedEmails(db, limit = 10) {
         .countDocuments({ status: { $in: ["pending", "retry"] } }),
     };
 
-  const now = new Date();
+  const queueFilter = {
+    status: { $in: ["pending", "retry"] },
+    next_attempt_at: { $lte: now },
+    attempts: { $lt: 5 },
+  };
+  if (options.dedupePrefix)
+    queueFilter.dedupe_key = {
+      $regex: `^${String(options.dedupePrefix).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:`,
+    };
   const queued = await db
     .collection("email_outbox")
-    .find({
-      status: { $in: ["pending", "retry"] },
-      next_attempt_at: { $lte: now },
-      attempts: { $lt: 5 },
-    })
+    .find(queueFilter)
     .sort({ created_at: 1 })
     .limit(limit)
     .toArray();
@@ -1546,28 +2451,46 @@ async function deliverQueuedEmails(db, limit = 10) {
     );
     if (!claimed.modifiedCount) continue;
     try {
-      const response = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from,
-          to: [email.to],
-          subject: email.subject,
-          text: email.message,
-        }),
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!response.ok)
-        throw new Error(`Email provider returned HTTP ${response.status}`);
+      if (transport.mode === "smtp") {
+        await getSmtpTransporter().sendMail({
+          from: transport.from,
+          to: safeEmailAddress(email.to),
+          subject: safeEmailHeader(email.subject, "Ethara Service Hub notification"),
+          text: String(email.message || ""),
+        });
+      } else {
+        const response = await fetch(
+          process.env.RESEND_API_URL || "https://api.resend.com/emails",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              from: transport.from,
+              to: [safeEmailAddress(email.to)],
+              subject: safeEmailHeader(
+                email.subject,
+                "Ethara Service Hub notification",
+              ),
+              text: String(email.message || ""),
+            }),
+            signal: AbortSignal.timeout(10_000),
+          },
+        );
+        if (!response.ok)
+          throw new Error(`Email provider returned HTTP ${response.status}`);
+      }
       await db.collection("email_outbox").updateOne(
         { id: email.id },
         {
           $set: {
             status: "sent",
             sent_at: new Date(),
+            ...(email.sensitive
+              ? { message: "[Sensitive email delivered and removed]" }
+              : {}),
             updated_at: new Date(),
           },
           $unset: { last_error: "" },
@@ -1583,6 +2506,9 @@ async function deliverQueuedEmails(db, limit = 10) {
           $set: {
             status: attempts >= 5 ? "failed" : "retry",
             attempts,
+            ...(email.sensitive && attempts >= 5
+              ? { message: "[Failed sensitive email removed]" }
+              : {}),
             last_error: String(error?.message || "Delivery failed").slice(
               0,
               300,
@@ -1595,6 +2521,173 @@ async function deliverQueuedEmails(db, limit = 10) {
     }
   }
   return { configured: true, delivered, processed: queued.length };
+}
+
+const LOGIN_OTP_TTL_MS = 10 * 60_000;
+const LOGIN_OTP_RESEND_MS = 60_000;
+const LOGIN_OTP_MAX_ATTEMPTS = 5;
+
+function maskEmail(email) {
+  const [name = "", domain = ""] = String(email).split("@");
+  const visible = name.slice(0, Math.min(2, name.length));
+  return `${visible}${"•".repeat(Math.max(3, name.length - visible.length))}@${domain}`;
+}
+
+function loginOtpDigest(challengeId, code) {
+  return createHmac("sha256", jwtSecret())
+    .update(`${challengeId}:${code}`)
+    .digest("hex");
+}
+
+function otpMatches(expectedDigest, challengeId, code) {
+  const actual = Buffer.from(loginOtpDigest(challengeId, code), "hex");
+  const expected = Buffer.from(String(expectedDigest || ""), "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+async function loginChallengeToken(challenge, user) {
+  return new SignJWT({
+    purpose: "login_otp",
+    challenge_id: challenge.id,
+    user_id: user.id,
+    session_version: Number(user.session_version || 0),
+  })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime("10m")
+    .setJti(uuidv4())
+    .sign(jwtSecret());
+}
+
+async function getLoginChallengeSession(request) {
+  try {
+    const token = request.cookies.get("tf_login_challenge")?.value;
+    if (!token) return null;
+    const { payload } = await jwtVerify(token, jwtSecret());
+    return payload.purpose === "login_otp" ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function setLoginChallengeCookie(response, token) {
+  response.cookies.set("tf_login_challenge", token, {
+    httpOnly: true,
+    sameSite: "strict",
+    secure: process.env.NODE_ENV === "production",
+    path: "/api/auth",
+    maxAge: LOGIN_OTP_TTL_MS / 1000,
+  });
+}
+
+function clearLoginChallengeCookie(response) {
+  response.cookies.set("tf_login_challenge", "", {
+    httpOnly: true,
+    sameSite: "strict",
+    secure: process.env.NODE_ENV === "production",
+    path: "/api/auth",
+    maxAge: 0,
+  });
+}
+
+function loginSite(value, user) {
+  return ticketLocationSite(value) || ticketLocationSite(user?.location) || "Tulip";
+}
+
+async function createLoginSessionResponse(user, remember = false, location) {
+  const maxAge = remember ? 30 * 24 * 3600 : 12 * 3600;
+  const selectedSite = loginSite(location, user);
+  const token = await new SignJWT({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    department: user.department,
+    login_site: selectedSite,
+    session_version: Number(user.session_version || 0),
+  })
+    .setProtectedHeader({ alg: "HS256" })
+    .setExpirationTime(`${maxAge}s`)
+    .setIssuedAt()
+    .setJti(uuidv4())
+    .sign(jwtSecret());
+  const response = json({
+    user: { ...clean(user), location: selectedSite, login_site: selectedSite },
+  });
+  response.cookies.set("tf_token", token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge,
+  });
+  clearLoginChallengeCookie(response);
+  return response;
+}
+
+async function queueLoginOtp(db, user, challenge, code, version = 0) {
+  const dedupePrefix = `login-otp:${challenge.id}:${version}`;
+  await queueEmail(
+    db,
+    [user],
+    "Your Ethara Service Hub sign-in code",
+    `Hello ${user.name},\n\nYour one-time sign-in code is: ${code}\n\nThis code expires in 10 minutes and can be used only once. If you did not attempt to sign in, reset your password and contact your administrator.`,
+    dedupePrefix,
+    { sensitive: true, expiresAt: challenge.expires_at },
+  );
+  return deliverQueuedEmails(db, 1, { dedupePrefix });
+}
+
+async function supersedePendingLoginOtpEmails(db, userId) {
+  await db.collection("email_outbox").updateMany(
+    {
+      user_id: userId,
+      sensitive: true,
+      status: { $in: ["pending", "retry"] },
+    },
+    {
+      $set: {
+        status: "superseded",
+        message: "[Superseded sensitive email removed]",
+        updated_at: new Date(),
+      },
+    },
+  );
+}
+
+async function issueLoginOtp(db, request, user, remember, location) {
+  const limit = await db.consumeRateLimit(
+    requestRateLimitKey("login-otp-send", request, user.id),
+    5,
+    60 * 60_000,
+  );
+  if (limit.limited)
+    return { error: "Too many verification codes requested. Try again later." };
+  await supersedePendingLoginOtpEmails(db, user.id);
+  const now = new Date();
+  const code = String(randomInt(100000, 1000000));
+  const challenge = {
+    id: uuidv4(),
+    user_id: user.id,
+    code_hash: "",
+    attempts: 0,
+    resend_count: 0,
+    remember: Boolean(remember),
+    login_site: loginSite(location, user),
+    consumed_at: null,
+    next_resend_at: new Date(now.getTime() + LOGIN_OTP_RESEND_MS),
+    expires_at: new Date(now.getTime() + LOGIN_OTP_TTL_MS),
+    created_at: now,
+    updated_at: now,
+  };
+  challenge.code_hash = loginOtpDigest(challenge.id, code);
+  await db.collection("login_otp_challenges").deleteMany({
+    user_id: user.id,
+    consumed_at: null,
+  });
+  await db.collection("login_otp_challenges").insertOne(challenge);
+  const delivery = await queueLoginOtp(db, user, challenge, code);
+  return { challenge, delivery };
 }
 
 async function createEmailVerification(db, user, appOrigin) {
@@ -1621,8 +2714,259 @@ async function createEmailVerification(db, user, appOrigin) {
     "Verify your Ethara Service Hub email",
     `Hello ${user.name},\n\nVerify your email address within 24 hours:\n${verifyUrl}\n\nIf you did not create this account, ignore this email.`,
     `email-verification:${user.id}:${expiresAt.getTime()}`,
+    { sensitive: true, expiresAt },
   );
   await deliverQueuedEmails(db, 1);
+}
+
+const APPROVAL_EMAIL_TOKEN_TTL_MS = 48 * 60 * 60_000;
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(
+    /[&<>"']/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[character],
+  );
+}
+
+function approvalEmailPage({ title, message, context, token, success = false }) {
+  const approval = context?.approval;
+  const ticket = context?.ticket;
+  const details = approval && ticket
+    ? `<dl>
+        <div><dt>Ticket</dt><dd>${escapeHtml(ticket.human_id)} · ${escapeHtml(ticket.title)}</dd></div>
+        <div><dt>Requested amount</dt><dd>${escapeHtml(approval.requested_amount || "Not specified")}</dd></div>
+        <div><dt>Vendor</dt><dd>${escapeHtml(approval.vendor || "Not specified")}</dd></div>
+        <div><dt>Justification</dt><dd>${escapeHtml(approval.justification || "Not specified")}</dd></div>
+      </dl>`
+    : "";
+  const form = context && token && !success
+    ? `<form method="post" action="/api/approvals/email-action">
+        <input type="hidden" name="token" value="${escapeHtml(token)}" />
+        <label for="remarks">Remarks <span>(required when rejecting)</span></label>
+        <textarea id="remarks" name="remarks" maxlength="2000" placeholder="Add decision remarks"></textarea>
+        <div class="actions">
+          <button class="approve" type="submit" name="decision" value="approve">Approve request</button>
+          <button class="reject" type="submit" name="decision" value="reject">Reject request</button>
+        </div>
+      </form>`
+    : "";
+  return `<!doctype html>
+  <html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>${escapeHtml(title)} · Ethara Service Hub</title>
+  <style>
+    :root{color-scheme:light;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;background:#f4f5f8;color:#171923}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at top,#fce7fc 0,#f4f5f8 42%)}
+    main{width:min(620px,100%);background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:32px;box-shadow:0 24px 60px rgba(38,24,66,.13)}
+    .mark{display:inline-grid;place-items:center;width:42px;height:42px;border-radius:12px;background:#ed00ed;color:#fff;font-weight:800;margin-bottom:18px}
+    h1{margin:0;font-size:25px;letter-spacing:-.03em}p{color:#5f6675;line-height:1.6}dl{margin:24px 0;border:1px solid #eceef2;border-radius:12px;overflow:hidden}
+    dl div{padding:12px 15px;border-bottom:1px solid #eceef2}dl div:last-child{border-bottom:0}dt{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#8a91a0;font-weight:700}dd{margin:5px 0 0;line-height:1.45}
+    label{display:block;font-size:13px;font-weight:700;margin-bottom:8px}label span{font-weight:400;color:#777f8f}textarea{width:100%;min-height:96px;resize:vertical;border:1px solid #d8dbe3;border-radius:10px;padding:12px;font:inherit}
+    textarea:focus{outline:3px solid rgba(237,0,237,.13);border-color:#ed00ed}.actions{display:flex;gap:12px;margin-top:16px;flex-wrap:wrap}button{border:0;border-radius:10px;padding:12px 18px;font-weight:750;cursor:pointer}.approve{background:#ed00ed;color:#fff}.reject{background:#fff1f2;color:#be123c;border:1px solid #fecdd3}
+    .security{margin-top:24px;padding-top:18px;border-top:1px solid #eceef2;font-size:12px;color:#8a91a0}
+  </style></head><body><main><div class="mark">E</div><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>${details}${form}<p class="security">This secure decision page expires after 48 hours. Opening the link never changes the approval; a decision is recorded only after you press an action button.</p></main></body></html>`;
+}
+
+function approvalEmailResponse(input, status = 200) {
+  return new NextResponse(approvalEmailPage(input), {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer",
+      "X-Frame-Options": "DENY",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy":
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+    },
+  });
+}
+
+async function approvalEmailToken(approval, ticket, recipient) {
+  return new SignJWT({
+    purpose: "approval_email_action",
+    approval_id: approval.id,
+    ticket_id: ticket.id,
+    user_id: recipient.id,
+    session_version: Number(recipient.session_version || 0),
+  })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime("48h")
+    .setJti(uuidv4())
+    .sign(jwtSecret());
+}
+
+async function queueApprovalRequestEmails(
+  database,
+  recipients,
+  approval,
+  ticket,
+  appOrigin,
+  version,
+) {
+  const expiresAt = new Date(Date.now() + APPROVAL_EMAIL_TOKEN_TTL_MS);
+  let queued = 0;
+  for (const recipient of recipients.filter(
+    (user) => user?.email && user.email_notifications_disabled !== true,
+  )) {
+    const token = await approvalEmailToken(approval, ticket, recipient);
+    const actionUrl = `${appOrigin}/api/approvals/email-action?token=${encodeURIComponent(token)}`;
+    queued += await queueEmail(
+      database,
+      [recipient],
+      `[Approval required] ${ticket.human_id} · ${ticket.title}`,
+      `Hello ${recipient.name},\n\n${ticket.human_id} requires your approval.\n\nRequested amount: ${approval.requested_amount || "Not specified"}\nVendor: ${approval.vendor || "Not specified"}\nJustification: ${approval.justification || "Not specified"}\n\nReview and decide securely:\n${actionUrl}\n\nOpening this link does not approve the request. The link expires in 48 hours. You can also decide from the Ethara Service Hub dashboard.`,
+      `approval-request:${approval.id}:${version}`,
+      { sensitive: true, expiresAt },
+    );
+  }
+  if (queued && emailDeliveryConfigured())
+    await deliverQueuedEmails(database, Math.min(25, queued), {
+      dedupePrefix: `approval-request:${approval.id}:${version}`,
+    });
+  return queued;
+}
+
+async function approvalEmailContext(database, token) {
+  if (
+    typeof token !== "string" ||
+    token.length > 4096 ||
+    !/^[A-Za-z0-9._-]+$/.test(token)
+  )
+    throw requestError("This approval link is invalid", 400);
+  let payload;
+  try {
+    ({ payload } = await jwtVerify(token, jwtSecret()));
+  } catch {
+    throw requestError("This approval link is invalid or has expired", 401);
+  }
+  if (
+    payload.purpose !== "approval_email_action" ||
+    !payload.approval_id ||
+    !payload.ticket_id ||
+    !payload.user_id
+  )
+    throw requestError("This approval link is invalid", 401);
+  const [user, approval, ticket] = await Promise.all([
+    database.collection("users").findOne({
+      id: payload.user_id,
+      role: "super_admin",
+      active: { $ne: false },
+    }),
+    database.collection("approvals").findOne({
+      id: payload.approval_id,
+      ticket_id: payload.ticket_id,
+    }),
+    database.collection("tickets").findOne({ id: payload.ticket_id }),
+  ]);
+  if (
+    !user ||
+    Number(user.session_version || 0) !== Number(payload.session_version || 0)
+  )
+    throw requestError("This approval link is no longer authorized", 403);
+  if (!approval || !ticket)
+    throw requestError("This approval request is no longer available", 404);
+  if (approval.status !== "Pending")
+    throw requestError(`This request is already ${approval.status}`, 409);
+  if (TERMINAL_TICKET_STATUSES.includes(ticket.status))
+    throw requestError("This ticket is already final", 409);
+  return { payload, user, approval, ticket };
+}
+
+async function supersedePendingApprovalEmails(database, approvalId) {
+  const prefix = `^approval-request:${String(approvalId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:`;
+  await database.collection("email_outbox").updateMany(
+    {
+      dedupe_key: { $regex: prefix },
+      sensitive: true,
+      status: { $in: ["pending", "retry"] },
+    },
+    {
+      $set: {
+        status: "superseded",
+        message: "[Completed approval email removed]",
+        updated_at: new Date(),
+      },
+    },
+  );
+}
+
+async function decideApprovalFromEmail(database, context, decision, remarks) {
+  if (!["approve", "reject"].includes(decision))
+    throw requestError("Select approve or reject", 400);
+  const cleanRemarks = textValue(remarks, 2000);
+  if (decision === "reject" && !cleanRemarks)
+    throw requestError("Remarks are required when rejecting a request", 400);
+  const { approval, ticket, user } = context;
+  const mapping = decision === "approve"
+    ? { approval: "Approved", ticket: "Approved - Ready for Action" }
+    : { approval: "Rejected", ticket: "Approval Rejected" };
+  const now = new Date();
+  const result = await database.collection("approvals").updateOne(
+    { id: approval.id, ticket_id: ticket.id, status: "Pending" },
+    {
+      $set: {
+        status: mapping.approval,
+        approved_amount:
+          decision === "approve" ? approval.requested_amount || null : null,
+        decision_remarks:
+          cleanRemarks || "Approved from the secure email decision page",
+        decided_by: user.name,
+        decision_channel: "email",
+        updated_at: now,
+      },
+      $push: {
+        history: {
+          action: decision,
+          by: user.name,
+          at: now,
+          remarks: cleanRemarks,
+          channel: "email",
+        },
+      },
+    },
+  );
+  if (!result.modifiedCount)
+    throw requestError("This approval has already been completed", 409);
+  await database.collection("tickets").updateOne(
+    { id: ticket.id },
+    {
+      $set: {
+        status: mapping.ticket,
+        [`status_timestamps.${lifecycleStatusKey(mapping.ticket)}`]: now,
+        updated_at: now,
+      },
+    },
+  );
+  await addHistory(
+    database,
+    ticket.id,
+    "approval",
+    user,
+    `${decision.toUpperCase()} from secure email: ${cleanRemarks}`,
+    ticket.status,
+    mapping.ticket,
+  );
+  await notify(
+    database,
+    ticket.assignee_id,
+    `Approval ${mapping.approval} for ${ticket.human_id}`,
+    ticket,
+  );
+  await supersedePendingApprovalEmails(database, approval.id);
+  await audit(database, user, "approval.email_decision", "ticket", ticket.id, {
+    decision,
+    approval_id: approval.id,
+    channel: "email",
+  });
+  return mapping;
 }
 
 async function slaEscalationRecipients(db, ticket) {
@@ -1684,6 +3028,8 @@ async function recordSlaBreach(db, ticket, kind, at) {
     recipients.map((user) => user.id),
     message,
     ticket,
+    "escalation",
+    { email: false },
   );
   await queueEmail(
     db,
@@ -1869,6 +3215,27 @@ function itTicketScope(session) {
     ? managedItSites(session)
     : [ticketLocationSite(session?.location)].filter(Boolean);
   if (!sites.length) return { department: "IT" };
+  // Legacy/unclassified unallocated tickets must remain claimable by the IT
+  // team. Once a member claims one, assignee_id keeps it in that member's
+  // scope; other members still cannot see or modify another person's ticket.
+  const unallocatedSharedQueue = {
+    $and: [
+      {
+        $or: [
+          { assignee_id: null },
+          { assignee_id: "" },
+          { assignee_id: { $exists: false } },
+        ],
+      },
+      {
+        $or: [
+          { routing_site: null },
+          { routing_site: "" },
+          { routing_site: { $exists: false } },
+        ],
+      },
+    ],
+  };
   return {
     $and: [
       { department: "IT" },
@@ -1876,6 +3243,7 @@ function itTicketScope(session) {
         $or: [
           { assignee_id: session.id },
           ...sites.map((site) => siteTicketFilter(site)),
+          unallocatedSharedQueue,
         ],
       },
     ],
@@ -1892,7 +3260,7 @@ function canAccessTicket(session, ticket) {
   if (session.role !== "it" || ticket.department !== "IT") return false;
   if (ticket.assignee_id === session.id) return true;
   const site = ticketSite(ticket);
-  if (!site) return true;
+  if (!site) return !ticket.assignee_id || session.is_team_head;
   const allowedSites = session.is_team_head
     ? managedItSites(session)
     : [ticketLocationSite(session.location)].filter(Boolean);
@@ -1971,6 +3339,23 @@ function scopeFilter(session) {
 }
 
 const requesterId = (ticket) => ticket.issue_user_id || ticket.raised_by_id;
+
+async function ticketAcknowledgementRequired(database, ticket) {
+  if (typeof ticket.acknowledgement_required === "boolean")
+    return ticket.acknowledgement_required;
+  const requesterIds = [ticket.issue_user_id, ticket.raised_by_id].filter(
+    Boolean,
+  );
+  if (!requesterIds.length) return false;
+  const requesters = await database
+    .collection("users")
+    .find({ id: { $in: requesterIds } })
+    .toArray();
+  const issueUser = requesters.find((user) => user.id === ticket.issue_user_id);
+  if (issueUser) return issueUser.role === "employee";
+  const raisedBy = requesters.find((user) => user.id === ticket.raised_by_id);
+  return raisedBy?.role === "employee";
+}
 
 function lifecycleStatusKey(status) {
   return String(status || "")
@@ -2449,6 +3834,214 @@ function mapStatus(s) {
   return m[s] || s;
 }
 
+const KRA_CUTOFF = "19:00";
+const KRA_TIME_ZONE = "Asia/Kolkata";
+
+function kraDateKey(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: KRA_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(value));
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function kraDeadlineAt(date, cutoff = KRA_CUTOFF) {
+  const [year, month, day] = String(date).split("-").map(Number);
+  const [hour, minute] = String(cutoff).split(":").map(Number);
+  if (![year, month, day, hour, minute].every(Number.isFinite)) return null;
+  return new Date(
+    Date.UTC(year, month - 1, day, hour, minute) - 330 * 60_000,
+  );
+}
+
+function kraRunsOnDate(list, date) {
+  if (String(list.frequency || "").toLowerCase() !== "weekdays") return true;
+  const day = new Date(`${date}T12:00:00+05:30`).getUTCDay();
+  return day !== 0 && day !== 6;
+}
+
+function kraSubmissionCompleted(list, submission) {
+  return Boolean(
+    submission &&
+      Number(submission.done_count || 0) >= (list.items || []).length &&
+      (list.items || []).length > 0,
+  );
+}
+
+async function ensureKraDefaults(database) {
+  await database.collection("member_checklists").updateMany(
+    { cutoff: { $ne: KRA_CUTOFF } },
+    { $set: { cutoff: KRA_CUTOFF, updated_at: new Date() } },
+  );
+}
+
+async function processKraEscalations(
+  database,
+  date = kraDateKey(),
+  now = new Date(),
+) {
+  const lists = await database
+    .collection("member_checklists")
+    .find({ active: true })
+    .toArray();
+  const submissions = await database
+    .collection("member_checklist_submissions")
+    .find({ date })
+    .toArray();
+  const byChecklist = new Map(
+    submissions.map((submission) => [submission.checklist_id, submission]),
+  );
+  const superAdmins = await database
+    .collection("users")
+    .find({ role: "super_admin", active: { $ne: false } })
+    .toArray();
+  let created = 0;
+  for (const list of lists) {
+    if (!kraRunsOnDate(list, date)) continue;
+    const deadline = kraDeadlineAt(date, list.cutoff || KRA_CUTOFF);
+    if (!deadline || now <= deadline) continue;
+    const submission = byChecklist.get(list.id);
+    const completedOnTime =
+      kraSubmissionCompleted(list, submission) &&
+      submission?.submitted_at &&
+      new Date(submission.submitted_at) <= deadline;
+    if (completedOnTime) continue;
+    const existing = await database
+      .collection("kra_escalations")
+      .findOne({ checklist_id: list.id, date });
+    if (existing) continue;
+    const escalation = {
+      id: `kra_${createHash("sha256")
+        .update(`${list.id}:${date}`)
+        .digest("hex")}`,
+      checklist_id: list.id,
+      checklist_title: list.title,
+      member_id: list.member_id,
+      member_name: list.member_name,
+      member_role: list.member_role,
+      date,
+      cutoff: KRA_CUTOFF,
+      deadline_at: deadline,
+      status: submission ? "late_or_incomplete" : "not_submitted",
+      done_count: Number(submission?.done_count || 0),
+      total: (list.items || []).length,
+      created_at: now,
+    };
+    try {
+      await database.collection("kra_escalations").insertOne(escalation);
+    } catch (error) {
+      if (error?.code === 11000) continue;
+      throw error;
+    }
+    const recipients = [list.member_id, ...superAdmins.map((user) => user.id)];
+    await notify(
+      database,
+      recipients,
+      `KRA escalation: ${list.member_name} missed the 7:00 PM cut-off for ${list.title}`,
+      null,
+      "escalation",
+    );
+    await audit(
+      database,
+      null,
+      "member_checklist.overdue",
+      "member_checklist",
+      list.id,
+      { date, cutoff: KRA_CUTOFF, escalation_id: escalation.id },
+    );
+    created += 1;
+  }
+  return created;
+}
+
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quoted) {
+      if (character === '"' && text[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else if (character === '"') quoted = false;
+      else value += character;
+    } else if (character === '"') quoted = true;
+    else if (character === ",") {
+      row.push(value);
+      value = "";
+    } else if (character === "\n") {
+      row.push(value.replace(/\r$/, ""));
+      rows.push(row);
+      row = [];
+      value = "";
+    } else value += character;
+  }
+  row.push(value.replace(/\r$/, ""));
+  if (row.some((cell) => cell.trim())) rows.push(row);
+  return rows;
+}
+
+function spreadsheetTaskRows(rows) {
+  const populated = rows
+    .map((row) => row.map((cell) => String(cell || "").trim()))
+    .filter((row) => row.some(Boolean));
+  if (!populated.length) return [];
+  const taskHeader =
+    /^(task|tasks|daily work|work item|activity|activities|responsibility|responsibilities|kra|description)$/i;
+  const headerIndex = populated[0].findIndex((cell) => taskHeader.test(cell));
+  const source = headerIndex >= 0 ? populated.slice(1) : populated;
+  const items = source
+    .map((row) =>
+      (headerIndex >= 0 ? row[headerIndex] : row.find(Boolean) || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 300),
+    )
+    .filter((item) => item && !taskHeader.test(item));
+  return [...new Set(items)].slice(0, 200);
+}
+
+async function tasksFromSpreadsheet(file) {
+  if (!file || typeof file.arrayBuffer !== "function")
+    throw requestError("Choose an Excel (.xlsx) or CSV file", 400);
+  if (file.size > 4 * 1024 * 1024)
+    throw requestError("The KRA spreadsheet must be 4 MB or smaller", 413);
+  const name = String(file.name || "").toLowerCase();
+  let rows;
+  let sheetName = "CSV";
+  if (name.endsWith(".csv")) {
+    rows = parseCsvRows(await file.text());
+  } else if (name.endsWith(".xlsx")) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(Buffer.from(await file.arrayBuffer()));
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) throw requestError("The workbook has no worksheets", 400);
+    sheetName = worksheet.name;
+    rows = [];
+    worksheet.eachRow({ includeEmpty: false }, (row) => {
+      const values = [];
+      row.eachCell({ includeEmpty: true }, (cell, column) => {
+        values[column - 1] = cell.value?.formula ? "" : cell.text;
+      });
+      rows.push(values);
+    });
+  } else {
+    throw requestError("Use an .xlsx or .csv KRA spreadsheet", 400);
+  }
+  const items = spreadsheetTaskRows(rows);
+  if (!items.length)
+    throw requestError(
+      "No daily work rows were found. Add a Task, Daily Work, Activity or Responsibility column.",
+      400,
+    );
+  return { items, sheet_name: sheetName, rows_imported: items.length };
+}
+
 async function seedDb(db) {
   const existing = await db.collection("users").countDocuments();
   if (existing > 0) return { seeded: false, message: "already seeded" };
@@ -2503,17 +4096,22 @@ async function seedDb(db) {
       location: "Tulip - Third Floor",
     },
   ];
-  const userDocs = await Promise.all(
-    users.map(async (u) => ({
-      id: uuidv4(),
-      password_hash: await bcrypt.hash(randomBytes(32).toString("base64url"), 12),
-      password_reset_required: true,
-      seeded_fixture: true,
-      active: true,
-      created_at: new Date(),
-      ...u,
-    })),
-  );
+  // Never ship a reusable fixture credential in source control. Developers who
+  // deliberately enable seeding must provide a strong local-only password.
+  const seedPassword = process.env.SEED_DEMO_PASSWORD;
+  const seedPasswordError = passwordPolicyError(seedPassword);
+  if (seedPasswordError)
+    throw requestError(`SEED_DEMO_PASSWORD: ${seedPasswordError}`, 503);
+  const seedPasswordHash = await bcrypt.hash(seedPassword, 12);
+  const userDocs = users.map((u) => ({
+    id: uuidv4(),
+    password_hash: seedPasswordHash,
+    seeded_fixture: true,
+    active: true,
+    email_verified: true,
+    created_at: new Date(),
+    ...u,
+  }));
   await db.collection("users").insertMany(userDocs);
   const byName = (n) => userDocs.find((u) => u.name === n);
   const employee = byName("Emma Employee");
@@ -2527,6 +4125,29 @@ async function seedDb(db) {
   await db
     .collection("locations")
     .insertMany(LOCATIONS.map((l) => ({ id: uuidv4(), ...l })));
+
+  // Demo logins must not make operational dashboards look populated. Business
+  // fixtures remain available only for an explicitly requested legacy demo.
+  if (process.env.SEED_DEMO_BUSINESS_DATA !== "true") {
+    const templateDocs = LOCATIONS.map((location) => ({
+      id: uuidv4(),
+      name: `Daily Facility Checklist - ${location.name}`,
+      location: location.name,
+      code: location.code,
+      frequency: "daily",
+      items: CHECKLIST_ITEMS.map((label, index) => ({
+        key: `item_${index}`,
+        label,
+      })),
+      created_at: new Date(),
+    }));
+    await db.collection("checklist_templates").insertMany(templateDocs);
+    return {
+      seeded: true,
+      users: users.map((user) => ({ email: user.email, role: user.role })),
+      business_fixtures: false,
+    };
+  }
 
   // IT tickets from CSV (with realistic spread-out timestamps for SLA analytics)
   const itTickets = [];
@@ -2881,6 +4502,11 @@ async function handleRoute(request, { params }) {
   try {
     const db = await connectToDatabase();
 
+    if (requestBodyTooLarge(request, route))
+      return json({ error: "Request body is too large" }, 413);
+    if (rejectsCrossSiteMutation(request))
+      return json({ error: "Cross-site request rejected" }, 403);
+
     // health
     if (route === "/" || route === "/root")
       return json({ message: "TicketFlow API" });
@@ -2908,7 +4534,9 @@ async function handleRoute(request, { params }) {
           "member_checklists",
           "member_checklist_submissions",
           "notifications",
+          "email_outbox",
           "email_verifications",
+          "login_otp_challenges",
           "audit_logs",
           "counters",
         ]) {
@@ -2929,46 +4557,56 @@ async function handleRoute(request, { params }) {
     }
 
     // ---- AUTH ----
-    if (route === "/auth/quick-login" && method === "POST") {
-      if (
-        process.env.NODE_ENV === "production" ||
-        process.env.ALLOW_QUICK_LOGIN !== "true"
-      )
+    if (route === "/auth/demo-accounts" && method === "GET") {
+      if (!demoLoginAllowed(request))
+        return json({ error: "Not found" }, 404);
+      const accounts = await db
+        .collection("users")
+        .find({ seeded_fixture: true, active: { $ne: false } })
+        .toArray();
+      return json({
+        accounts: accounts
+          .map((user) => ({
+            email: user.email,
+            name: user.name,
+            role: user.role,
+          }))
+          .sort((a, b) =>
+            `${a.role}:${a.name}`.localeCompare(`${b.role}:${b.name}`),
+          ),
+      });
+    }
+    if (route === "/auth/demo-login" && method === "POST") {
+      if (!demoLoginAllowed(request))
         return json({ error: "Not found" }, 404);
       const body = await request.json();
-      const role = ["employee", "it", "admin", "super_admin"].includes(
-        body?.role,
+      const email = (
+        typeof body.email === "string" ? body.email : ""
       )
-        ? body.role
-        : null;
-      if (!role) return json({ error: "Invalid quick-login role" }, 400);
+        .toLowerCase()
+        .trim();
+      const rate = await db.consumeRateLimit(
+        requestRateLimitKey("demo-login", request, email),
+        20,
+        15 * 60_000,
+      );
+      if (rate.limited)
+        return json({ error: "Too many login attempts. Try again later." }, 429);
       const user = await db.collection("users").findOne({
-        role,
+        email,
         seeded_fixture: true,
         active: { $ne: false },
       });
-      if (!user)
-        return json({ error: "Quick-login fixture is unavailable" }, 404);
-      const token = await new SignJWT({
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        department: user.department,
-      })
-        .setProtectedHeader({ alg: "HS256" })
-        .setExpirationTime("8h")
-        .setIssuedAt()
-        .sign(jwtSecret());
-      const response = json({ user: clean(user) });
-      response.cookies.set("tf_token", token, {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: false,
-        path: "/",
-        maxAge: 8 * 3600,
-      });
-      await audit(db, user, "login.quick_fixture", "user", user.id, {});
+      if (!user) return json({ error: "Demo account is unavailable" }, 404);
+      if (body.location && !ticketLocationSite(body.location))
+        return json({ error: "Select Tulip or Lotus as your location" }, 400);
+      const response = await createLoginSessionResponse(
+        user,
+        body.remember,
+        body.location,
+      );
+      await clearLoginAttempts(db, request, email);
+      await audit(db, user, "login.demo", "user", user.id, {});
       return response;
     }
     if (route === "/auth/login" && method === "POST") {
@@ -2981,9 +4619,14 @@ async function handleRoute(request, { params }) {
         .toLowerCase()
         .trim();
       const password = typeof body.password === "string" ? body.password : "";
+      if (body.location && !ticketLocationSite(body.location))
+        return json({ error: "Select Tulip or Lotus as your location" }, 400);
       if (await loginRateLimited(db, request, email))
         return json({ error: "Too many login attempts. Try again later." }, 429);
-      if (!email.endsWith("@ethara.ai")) {
+      if (
+        email.length > 254 ||
+        !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@ethara\.ai$/i.test(email)
+      ) {
         return json(
           { error: "Only @ethara.ai email addresses are allowed" },
           400,
@@ -2993,32 +4636,249 @@ async function handleRoute(request, { params }) {
       if (!user || !(await bcrypt.compare(password, user.password_hash))) {
         return json({ error: "Invalid credentials" }, 401);
       }
+      if (
+        user.seeded_fixture === true &&
+        process.env.ALLOW_DEMO_LOGIN !== "true"
+      )
+        return json({ error: "Invalid credentials" }, 401);
       if (user.email_verification_required && !user.email_verified_at)
         return json({ error: "Verify your email address before signing in" }, 403);
       if (user.active === false)
         return json({ error: "This account is awaiting approval or has been disabled" }, 403);
       await clearLoginAttempts(db, request, email);
-      const token = await new SignJWT({
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        department: user.department,
-      })
-        .setProtectedHeader({ alg: "HS256" })
-        .setExpirationTime("7d")
-        .setIssuedAt()
-        .sign(jwtSecret());
-      const res = json({ user: clean(user) });
-      res.cookies.set("tf_token", token, {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
-        path: "/",
-        maxAge: 7 * 24 * 3600,
+      if (loginOtpRequired()) {
+        if (!emailDeliveryConfigured())
+          return json(
+            {
+              error:
+                "Login verification email is not configured. Contact your administrator.",
+            },
+            503,
+          );
+        const issued = await issueLoginOtp(
+          db,
+          request,
+          user,
+          body.remember,
+          body.location,
+        );
+        if (issued.error) return json({ error: issued.error }, 429);
+        const challengeToken = await loginChallengeToken(
+          issued.challenge,
+          user,
+        );
+        const response = json({
+          otp_required: true,
+          masked_email: maskEmail(user.email),
+          expires_in: LOGIN_OTP_TTL_MS / 1000,
+          resend_after: LOGIN_OTP_RESEND_MS / 1000,
+          delivery_state: issued.delivery.delivered ? "sent" : "queued",
+        });
+        setLoginChallengeCookie(response, challengeToken);
+        await audit(db, user, "login.otp_requested", "user", user.id, {
+          delivery_state: issued.delivery.delivered ? "sent" : "queued",
+        });
+        return response;
+      }
+      const response = await createLoginSessionResponse(
+        user,
+        body.remember,
+        body.location,
+      );
+      await audit(db, user, "login", "user", user.id, {
+        otp: false,
       });
-      await audit(db, user, "login", "user", user.id, {});
-      return res;
+      return response;
+    }
+    if (route === "/auth/login/otp/verify" && method === "POST") {
+      const body = await request.json();
+      const code = typeof body.code === "string" ? body.code.trim() : "";
+      if (!/^\d{6}$/.test(code))
+        return json({ error: "Enter the 6-digit verification code" }, 400);
+      const tokenSession = await getLoginChallengeSession(request);
+      if (!tokenSession)
+        return json(
+          { error: "Your login verification session has expired" },
+          401,
+        );
+      const now = new Date();
+      const challenge = await db.collection("login_otp_challenges").findOne({
+        id: tokenSession.challenge_id,
+        user_id: tokenSession.user_id,
+        consumed_at: null,
+        expires_at: { $gt: now },
+      });
+      if (!challenge)
+        return json(
+          { error: "This verification code has expired. Sign in again." },
+          401,
+        );
+      const verifyLimit = await db.consumeRateLimit(
+        requestRateLimitKey("login-otp-verify", request, challenge.id),
+        LOGIN_OTP_MAX_ATTEMPTS,
+        LOGIN_OTP_TTL_MS,
+      );
+      if (verifyLimit.limited)
+        return json(
+          { error: "Too many verification attempts. Sign in again." },
+          429,
+        );
+      if (Number(challenge.attempts || 0) >= LOGIN_OTP_MAX_ATTEMPTS)
+        return json(
+          { error: "Too many incorrect codes. Sign in again." },
+          429,
+        );
+      const user = await db.collection("users").findOne({
+        id: challenge.user_id,
+        active: { $ne: false },
+      });
+      if (
+        !user ||
+        Number(user.session_version || 0) !==
+          Number(tokenSession.session_version || 0)
+      )
+        return json({ error: "Your login session is no longer valid" }, 401);
+      if (!otpMatches(challenge.code_hash, challenge.id, code)) {
+        const attempts = Number(challenge.attempts || 0) + 1;
+        await db.collection("login_otp_challenges").updateOne(
+          { id: challenge.id, consumed_at: null },
+          {
+            $set: {
+              attempts,
+              last_failed_at: now,
+              updated_at: now,
+            },
+          },
+        );
+        await audit(db, user, "login.otp_failed", "user", user.id, {
+          attempts,
+        });
+        return json(
+          {
+            error:
+              attempts >= LOGIN_OTP_MAX_ATTEMPTS
+                ? "Too many incorrect codes. Sign in again."
+                : `Incorrect code. ${LOGIN_OTP_MAX_ATTEMPTS - attempts} attempt${LOGIN_OTP_MAX_ATTEMPTS - attempts === 1 ? "" : "s"} remaining.`,
+          },
+          attempts >= LOGIN_OTP_MAX_ATTEMPTS ? 429 : 401,
+        );
+      }
+      const consumed = await db.collection("login_otp_challenges").updateOne(
+        { id: challenge.id, consumed_at: null },
+        { $set: { consumed_at: now, updated_at: now } },
+      );
+      if (!consumed.modifiedCount)
+        return json({ error: "This verification code was already used" }, 409);
+      const response = await createLoginSessionResponse(
+        user,
+        challenge.remember,
+        challenge.login_site,
+      );
+      await db.clearRateLimit(
+        requestRateLimitKey("login-otp-verify", request, challenge.id),
+      );
+      await audit(db, user, "login", "user", user.id, { otp: true });
+      await audit(db, user, "login.otp_verified", "user", user.id, {});
+      return response;
+    }
+    if (route === "/auth/login/otp/resend" && method === "POST") {
+      const tokenSession = await getLoginChallengeSession(request);
+      if (!tokenSession)
+        return json(
+          { error: "Your login verification session has expired" },
+          401,
+        );
+      if (!emailDeliveryConfigured())
+        return json({ error: "Verification email is not configured" }, 503);
+      const now = new Date();
+      const challenge = await db.collection("login_otp_challenges").findOne({
+        id: tokenSession.challenge_id,
+        user_id: tokenSession.user_id,
+        consumed_at: null,
+        expires_at: { $gt: now },
+      });
+      if (!challenge)
+        return json({ error: "Sign in again to request a new code" }, 401);
+      if (
+        challenge.next_resend_at &&
+        new Date(challenge.next_resend_at).getTime() > now.getTime()
+      ) {
+        const wait = Math.ceil(
+          (new Date(challenge.next_resend_at).getTime() - now.getTime()) / 1000,
+        );
+        return json(
+          { error: `Wait ${wait} seconds before requesting another code` },
+          429,
+        );
+      }
+      const sendLimit = await db.consumeRateLimit(
+        requestRateLimitKey("login-otp-send", request, challenge.user_id),
+        5,
+        60 * 60_000,
+      );
+      if (sendLimit.limited)
+        return json(
+          { error: "Too many verification codes requested. Try again later." },
+          429,
+        );
+      const user = await db.collection("users").findOne({
+        id: challenge.user_id,
+        active: { $ne: false },
+      });
+      if (
+        !user ||
+        Number(user.session_version || 0) !==
+          Number(tokenSession.session_version || 0)
+      )
+        return json({ error: "Your login session is no longer valid" }, 401);
+      const code = String(randomInt(100000, 1000000));
+      const resendCount = Number(challenge.resend_count || 0) + 1;
+      const expiresAt = new Date(now.getTime() + LOGIN_OTP_TTL_MS);
+      const nextResendAt = new Date(now.getTime() + LOGIN_OTP_RESEND_MS);
+      await supersedePendingLoginOtpEmails(db, user.id);
+      await db.collection("login_otp_challenges").updateOne(
+        { id: challenge.id, consumed_at: null },
+        {
+          $set: {
+            code_hash: loginOtpDigest(challenge.id, code),
+            attempts: 0,
+            resend_count: resendCount,
+            expires_at: expiresAt,
+            next_resend_at: nextResendAt,
+            updated_at: now,
+          },
+        },
+      );
+      const updatedChallenge = {
+        ...challenge,
+        code_hash: loginOtpDigest(challenge.id, code),
+        attempts: 0,
+        resend_count: resendCount,
+        expires_at: expiresAt,
+        next_resend_at: nextResendAt,
+      };
+      const delivery = await queueLoginOtp(
+        db,
+        user,
+        updatedChallenge,
+        code,
+        resendCount,
+      );
+      const response = json({
+        ok: true,
+        masked_email: maskEmail(user.email),
+        expires_in: LOGIN_OTP_TTL_MS / 1000,
+        resend_after: LOGIN_OTP_RESEND_MS / 1000,
+        delivery_state: delivery.delivered ? "sent" : "queued",
+      });
+      setLoginChallengeCookie(
+        response,
+        await loginChallengeToken(updatedChallenge, user),
+      );
+      await audit(db, user, "login.otp_resent", "user", user.id, {
+        resend_count: resendCount,
+      });
+      return response;
     }
     if (route === "/auth/verify-email" && method === "GET") {
       const token = new URL(request.url).searchParams.get("token") || "";
@@ -3041,43 +4901,59 @@ async function handleRoute(request, { params }) {
       if (!verification) return redirect("invalid");
       const user = await db.collection("users").findOne({ id: verification.user_id });
       if (!user) return redirect("invalid");
+      const adminApprovalRequired = [
+        "admin_approval",
+        "email_verification_and_admin_approval",
+      ].includes(user.activation_pending_reason);
       await db.collection("users").updateOne(
         { id: user.id },
         {
           $set: {
             email_verified_at: now,
-            active:
-              user.role === "employee" &&
-              user.activation_pending_reason === "email_verification"
-                ? true
-                : user.active,
-            activation_pending_reason: null,
+            active: adminApprovalRequired ? false : true,
+            activation_pending_reason: adminApprovalRequired
+              ? "admin_approval"
+              : null,
             updated_at: now,
           },
         },
       );
       await audit(db, user, "auth.email_verified", "user", user.id, {});
-      return redirect(user.role === "employee" ? "success" : "approval-pending");
+      return redirect("success");
     }
     if (route === "/auth/register" && method === "POST") {
+      const registrationLimit = await db.consumeRateLimit(
+        requestRateLimitKey("register", request),
+        10,
+        60 * 60_000,
+      );
+      if (registrationLimit.limited)
+        return json(
+          { error: "Too many registration attempts. Try again later." },
+          429,
+        );
       const b = await request.json();
       // Coerce to strings so non-string (e.g. object) input is rejected with a
       // 400 rather than throwing downstream (bcrypt.hash / .toLowerCase).
       const email = (typeof b.email === "string" ? b.email : "")
         .toLowerCase()
         .trim();
-      const name = (typeof b.name === "string" ? b.name : "").trim();
+      const name = textValue(b.name, 150);
       const password = typeof b.password === "string" ? b.password : "";
-      if (!email.endsWith("@ethara.ai")) {
+      if (
+        email.length > 254 ||
+        !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@ethara\.ai$/i.test(email)
+      ) {
         return json(
           { error: "Registration is restricted to @ethara.ai email addresses" },
           400,
         );
       }
-      if (!name || password.length < 8) {
+      const passwordError = passwordPolicyError(password);
+      if (!name || passwordError) {
         return json(
           {
-            error: "Name and a password of at least 8 characters are required",
+            error: !name ? "Name is required" : passwordError,
           },
           400,
         );
@@ -3093,6 +4969,12 @@ async function handleRoute(request, { params }) {
           { error: "Please select a valid role (Employee, IT, or Admin)" },
           400,
         );
+      const registrationSite = ticketLocationSite(b.location);
+      if (!registrationSite)
+        return json(
+          { error: "Please select a valid work location (Tulip or Lotus)" },
+          400,
+        );
       const existing = await db.collection("users").findOne({ email });
       if (existing)
         return json(
@@ -3102,10 +4984,20 @@ async function handleRoute(request, { params }) {
       const department =
         role === "it" ? "IT" : role === "admin" ? "Admin" : "General";
       const requiresEmailVerification = emailVerificationRequired();
+      const requiresAdminApproval =
+        !managerSite && ["it", "admin"].includes(role);
+      if (requiresEmailVerification && !emailDeliveryConfigured())
+        return json(
+          {
+            error:
+              "Registration email verification is temporarily unavailable. Contact your administrator.",
+          },
+          503,
+        );
       const verificationOrigin = requiresEmailVerification
         ? publicAppOrigin(request)
         : null;
-      const hash = await bcrypt.hash(password, 10);
+      const hash = await bcrypt.hash(password, 12);
       const now = new Date();
       const user = {
         id: uuidv4(),
@@ -3114,18 +5006,21 @@ async function handleRoute(request, { params }) {
         role,
         department,
         password_hash: hash,
-        employee_id: b.employee_id || "",
-        location: b.location || "Tulip - Ground Floor",
+        employee_id: textValue(b.employee_id, 50),
+        location: registrationSite,
         is_team_head: Boolean(managerSite),
         managed_locations: managerSite ? [managerSite] : [],
-        active: role === "employee" && !requiresEmailVerification,
+        active: !requiresEmailVerification && !requiresAdminApproval,
         activation_pending_reason: requiresEmailVerification
-          ? "email_verification"
-          : role === "employee"
-            ? null
-            : "super_admin_approval",
+          ? requiresAdminApproval
+            ? "email_verification_and_admin_approval"
+            : "email_verification"
+          : requiresAdminApproval
+            ? "admin_approval"
+            : null,
         email_verification_required: requiresEmailVerification,
         email_verified_at: requiresEmailVerification ? null : now,
+        session_version: 0,
         created_at: now,
       };
       await db.collection("users").insertOne(user);
@@ -3145,7 +5040,11 @@ async function handleRoute(request, { params }) {
       if (!user.active) {
         await audit(db, user, "register.pending", "user", user.id, { role });
         return json(
-          { pending: true, message: "Account created and awaiting Super Admin approval" },
+          {
+            pending: true,
+            message:
+              "Account created and awaiting Super Admin approval for the requested staff role",
+          },
           202,
         );
       }
@@ -3155,10 +5054,12 @@ async function handleRoute(request, { params }) {
         email: user.email,
         role: user.role,
         department: user.department,
+        session_version: 0,
       })
         .setProtectedHeader({ alg: "HS256" })
         .setExpirationTime("7d")
         .setIssuedAt()
+        .setJti(uuidv4())
         .sign(jwtSecret());
       const res = json({ user: clean(user) });
       res.cookies.set("tf_token", token, {
@@ -3172,16 +5073,111 @@ async function handleRoute(request, { params }) {
       return res;
     }
     if (route === "/auth/logout" && method === "POST") {
+      const tokenSession = await getSession(request);
+      if (tokenSession) {
+        const sessionUser = await db
+          .collection("users")
+          .findOne({ id: tokenSession.id });
+        if (sessionUser && sessionVersionMatches(sessionUser, tokenSession))
+          await db.collection("users").updateOne(
+            { id: sessionUser.id },
+            {
+              $inc: { session_version: 1 },
+              $set: { sessions_revoked_at: new Date() },
+            },
+          );
+      }
       const res = json({ ok: true });
-      res.cookies.set("tf_token", "", { httpOnly: true, path: "/", maxAge: 0 });
+      res.cookies.set("tf_token", "", {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        path: "/",
+        maxAge: 0,
+      });
       return res;
     }
     if (route === "/auth/me" && method === "GET") {
       const s = await getSession(request);
       if (!s) return json({ user: null }, 200);
       const user = await db.collection("users").findOne({ id: s.id });
-      if (!user || user.active === false) return json({ user: null }, 200);
-      return json({ user: clean(user) });
+      if (
+        !user ||
+        user.active === false ||
+        !sessionVersionMatches(user, s)
+      )
+        return json({ user: null }, 200);
+      const selectedSite = loginSite(s.login_site, user);
+      return json({
+        user: { ...clean(user), location: selectedSite, login_site: selectedSite },
+      });
+    }
+
+    // Email links are bearer-authorized, bound to one active Super Admin and
+    // read-only on GET. The decision itself is deliberately a confirmed POST
+    // so automated email link scanners cannot approve or reject requests.
+    if (route === "/approvals/email-action" && method === "GET") {
+      const token = new URL(request.url).searchParams.get("token") || "";
+      try {
+        const context = await approvalEmailContext(db, token);
+        return approvalEmailResponse({
+          title: "Approval decision required",
+          message: `Review this request as ${context.user.name}. You can approve or reject it below, or close this page and decide from the dashboard.`,
+          context,
+          token,
+        });
+      } catch (error) {
+        return approvalEmailResponse(
+          {
+            title: "Approval link unavailable",
+            message: error?.message || "This approval link cannot be used.",
+          },
+          error?.statusCode || 400,
+        );
+      }
+    }
+    if (route === "/approvals/email-action" && method === "POST") {
+      let form;
+      try {
+        form = await request.formData();
+      } catch {
+        return approvalEmailResponse(
+          {
+            title: "Decision not recorded",
+            message: "The submitted approval form was invalid.",
+          },
+          400,
+        );
+      }
+      const token = textValue(form.get("token"), 4096);
+      const decision = textValue(form.get("decision"), 20).toLowerCase();
+      const remarks = textValue(form.get("remarks"), 2000);
+      let context;
+      try {
+        context = await approvalEmailContext(db, token);
+        const result = await decideApprovalFromEmail(
+          db,
+          context,
+          decision,
+          remarks,
+        );
+        return approvalEmailResponse({
+          title: `Request ${result.approval.toLowerCase()}`,
+          message: `${context.ticket.human_id} was ${result.approval.toLowerCase()} successfully. The dashboard and audit trail have been updated.`,
+          context,
+          success: true,
+        });
+      } catch (error) {
+        return approvalEmailResponse(
+          {
+            title: "Decision not recorded",
+            message: error?.message || "This approval decision could not be recorded.",
+            context,
+            token: context ? token : null,
+          },
+          error?.statusCode || 400,
+        );
+      }
     }
 
     // everything below requires auth
@@ -3190,6 +5186,8 @@ async function handleRoute(request, { params }) {
     const sessionUser = await db.collection("users").findOne({ id: tokenSession.id });
     if (!sessionUser || sessionUser.active === false)
       return json({ error: "Account disabled" }, 401);
+    if (!sessionVersionMatches(sessionUser, tokenSession))
+      return json({ error: "Session expired" }, 401);
     // Authorization always uses current database state, not potentially stale JWT claims.
     const session = {
       id: sessionUser.id,
@@ -3197,7 +5195,7 @@ async function handleRoute(request, { params }) {
       email: sessionUser.email,
       role: sessionUser.role,
       department: sessionUser.department,
-      location: sessionUser.location,
+      location: loginSite(tokenSession.login_site, sessionUser),
       is_team_head: Boolean(sessionUser.is_team_head),
       managed_locations: sessionUser.managed_locations || [],
     };
@@ -3244,7 +5242,7 @@ async function handleRoute(request, { params }) {
         MAX_ATTACHMENT_TOTAL_BYTES
       )
         return json({ error: "Combined upload must not exceed 25 MB" }, 413);
-      if (attachmentRateLimited(session.id, files))
+      if (await attachmentRateLimited(db, session.id, files))
         return json(
           { error: "Upload limit reached. Try again after the hourly window." },
           429,
@@ -3325,8 +5323,27 @@ async function handleRoute(request, { params }) {
     }
 
     // ---- USERS / CONFIG ----
+    if (route === "/users/requesters" && method === "GET") {
+      if (!["it", "admin", "super_admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      const requesters = await db
+        .collection("users")
+        .find({ role: "employee", active: { $ne: false } })
+        .sort({ name: 1 })
+        .limit(1000)
+        .toArray();
+      return json(
+        requesters.map((requester) => ({
+          id: requester.id,
+          name: requester.name,
+          email: requester.email,
+          employee_id: requester.employee_id || "",
+          location: requester.location || "",
+        })),
+      );
+    }
     if (route === "/users" && method === "GET") {
-      let filter = { active: { $ne: false } };
+      let filter = {};
       if (session.role === "employee") filter = { id: session.id };
       else if (session.role === "it") filter = { role: "it", active: { $ne: false } };
       else if (session.role === "admin") filter = { role: "admin", active: { $ne: false } };
@@ -3341,6 +5358,26 @@ async function handleRoute(request, { params }) {
       const b = await request.json();
       const user = await db.collection("users").findOne({ id: seg[1] });
       if (!user) return json({ error: "Member not found" }, 404);
+      if (
+        b.role !== undefined &&
+        !["employee", "it", "admin", "super_admin"].includes(b.role)
+      )
+        return json({ error: "Invalid member role" }, 400);
+      if (b.active !== undefined && typeof b.active !== "boolean")
+        return json({ error: "Active status must be true or false" }, 400);
+      const removesActiveSuperAdmin =
+        user.role === "super_admin" &&
+        ((b.role !== undefined && b.role !== "super_admin") || b.active === false);
+      if (
+        removesActiveSuperAdmin &&
+        (await db
+          .collection("users")
+          .countDocuments({ role: "super_admin", active: { $ne: false } })) <= 1
+      )
+        return json(
+          { error: "At least one active Super Admin account is required" },
+          409,
+        );
       const set = {};
       if (["employee", "it", "admin", "super_admin"].includes(b.role)) {
         set.role = b.role;
@@ -3359,10 +5396,19 @@ async function handleRoute(request, { params }) {
       }
       if (typeof b.is_team_head === "boolean")
         set.is_team_head = b.is_team_head;
-      if (b.name?.trim()) set.name = b.name.trim();
-      if (b.employee_id !== undefined)
-        set.employee_id = String(b.employee_id).trim();
-      if (b.location !== undefined) set.location = String(b.location).trim();
+      if (b.name !== undefined && typeof b.name !== "string")
+        return json({ error: "Name must be text" }, 400);
+      if (b.name?.trim()) set.name = textValue(b.name, 150);
+      if (b.employee_id !== undefined) {
+        if (typeof b.employee_id !== "string")
+          return json({ error: "Employee code must be text" }, 400);
+        set.employee_id = textValue(b.employee_id, 50);
+      }
+      if (b.location !== undefined) {
+        if (typeof b.location !== "string" || !ticketLocationSite(b.location))
+          return json({ error: "Select a Tulip or Lotus location" }, 400);
+        set.location = textValue(b.location, 150);
+      }
       const managerSite = designatedManagerSite(user.email);
       if (managerSite) {
         set.role = "it";
@@ -3381,14 +5427,26 @@ async function handleRoute(request, { params }) {
         const site = ticketLocationSite(effectiveLocation);
         set.managed_locations = b.is_team_head && site ? [site] : [];
       }
-      if (b.password) {
-        if (String(b.password).length < 8)
-          return json({ error: "Password must be at least 8 characters" }, 400);
-        set.password_hash = await bcrypt.hash(String(b.password), 10);
+      let revokeSessions =
+        (b.role !== undefined && b.role !== user.role) ||
+        (typeof b.active === "boolean" && b.active !== user.active);
+      if (b.password !== undefined && b.password !== "") {
+        const passwordError = passwordPolicyError(b.password);
+        if (passwordError) return json({ error: passwordError }, 400);
+        set.password_hash = await bcrypt.hash(b.password, 12);
         set.password_reset_required = false;
+        set.sessions_revoked_at = new Date();
+        revokeSessions = true;
       }
+      if (revokeSessions) set.sessions_revoked_at = new Date();
       set.updated_at = new Date();
-      await db.collection("users").updateOne({ id: user.id }, { $set: set });
+      await db.collection("users").updateOne(
+        { id: user.id },
+        {
+          $set: set,
+          ...(revokeSessions ? { $inc: { session_version: 1 } } : {}),
+        },
+      );
       await audit(db, session, "user.settings.update", "user", user.id, {
         ...set,
         password_hash: set.password_hash ? "changed" : undefined,
@@ -3409,6 +5467,10 @@ async function handleRoute(request, { params }) {
       if (!["it", "admin", "super_admin"].includes(session.role))
         return json({ error: "Forbidden" }, 403);
       const profile = firewallProfile(request);
+      const requestedScope = new URL(request.url).searchParams.get("scope");
+      const scope = ["summary", "security"].includes(requestedScope)
+        ? requestedScope
+        : "full";
       const fw = profile.value;
       const baseUrl = String(fw("API_URL")).replace(/\/$/, "");
       const apiKey = fw("API_KEY");
@@ -3439,6 +5501,20 @@ async function handleRoute(request, { params }) {
         ),
         threat_dns: withLogRows(fw("DNSFILTER_PATH", "/api/v2/log/memory/dns")),
       };
+      const scopedPaths = Object.entries(paths).filter(([name]) => {
+        if (scope === "summary")
+          return ![
+            "logs",
+            "events",
+            "threat_antivirus",
+            "threat_ips",
+            "threat_web",
+            "threat_dns",
+          ].includes(name);
+        if (scope === "security")
+          return name === "events" || name.startsWith("threat_");
+        return true;
+      });
       if (!configured) {
         try {
           await recordFirewallHealth(db, profile, "unconfigured");
@@ -3452,6 +5528,7 @@ async function handleRoute(request, { params }) {
           id: profile.id,
           label: profile.label,
           name: fw("NAME", profile.label),
+          scope,
           sections: {},
           errors: {},
           last_updated: null,
@@ -3469,26 +5546,55 @@ async function handleRoute(request, { params }) {
         certSha256: fw("CERT_SHA256", ""),
       };
       const results = await Promise.all(
-        Object.entries(paths).map(async ([name, path]) => {
+        scopedPaths.map(async ([name, path]) => {
           try {
-            const payload = await firewallRequest(
-              `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`,
-              headers,
-              tls,
-            );
-            return [name, sanitizeFirewallPayload(payload), null];
+            const endpoint = `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+            const isLogSection =
+              name === "logs" || name === "events" || name.startsWith("threat_");
+            const payload =
+              isLogSection
+                ? await firewallPaginatedRequest(endpoint, headers, tls, {
+                    pageSize: Number(
+                      fw(
+                        name === "logs" ? "LOG_PAGE_ROWS" : "EVENT_PAGE_ROWS",
+                        name === "logs" ? "10000" : "5000",
+                      ),
+                    ),
+                    maxRows: Number(
+                      fw(
+                        name === "logs" ? "LOG_MAX_ROWS" : "EVENT_MAX_ROWS",
+                        "100000",
+                      ),
+                    ),
+                  })
+                : await firewallRequest(endpoint, headers, tls);
+            if (
+              /error|fail/i.test(String(payload?.status || "")) ||
+              Number(payload?.http_status || 200) >= 400
+            )
+              throw new Error(
+                payload?.error ||
+                  payload?.message ||
+                  `Firewall returned ${payload?.status || "an error"}`,
+              );
+            return [name, sanitizeFirewallPayload(payload), null, path];
           } catch (error) {
-            return [name, null, error.message || "Request failed"];
+            return [name, null, error.message || "Request failed", path];
           }
         }),
       );
       const sections = {},
         errors = {},
-        threat_errors = {};
-      results.forEach(([name, payload, error]) => {
+        threat_errors = {},
+        section_meta = {};
+      const fetchedAt = new Date();
+      results.forEach(([name, payload, error, path]) => {
         if (error && name.startsWith("threat_")) threat_errors[name] = error;
         else if (error) errors[name] = error;
-        else sections[name] = payload;
+        else {
+          sections[name] = payload;
+          section_meta[name] = firewallSectionMetadata(payload, path, fetchedAt);
+        }
       });
       const successfulSectionCount = Object.keys(sections).length;
       const failedSections = [
@@ -3521,22 +5627,38 @@ async function handleRoute(request, { params }) {
           live_only: true,
           count: liveLeases.length,
         };
-      } else {
+        section_meta.devices = {
+          ...(section_meta.dhcp || {}),
+          source: "firewall_dhcp_active_leases",
+          records_returned: liveLeases.length,
+          records_available: liveLeases.length,
+          complete: true,
+        };
+      } else if (scope !== "security") {
         sections.devices = [];
         sections.device_source = {
           type: "dhcp_unavailable",
           live_only: true,
           count: 0,
         };
+        section_meta.devices = {
+          source: "firewall_dhcp_active_leases",
+          fetched_at: fetchedAt.toISOString(),
+          records_returned: 0,
+          records_available: 0,
+          complete: false,
+        };
       }
-      const inventoryMapping = mapFirewallInventory(
-        firewallRows(sections.devices),
-      );
-      sections.devices = inventoryMapping.devices;
-      sections.device_inventory = inventoryMapping.summary;
+      if (sections.devices !== undefined) {
+        const inventoryMapping = await mapFirewallInventory(
+          firewallRows(sections.devices),
+        );
+        sections.devices = inventoryMapping.devices;
+        sections.device_inventory = inventoryMapping.summary;
+      }
       if (sections.logs) {
         const logRows = firewallRows(sections.logs);
-        const logMapping = mapFirewallInventory(logRows);
+        const logMapping = await mapFirewallInventory(logRows);
         if (Array.isArray(sections.logs)) sections.logs = logMapping.devices;
         else if (Array.isArray(sections.logs.results))
           sections.logs = { ...sections.logs, results: logMapping.devices };
@@ -3552,6 +5674,19 @@ async function handleRoute(request, { params }) {
             fw("NAME", profile.label),
             logMapping.devices,
             new Date(),
+            {
+              captureReason: "overview_live_logs",
+              sourceComplete: Boolean(section_meta.logs?.complete),
+              sourceRowsFetched: Number(
+                section_meta.logs?.raw_rows_fetched || logMapping.devices.length,
+              ),
+              sourceRowsAvailable: Number(
+                section_meta.logs?.records_available || logMapping.devices.length,
+              ),
+              sourcePagesFetched: Number(
+                section_meta.logs?.pages_fetched || 1,
+              ),
+            },
           );
         } catch (error) {
           console.error("Firewall daily archive failed:", error);
@@ -3564,10 +5699,28 @@ async function handleRoute(request, { params }) {
         id: profile.id,
         label: profile.label,
         name: fw("NAME", profile.label),
+        scope,
+        appliance_identity: {
+          serial:
+            sections.status?.serial ||
+            sections.status?.results?.serial ||
+            null,
+          hostname:
+            sections.status?.results?.hostname ||
+            sections.configuration?.results?.hostname ||
+            null,
+          model:
+            sections.status?.results?.model_name ||
+            sections.status?.results?.model ||
+            null,
+          firmware: sections.status?.version || null,
+          build: sections.status?.build ?? null,
+        },
         sections,
+        section_meta,
         errors,
         threat_errors,
-        last_updated: new Date().toISOString(),
+        last_updated: fetchedAt.toISOString(),
       });
     }
 
@@ -3603,7 +5756,8 @@ async function handleRoute(request, { params }) {
       const todayRequested = url.searchParams.get("today") === "true";
       if (selectedDate && !/^\d{4}-\d{2}-\d{2}$/.test(selectedDate))
         return json({ error: "Invalid firewall report date" }, 400);
-      const end = new Date();
+      const now = new Date();
+      const end = new Date(now);
       let start = new Date(end.getTime() - days * 86400000);
       let periodHours = days * 24;
       if (requestedHours > 0) {
@@ -3618,29 +5772,32 @@ async function handleRoute(request, { params }) {
         );
       } else if (/^\d{4}-\d{2}-\d{2}$/.test(selectedDate || "")) {
         start = new Date(`${selectedDate}T00:00:00.000+05:30`);
-        end.setTime(new Date(`${selectedDate}T23:59:59.999+05:30`).getTime());
-        periodHours = 24;
+        if (start > now)
+          return json({ error: "Firewall report date cannot be in the future" }, 400);
+        const selectedDayEnd = new Date(
+          `${selectedDate}T23:59:59.999+05:30`,
+        );
+        end.setTime(Math.min(now.getTime(), selectedDayEnd.getTime()));
+        periodHours = Math.max(
+          0,
+          (end.getTime() - start.getTime()) / 3600000,
+        );
       }
       const basePath = fw("REPORT_PATH", fw("LOGS_PATH", "/api/logs"));
       const reportUrl = new URL(
         `${baseUrl}${basePath.startsWith("/") ? basePath : `/${basePath}`}`,
       );
-      reportUrl.searchParams.set(
-        fw("REPORT_START_PARAM", "start"),
-        start.toISOString(),
-      );
-      reportUrl.searchParams.set(
-        fw("REPORT_END_PARAM", "end"),
-        end.toISOString(),
-      );
       const configuredReportRows = Number(fw("REPORT_ROWS", "10000"));
-      const reportRowLimit = Number.isFinite(configuredReportRows)
-        ? Math.min(100000, Math.max(1, Math.round(configuredReportRows)))
+      const reportPageRows = Number.isFinite(configuredReportRows)
+        ? Math.min(10000, Math.max(100, Math.round(configuredReportRows)))
         : 10000;
-      reportUrl.searchParams.set("rows", String(reportRowLimit));
+      const configuredReportMaxRows = Number(fw("REPORT_MAX_ROWS", "100000"));
+      const reportRowLimit = Number.isFinite(configuredReportMaxRows)
+        ? Math.min(250000, Math.max(reportPageRows, Math.round(configuredReportMaxRows)))
+        : 100000;
       const headerName = fw("API_HEADER", "Authorization");
       const prefix = fw("API_PREFIX", "Bearer");
-      const payload = await firewallRequest(
+      const payload = await firewallPaginatedRequest(
         reportUrl.toString(),
         {
           Accept: "application/json",
@@ -3651,19 +5808,67 @@ async function handleRoute(request, { params }) {
           caPath: fw("CA_CERT_PATH", ""),
           certSha256: fw("CERT_SHA256", ""),
         },
+        { pageSize: reportPageRows, maxRows: reportRowLimit },
       );
       const allRows = firewallRows(payload);
       const datedRows = allRows.filter((row) => {
         const time = firewallRecordTime(row);
         return time && time >= start && time <= end;
       });
-      const records = datedRows.map(normalizedFirewallRecord).filter(Boolean);
+      const reportInventory = await mapFirewallInventory(datedRows);
+      const enrichedDatedRows = reportInventory.devices;
+      const apiRecords = enrichedDatedRows
+        .map(normalizedFirewallRecord)
+        .filter(Boolean);
       const archive = await archiveFirewallRecords(
         db,
         profile,
         fw("NAME", profile.label),
-        datedRows,
+        enrichedDatedRows,
         end,
+        {
+          captureReason: todayRequested
+            ? "today_report"
+            : selectedDate
+              ? "dated_report"
+              : requestedHours > 0
+                ? "hourly_report"
+                : "multi_day_report",
+          sourceComplete: Boolean(payload?.pagination_complete),
+          sourceRowsFetched: Number(payload?.raw_rows_fetched || allRows.length),
+          sourceRowsAvailable: Number(payload?.total_lines || allRows.length),
+          sourcePagesFetched: Number(payload?.pages_fetched || 1),
+        },
+      );
+      const archivedDays = await db
+        .collection("firewall_daily_archives")
+        .find(
+          {
+            firewall_id: profile.id,
+            date: {
+              $gte: firewallArchiveDate(start),
+              $lte: firewallArchiveDate(end),
+            },
+          },
+          { projection: { records: 1 } },
+        )
+        .toArray();
+      const archivedRecords = archivedDays.flatMap((day) => day.records || []);
+      const mergedRecords = new Map();
+      for (const row of [...archivedRecords, ...apiRecords]) {
+        const normalized = normalizedFirewallRecord(row);
+        const timestamp = normalized && new Date(normalized.timestamp);
+        if (
+          normalized &&
+          timestamp >= start &&
+          timestamp <= end
+        )
+          mergedRecords.set(firewallRecordFingerprint(normalized), normalized);
+      }
+      const records = [...mergedRecords.values()].sort(
+        (left, right) =>
+          new Date(right.timestamp).getTime() -
+          new Date(left.timestamp).getTime(),
       );
       return json({
         firewall: {
@@ -3671,7 +5876,7 @@ async function handleRoute(request, { params }) {
           label: profile.label,
           name: fw("NAME", profile.label),
         },
-        generated_at: end.toISOString(),
+        generated_at: now.toISOString(),
         period: {
           start: start.toISOString(),
           end: end.toISOString(),
@@ -3681,8 +5886,17 @@ async function handleRoute(request, { params }) {
         summary: {
           records: records.length,
           api_rows_returned: allRows.length,
+          api_rows_fetched: Number(payload?.raw_rows_fetched || allRows.length),
+          api_rows_available: Number(payload?.total_lines || allRows.length),
+          duplicate_api_rows_removed: Number(payload?.duplicate_rows_removed || 0),
+          api_pages_fetched: Number(payload?.pages_fetched || 1),
+          pagination_stop_reason: payload?.pagination_stop_reason || null,
+          archived_rows_considered: archivedRecords.length,
           api_row_limit: reportRowLimit,
-          record_limit_reached: allRows.length >= reportRowLimit,
+          record_limit_reached: Boolean(payload?.row_limit_reached),
+          source_complete: Boolean(payload?.pagination_complete),
+          source: "firewall_memory_logs_and_daily_archive",
+          inventory: reportInventory.summary,
           blocked: records.filter((row) => /block|deny|drop/i.test(row.action))
             .length,
           threats: records.filter((row) =>
@@ -3698,6 +5912,71 @@ async function handleRoute(request, { params }) {
         archive,
         records,
       });
+    }
+
+    if (route === "/firewall/archive/export" && method === "GET") {
+      if (!["it", "admin", "super_admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      const url = new URL(request.url);
+      const profile = firewallProfile(request);
+      const date = url.searchParams.get("date");
+      const from = url.searchParams.get("from");
+      const to = url.searchParams.get("to");
+      const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || "");
+      if (date && !validDate(date))
+        return json({ error: "Invalid archive date" }, 400);
+      if ((from && !validDate(from)) || (to && !validDate(to)))
+        return json({ error: "Invalid archive date range" }, 400);
+      if (validDate(from) && validDate(to) && from > to)
+        return json({ error: "Archive start date must be before end date" }, 400);
+      if (!validDate(date) && !validDate(from) && !validDate(to))
+        return json({ error: "Select an archive date or date range" }, 400);
+      const rangeStart = validDate(date) ? date : validDate(from) ? from : to;
+      const rangeEnd = validDate(date) ? date : validDate(to) ? to : from;
+      const days =
+        Math.floor(
+          (new Date(`${rangeEnd}T00:00:00Z`).getTime() -
+            new Date(`${rangeStart}T00:00:00Z`).getTime()) /
+            86400000,
+        ) + 1;
+      if (days > 7)
+        return json({ error: "Export up to 7 archived days at a time" }, 400);
+      const archives = await db
+        .collection("firewall_daily_archives")
+        .find({
+          firewall_id: profile.id,
+          date: { $gte: rangeStart, $lte: rangeEnd },
+        })
+        .sort({ date: 1 })
+        .limit(7)
+        .toArray();
+      const records = archives.flatMap((archive) =>
+        (archive.records || []).map((record) => ({
+          archive_date: archive.date,
+          ...record,
+        })),
+      );
+      const filename = `${profile.id}-firewall-archive-${rangeStart}${rangeStart === rangeEnd ? "" : `-to-${rangeEnd}`}.csv`;
+      return new NextResponse(firewallArchiveCsvStream(records), {
+        status: 200,
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${filename}"`,
+          "X-Archive-Records": String(records.length),
+        },
+      });
+    }
+
+    if (route === "/firewall/archive/sync" && method === "POST") {
+      if (!["it", "admin", "super_admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      const profile = firewallProfile(request);
+      return json(
+        await syncFirewallArchiveSnapshot(db, profile.id, {
+          reason: "manual_sync",
+        }),
+      );
     }
 
     if (route === "/firewall/archive" && method === "GET") {
@@ -3732,10 +6011,39 @@ async function handleRoute(request, { params }) {
         .sort({ date: -1 })
         .limit(limit)
         .toArray();
-      if (validDate(date))
-        return archives[0]
-          ? json(clean(archives[0]))
-          : json({ error: "No archived report for that date" }, 404);
+      if (validDate(date)) {
+        if (!archives[0])
+          return json({ error: "No archived report for that date" }, 404);
+        const archive = archives[0];
+        const requestedRecordPage = Number(
+          url.searchParams.get("record_page") || 1,
+        );
+        const requestedRecordLimit = Number(
+          url.searchParams.get("record_limit") || 25,
+        );
+        const recordPage = Number.isFinite(requestedRecordPage)
+          ? Math.max(1, Math.round(requestedRecordPage))
+          : 1;
+        const recordLimit = Number.isFinite(requestedRecordLimit)
+          ? Math.min(100, Math.max(1, Math.round(requestedRecordLimit)))
+          : 25;
+        const records = archive.records || [];
+        const totalPages = Math.max(1, Math.ceil(records.length / recordLimit));
+        const currentPage = Math.min(recordPage, totalPages);
+        const start = (currentPage - 1) * recordLimit;
+        return json(
+          clean({
+            ...archive,
+            records: records.slice(start, start + recordLimit),
+            record_pagination: {
+              page: currentPage,
+              page_size: recordLimit,
+              total_records: records.length,
+              total_pages: totalPages,
+            },
+          }),
+        );
+      }
       const archiveSummaries = archives.map(({ records: storedRecords, ...item }) => item);
       return json({
         firewall: { id: profile.id, label: profile.label },
@@ -3770,10 +6078,14 @@ async function handleRoute(request, { params }) {
       if (!["admin", "super_admin"].includes(session.role))
         return json({ error: "Forbidden" }, 403);
       const b = await request.json();
-      const member = await db.collection("users").findOne({ id: b.member_id });
+      const member = await db.collection("users").findOne({
+        id: b.member_id,
+        active: { $ne: false },
+      });
       if (!member) return json({ error: "Member not found" }, 400);
-      const vehicleType =
-        b.vehicle_type === "four_wheeler" ? "four_wheeler" : "two_wheeler";
+      if (!["four_wheeler", "two_wheeler"].includes(b.vehicle_type))
+        return json({ error: "Select a valid vehicle type" }, 400);
+      const vehicleType = b.vehicle_type;
       const capacity = vehicleType === "four_wheeler" ? 12 : 90;
       const existing = await db
         .collection("parking_allocations")
@@ -3781,6 +6093,8 @@ async function handleRoute(request, { params }) {
         .toArray();
       const occupied = new Set(existing.map((item) => item.slot_number));
       const requested = Number(b.slot_number || 0);
+      if (b.slot_number && !Number.isInteger(requested))
+        return json({ error: "Parking slot must be a whole number" }, 400);
       const slotNumber =
         requested ||
         Array.from({ length: capacity }, (_, index) => index + 1).find(
@@ -3790,11 +6104,13 @@ async function handleRoute(request, { params }) {
         return json({ error: "No valid parking slot available" }, 400);
       if (occupied.has(slotNumber))
         return json({ error: "That parking slot is already allocated" }, 409);
-      const vehicleNumber = String(b.vehicle_number || "")
+      const vehicleNumber = textValue(b.vehicle_number, 20)
         .trim()
         .toUpperCase();
       if (!vehicleNumber)
         return json({ error: "Vehicle number is required" }, 400);
+      if (!/^[A-Z0-9 -]{4,20}$/.test(vehicleNumber))
+        return json({ error: "Enter a valid vehicle number" }, 400);
       if (
         await db
           .collection("parking_allocations")
@@ -3813,11 +6129,21 @@ async function handleRoute(request, { params }) {
         vehicle_type: vehicleType,
         vehicle_number: vehicleNumber,
         slot_number: slotNumber,
-        notes: b.notes || "",
+        notes: textValue(b.notes, 1000),
+        allocated_by_id: session.id,
         allocated_by: session.name,
         created_at: new Date(),
       };
-      await db.collection("parking_allocations").insertOne(doc);
+      try {
+        await db.collection("parking_allocations").insertOne(doc);
+      } catch (error) {
+        if (error?.code === 11000)
+          return json(
+            { error: "That parking slot or vehicle is already allocated" },
+            409,
+          );
+        throw error;
+      }
       await notify(
         db,
         member.id,
@@ -3886,12 +6212,13 @@ async function handleRoute(request, { params }) {
       const tickets = await db.collection("tickets").find(filter).toArray();
       const count = (f) => tickets.filter(f).length;
       const now = Date.now();
-      const HOUR = 3600000;
       // SLA timings
       const respTimes = [],
         resTimes = [];
       let slaMet = 0,
         slaTotalResolved = 0,
+        resolutionBreached = 0,
+        resolutionPending = 0,
         responseMet = 0,
         responseBreached = 0,
         responsePending = 0;
@@ -3922,6 +6249,15 @@ async function handleRoute(request, { params }) {
             new Date(resolvedAt) <= new Date(t.sla_resolution_due)
           )
             slaMet++;
+          else if (t.sla_resolution_due) resolutionBreached++;
+        } else if (
+          !["Resolved", "Closed", "Cancelled"].includes(t.status) &&
+          t.sla_resolution_due &&
+          new Date(t.sla_resolution_due).getTime() < now
+        ) {
+          resolutionBreached++;
+        } else if (!["Resolved", "Closed", "Cancelled"].includes(t.status)) {
+          resolutionPending++;
         }
       }
       const avg = (a) =>
@@ -3962,8 +6298,16 @@ async function handleRoute(request, { params }) {
         escalated: count(
           (t) =>
             !["Resolved", "Closed", "Cancelled"].includes(t.status) &&
-            t.created_at &&
-            now - new Date(t.created_at).getTime() > 24 * HOUR,
+            Boolean(
+              t.response_sla_breached_at ||
+                t.resolution_sla_breached_at ||
+                (t.sla_response_due &&
+                  !t.acknowledged_at &&
+                  !t.first_response_at &&
+                  new Date(t.sla_response_due).getTime() < now) ||
+                (t.sla_resolution_due &&
+                  new Date(t.sla_resolution_due).getTime() < now),
+            ),
         ),
         avg_response_hours: avg(respTimes),
         avg_resolution_hours: avg(resTimes),
@@ -3977,7 +6321,8 @@ async function handleRoute(request, { params }) {
         response_sla_breached: responseBreached,
         response_sla_pending: responsePending,
         resolution_sla_met: slaMet,
-        resolution_sla_breached: Math.max(0, slaTotalResolved - slaMet),
+        resolution_sla_breached: resolutionBreached,
+        resolution_sla_pending: resolutionPending,
         by_priority: ["Critical", "High", "Medium", "Low"].map((p) => ({
           name: p,
           value: count((t) => t.priority === p),
@@ -4343,26 +6688,49 @@ async function handleRoute(request, { params }) {
           textValue(b.email, 254) ||
           textValue(b.employee_id, 50),
       );
-      let issueUser =
-        session.role === "employee" || !hasExplicitIssueUser
-          ? sessionUser
-          : null;
+      const requestedEmail = textValue(b.email, 254).toLowerCase();
+      const requestedEmployeeId = textValue(b.employee_id, 50);
+      const requestedName = textValue(b.raised_for_name, 150);
+      if (
+        session.role !== "employee" &&
+        hasExplicitIssueUser &&
+        !b.raised_for_id
+      ) {
+        if (!requestedName || !requestedEmail || !requestedEmployeeId)
+          return json(
+            {
+              error:
+                "Enter the affected employee name, company email and GRP code, or leave all three blank for an internal ticket",
+            },
+            400,
+          );
+        if (!/^[^\s@]+@ethara\.ai$/i.test(requestedEmail))
+          return json(
+            { error: "Enter a valid @ethara.ai email for the affected employee" },
+            400,
+          );
+      }
+      let issueUser = session.role === "employee" ? sessionUser : null;
       if (!issueUser && b.raised_for_id)
         issueUser = await db
           .collection("users")
-          .findOne({ id: b.raised_for_id, active: { $ne: false } });
+          .findOne({
+            id: b.raised_for_id,
+            role: "employee",
+            active: { $ne: false },
+          });
       if (!issueUser) {
         const identity = [];
-        const requestedEmail = textValue(b.email, 254).toLowerCase();
-        const requestedEmployeeId = textValue(b.employee_id, 50);
-        const requestedName = textValue(b.raised_for_name, 150);
         if (requestedEmail) identity.push({ email: requestedEmail });
         if (requestedEmployeeId) identity.push({ employee_id: requestedEmployeeId });
-        if (requestedName) identity.push({ name: requestedName });
         if (identity.length)
           issueUser = await db
             .collection("users")
-            .findOne({ active: { $ne: false }, $or: identity });
+            .findOne({
+              role: "employee",
+              active: { $ne: false },
+              $or: identity,
+            });
       }
       const now = new Date();
       const issueUserName =
@@ -4386,6 +6754,8 @@ async function handleRoute(request, { params }) {
         explicitLocation || issueUser?.location || sessionUser.location || "HQ1";
       const routingSite = ticketLocationSite(location);
       const routingTicket = { department, location, routing_site: routingSite };
+      const acknowledgementRequired =
+        session.role === "employee" || issueUser?.role === "employee";
       if (requestedAssignee && session.role !== "super_admin") {
         if (session.role !== requestedAssignee.role)
           return json({ error: "You can only assign within your team" }, 403);
@@ -4430,6 +6800,8 @@ async function handleRoute(request, { params }) {
         issue_user_name: issueUserName,
         issue_user_email: issueUserEmail,
         issue_user_employee_code: issueEmployeeCode,
+        issue_user_role: issueUser?.role || null,
+        acknowledgement_required: acknowledgementRequired,
         location,
         routing_site: routingSite,
         routed_team: routingSite ? `${department}:${routingSite}` : department,
@@ -4574,6 +6946,10 @@ async function handleRoute(request, { params }) {
         const actor = sessionUser;
         const teamRole = ticket.department === "Admin" ? "admin" : "it";
         const raisedAt = ticket.raised_at || ticket.created_at;
+        const acknowledgementRequired = await ticketAcknowledgementRequired(
+          db,
+          ticket,
+        );
         let acknowledgementAt = ticket.acknowledged_at || ticket.first_response_at;
         let resolutionAt = ticket.resolved_at || ticket.resolution?.resolved_date;
         let lifecycleChanged = false;
@@ -4606,6 +6982,23 @@ async function handleRoute(request, { params }) {
               );
           }
           set["status_timestamps.resolved"] = now;
+          lifecycleChanged = true;
+        };
+
+        const markClosed = ({ automatic = false } = {}) => {
+          set.closed_at = ticket.closed_at || now;
+          set.closed_by_id = session.id;
+          set.closed_by_name = session.name;
+          set.lifecycle_working_minutes = workingMinutesBetween(raisedAt, now);
+          set["status_timestamps.closed"] = now;
+          if (automatic)
+            set.confirmation = {
+              required: false,
+              confirmed: true,
+              auto_closed: true,
+              at: now,
+              by: session.name,
+            };
           lifecycleChanged = true;
         };
 
@@ -4666,6 +7059,10 @@ async function handleRoute(request, { params }) {
               set["status_timestamps.assigned"] = now;
               markAcknowledged();
             } else {
+              if (["Assigned", "Acknowledged", "In Progress"].includes(ticket.status)) {
+                set.status = "Open";
+                set["status_timestamps.open"] = now;
+              }
               set.last_unassigned_at = now;
               set.unassigned_by_id = session.id;
               set.unassigned_by_name = session.name;
@@ -4748,7 +7145,19 @@ async function handleRoute(request, { params }) {
               { error: "Assign the ticket before starting or resolving it" },
               400,
             );
-          set.status = b.status;
+          if (b.status === "Closed" && acknowledgementRequired)
+            return json(
+              {
+                error:
+                  "The affected employee must acknowledge the resolution before this ticket can close",
+              },
+              409,
+            );
+          const effectiveStatus =
+            b.status === "Resolved" && !acknowledgementRequired
+              ? "Closed"
+              : b.status;
+          set.status = effectiveStatus;
           const statusKey = b.status
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, "_")
@@ -4764,13 +7173,12 @@ async function handleRoute(request, { params }) {
             }
             lifecycleChanged = true;
           }
-          if (b.status === "Resolved") markResolved();
+          if (b.status === "Resolved") {
+            markResolved();
+            if (!acknowledgementRequired) markClosed({ automatic: true });
+          }
           if (b.status === "Closed") {
-            set.closed_at = ticket.closed_at || now;
-            set.closed_by_id = session.id;
-            set.closed_by_name = session.name;
-            set.lifecycle_working_minutes = workingMinutesBetween(raisedAt, now);
-            lifecycleChanged = true;
+            markClosed();
           }
           await addHistory(
             db,
@@ -4779,14 +7187,15 @@ async function handleRoute(request, { params }) {
             session,
             b.note || "",
             ticket.status,
-            b.status,
+            effectiveStatus,
           );
-          await notify(
-            db,
-            requesterId(ticket),
-            `Ticket ${ticket.human_id} status: ${b.status}`,
-            ticket,
-          );
+          if (!b.resolution)
+            await notify(
+              db,
+              requesterId(ticket),
+              `Ticket ${ticket.human_id} status: ${effectiveStatus}`,
+              ticket,
+            );
         }
         if (b.resolution) {
           const effectiveAssignee =
@@ -4816,9 +7225,11 @@ async function handleRoute(request, { params }) {
             resolved_by: session.name,
             resolved_date: now,
           };
-          set.status = "Resolved";
+          const finalStatus = acknowledgementRequired ? "Resolved" : "Closed";
+          set.status = finalStatus;
           markAcknowledged();
           markResolved();
+          if (!acknowledgementRequired) markClosed({ automatic: true });
           if (b.status !== "Resolved")
             await addHistory(
               db,
@@ -4827,12 +7238,14 @@ async function handleRoute(request, { params }) {
               session,
               "Resolved: " + summary,
               ticket.status,
-              "Resolved",
+              finalStatus,
             );
           await notify(
             db,
             requesterId(ticket),
-            `Ticket ${ticket.human_id} resolved - please confirm`,
+            acknowledgementRequired
+              ? `Ticket ${ticket.human_id} resolved - please confirm`
+              : `Ticket ${ticket.human_id} resolved and closed`,
             ticket,
           );
         }
@@ -5034,6 +7447,10 @@ async function handleRoute(request, { params }) {
           return json({ error: "Final tickets cannot enter approval again" }, 409);
         if (!["it", "admin"].includes(session.role))
           return json({ error: "Forbidden" }, 403);
+        const approvalEmailOrigin =
+          process.env.EMAIL_NOTIFICATIONS_ENABLED !== "false"
+            ? publicAppOrigin(request)
+            : null;
         const b = await request.json();
         const approvalNow = new Date();
         const existing = await db
@@ -5066,7 +7483,12 @@ async function handleRoute(request, { params }) {
         };
         let approval;
         if (existing) {
-          approval = existing;
+          approval = {
+            ...existing,
+            ...apprData,
+            status: "Pending",
+            updated_at: approvalNow,
+          };
           await db.collection("approvals").updateOne(
             { ticket_id: ticketId },
             {
@@ -5134,14 +7556,25 @@ async function handleRoute(request, { params }) {
         );
         const supers = await db
           .collection("users")
-          .find({ role: "super_admin" })
+          .find({ role: "super_admin", active: { $ne: false } })
           .toArray();
         await notify(
           db,
           supers.map((u) => u.id),
           `Approval requested for ${ticket.human_id}`,
           ticket,
+          "approval",
+          { email: false },
         );
+        if (approvalEmailOrigin)
+          await queueApprovalRequestEmails(
+            db,
+            supers,
+            approval,
+            ticket,
+            approvalEmailOrigin,
+            approvalNow.getTime(),
+          );
         await audit(
           db,
           session,
@@ -5176,6 +7609,11 @@ async function handleRoute(request, { params }) {
         };
         const m = map[decision];
         if (!m) return json({ error: "Invalid decision" }, 400);
+        const currentApproval = await db
+          .collection("approvals")
+          .findOne({ ticket_id: ticketId });
+        if (!currentApproval)
+          return json({ error: "Approval request not found" }, 404);
         const decisionNow = new Date();
         await db.collection("approvals").updateOne(
           { ticket_id: ticketId },
@@ -5228,6 +7666,7 @@ async function handleRoute(request, { params }) {
           `Approval ${m.appr} for ${ticket.human_id}`,
           ticket,
         );
+        await supersedePendingApprovalEmails(db, currentApproval.id);
         await audit(db, session, "approval.decision", "ticket", ticketId, {
           decision,
           ...b,
@@ -5250,21 +7689,32 @@ async function handleRoute(request, { params }) {
     if (route === "/tasks" && method === "POST") {
       if (session.role !== "admin") return json({ error: "Forbidden" }, 403);
       const b = await request.json();
+      const title = textValue(b.title, 200);
+      if (!title) return json({ error: "Task title is required" }, 400);
+      const recurrence = textValue(b.recurrence, 20) || "one-time";
+      if (!["one-time", "daily", "weekly", "monthly"].includes(recurrence))
+        return json({ error: "Invalid task recurrence" }, 400);
+      const priority = textValue(b.priority, 20) || "Medium";
+      if (!["Critical", "High", "Medium", "Low"].includes(priority))
+        return json({ error: "Invalid task priority" }, 400);
+      const dueDate = b.due_date ? new Date(b.due_date) : new Date();
+      if (Number.isNaN(dueDate.getTime()))
+        return json({ error: "Invalid task due date" }, 400);
       const hid = await humanId(db, "ATSK");
       const t = {
         id: uuidv4(),
         human_id: hid,
-        title: b.title || "Untitled",
-        category: b.category || "Facilities",
-        location: b.location || "HQ1",
-        recurrence: b.recurrence || "one-time",
+        title,
+        category: textValue(b.category, 100) || "Facilities",
+        location: textValue(b.location, 150) || "HQ1",
+        recurrence,
         owner_id: session.id,
         owner_name: session.name,
-        backup_owner_name: b.backup_owner_name || "",
-        priority: b.priority || "Medium",
-        due_date: b.due_date ? new Date(b.due_date) : new Date(),
+        backup_owner_name: textValue(b.backup_owner_name, 150),
+        priority,
+        due_date: dueDate,
         status: "Not Started",
-        remarks: b.remarks || "",
+        remarks: textValue(b.remarks, 5000),
         linked_approval: null,
         completion_proof: null,
         created_at: new Date(),
@@ -5277,9 +7727,31 @@ async function handleRoute(request, { params }) {
     if (seg[0] === "tasks" && seg[1] && method === "PATCH") {
       if (session.role !== "admin") return json({ error: "Forbidden" }, 403);
       const b = await request.json();
+      const task = await db.collection("tasks").findOne({ id: seg[1] });
+      if (!task) return json({ error: "Task not found" }, 404);
       const set = { updated_at: new Date() };
-      for (const k of ["status", "remarks", "priority", "completion_proof"])
-        if (b[k] !== undefined) set[k] = b[k];
+      if (b.status !== undefined) {
+        if (
+          ![
+            "Not Started",
+            "In Progress",
+            "Pending Approval",
+            "On Hold",
+            "Completed",
+            "Not Applicable",
+          ].includes(b.status)
+        )
+          return json({ error: "Invalid task status" }, 400);
+        set.status = b.status;
+      }
+      if (b.priority !== undefined) {
+        if (!["Critical", "High", "Medium", "Low"].includes(b.priority))
+          return json({ error: "Invalid task priority" }, 400);
+        set.priority = b.priority;
+      }
+      if (b.remarks !== undefined) set.remarks = textValue(b.remarks, 5000);
+      if (b.completion_proof !== undefined)
+        set.completion_proof = textValue(b.completion_proof, 1000);
       await db.collection("tasks").updateOne({ id: seg[1] }, { $set: set });
       await audit(db, session, "task.update", "task", seg[1], b);
       return json(clean(await db.collection("tasks").findOne({ id: seg[1] })));
@@ -5422,7 +7894,9 @@ async function handleRoute(request, { params }) {
 
     // ---- MEMBER CHECKLISTS (Super Admin defines; IT/Admin submit daily) ----
     if (route === "/member-checklists" && method === "GET") {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = kraDateKey();
+      const now = new Date();
+      await processKraEscalations(db, today, now);
       let q = {};
       if (session.role === "super_admin") {
         const mid = new URL(request.url).searchParams.get("member_id");
@@ -5439,9 +7913,31 @@ async function handleRoute(request, { params }) {
         const sub = await db
           .collection("member_checklist_submissions")
           .findOne({ checklist_id: l.id, date: today });
-        out.push({ ...clean(l), today_submission: sub ? clean(sub) : null });
+        const deadline = kraDeadlineAt(today, l.cutoff || KRA_CUTOFF);
+        const completedOnTime =
+          kraSubmissionCompleted(l, sub) &&
+          sub?.submitted_at &&
+          new Date(sub.submitted_at) <= deadline;
+        const overdue = Boolean(deadline && now > deadline && !completedOnTime);
+        out.push({
+          ...clean(l),
+          cutoff: KRA_CUTOFF,
+          cutoff_at: deadline,
+          overdue,
+          today_status: overdue ? "Issue" : sub?.status || "Not submitted",
+          today_submission: sub ? clean(sub) : null,
+        });
       }
       return json(out);
+    }
+    if (
+      route === "/member-checklists/import-preview" &&
+      method === "POST"
+    ) {
+      if (session.role !== "super_admin")
+        return json({ error: "Forbidden" }, 403);
+      const form = await request.formData();
+      return json(await tasksFromSpreadsheet(form.get("file")));
     }
     if (route === "/member-checklists" && method === "POST") {
       if (session.role !== "super_admin")
@@ -5449,18 +7945,35 @@ async function handleRoute(request, { params }) {
       const b = await request.json();
       const member = await db.collection("users").findOne({ id: b.member_id });
       if (!member) return json({ error: "Member not found" }, 400);
+      if (!["it", "admin"].includes(member.role))
+        return json({ error: "KRA can be assigned only to IT or Admin members" }, 400);
+      if (
+        !Array.isArray(b.items) ||
+        !b.items.some((item) => textValue(item, 300))
+      )
+        return json({ error: "Add at least one daily work item" }, 400);
       const doc = {
         id: uuidv4(),
         member_id: member.id,
         member_name: member.name,
         member_role: member.role,
-        location: b.location || member.location || "",
-        title: b.title || "Daily Checklist",
-        frequency: b.frequency || "daily",
+        location: textValue(b.location, 150) || member.location || "",
+        title: textValue(b.title, 200) || "Daily Checklist",
+        frequency:
+          String(b.frequency || b.repeat || "Daily").toLowerCase() ===
+          "weekdays"
+            ? "Weekdays"
+            : "Daily",
+        cutoff: KRA_CUTOFF,
         active: true,
         items: (b.items || [])
           .filter(Boolean)
-          .map((label, i) => ({ key: `mc_${i}`, label })),
+          .slice(0, 200)
+          .map((label, i) => ({
+            key: `mc_${i}`,
+            label: textValue(label, 300),
+          }))
+          .filter((item) => item.label),
         created_by: session.name,
         created_at: new Date(),
       };
@@ -5537,13 +8050,47 @@ async function handleRoute(request, { params }) {
       if (list.member_id !== session.id)
         return json({ error: "Forbidden" }, 403);
       const b = await request.json();
-      const date = b.date || new Date().toISOString().slice(0, 10);
-      const responses = b.responses || [];
+      const date = kraDateKey();
+      if (b.date && b.date !== date)
+        return json({ error: "KRA can only be submitted for today" }, 400);
+      if (!Array.isArray(b.responses))
+        return json({ error: "KRA responses must be a list" }, 400);
+      const expectedItems = Array.isArray(list.items) ? list.items : [];
+      const submittedByItem = new Map();
+      for (const response of b.responses.slice(0, 200)) {
+        if (!response || typeof response !== "object" || Array.isArray(response))
+          return json({ error: "Invalid KRA response" }, 400);
+        const item = textValue(response.item, 300);
+        const matched = expectedItems.find(
+          (expected) => expected.key === response.key || expected.label === item,
+        );
+        if (!matched)
+          return json({ error: "A KRA response does not match this checklist" }, 400);
+        if (submittedByItem.has(matched.key))
+          return json({ error: "Duplicate KRA response" }, 400);
+        submittedByItem.set(matched.key, {
+          key: matched.key,
+          item: matched.label,
+          done: response.done === true,
+          remark: textValue(response.remark, 1000),
+        });
+      }
+      const responses = expectedItems.map(
+        (item) =>
+          submittedByItem.get(item.key) || {
+            key: item.key,
+            item: item.label,
+            done: false,
+            remark: "",
+          },
+      );
       const doneCount = responses.filter((r) => r.done).length;
-      const status =
+      const now = new Date();
+      const deadline = kraDeadlineAt(date, list.cutoff || KRA_CUTOFF);
+      const late = Boolean(deadline && now > deadline);
+      const completed =
         doneCount === responses.length && responses.length > 0
-          ? "Completed"
-          : "Partial";
+      const status = late ? "Late" : completed ? "Completed" : "Partial";
       const existing = await db
         .collection("member_checklist_submissions")
         .findOne({ checklist_id: list.id, date });
@@ -5557,7 +8104,10 @@ async function handleRoute(request, { params }) {
         done_count: doneCount,
         total: responses.length,
         status,
-        submitted_at: new Date(),
+        cutoff: KRA_CUTOFF,
+        deadline_at: deadline,
+        late,
+        submitted_at: now,
       };
       if (existing)
         await db
@@ -5566,20 +8116,22 @@ async function handleRoute(request, { params }) {
       else
         await db
           .collection("member_checklist_submissions")
-          .insertOne({ id: uuidv4(), ...payload, created_at: new Date() });
+          .insertOne({ id: uuidv4(), ...payload, created_at: now });
+      if (late) await processKraEscalations(db, date, now);
       await audit(
         db,
         session,
         "member_checklist.submit",
         "member_checklist",
         list.id,
-        { date, status },
+        { date, status, late },
       );
       return json({
         ok: true,
         status,
         done_count: doneCount,
         total: responses.length,
+        late,
       });
     }
     if (seg[0] === "member-checklists" && seg[1] && method === "DELETE") {
@@ -5612,9 +8164,13 @@ async function handleRoute(request, { params }) {
     if (route === "/reports/daily-kra" && method === "GET") {
       if (session.role !== "super_admin")
         return json({ error: "Forbidden" }, 403);
-      const date =
-        new URL(request.url).searchParams.get("date") ||
-        new Date().toISOString().slice(0, 10);
+      const requestedDate = new URL(request.url).searchParams.get("date");
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate || "")
+        ? requestedDate
+        : kraDateKey();
+      const now = new Date();
+      if (date === kraDateKey(now))
+        await processKraEscalations(db, date, now);
       const lists = await db
         .collection("member_checklists")
         .find({ active: true })
@@ -5623,8 +8179,12 @@ async function handleRoute(request, { params }) {
         .collection("member_checklist_submissions")
         .find({ date })
         .toArray();
+      const byChecklist = new Map(
+        subs.map((submission) => [submission.checklist_id, submission]),
+      );
       const byMember = {};
       for (const l of lists) {
+        if (!kraRunsOnDate(l, date)) continue;
         const m = (byMember[l.member_id] = byMember[l.member_id] || {
           member_id: l.member_id,
           member_name: l.member_name,
@@ -5633,19 +8193,26 @@ async function handleRoute(request, { params }) {
           total_items: 0,
           done_items: 0,
           submitted_lists: 0,
+          issue_lists: 0,
         });
         m.total_lists += 1;
         m.total_items += (l.items || []).length;
-      }
-      for (const s of subs) {
-        const m = byMember[s.member_id];
-        if (!m) continue;
-        m.submitted_lists += 1;
-        m.done_items += s.done_count || 0;
+        const submission = byChecklist.get(l.id);
+        if (submission) {
+          m.submitted_lists += 1;
+          m.done_items += Number(submission.done_count || 0);
+        }
+        const deadline = kraDeadlineAt(date, l.cutoff || KRA_CUTOFF);
+        const completedOnTime =
+          kraSubmissionCompleted(l, submission) &&
+          submission?.submitted_at &&
+          new Date(submission.submitted_at) <= deadline;
+        if (deadline && now > deadline && !completedOnTime) m.issue_lists += 1;
       }
       const members = Object.values(byMember).map((m) => {
         let status = "Not Submitted";
-        if (m.submitted_lists > 0)
+        if (m.issue_lists > 0) status = "Issue";
+        else if (m.submitted_lists > 0)
           status =
             m.submitted_lists >= m.total_lists && m.done_items >= m.total_items
               ? "Completed"
@@ -5653,13 +8220,19 @@ async function handleRoute(request, { params }) {
         return {
           ...m,
           status,
+          escalated: m.issue_lists > 0,
           compliant: status === "Completed",
           pct: m.total_items
             ? Math.round((m.done_items / m.total_items) * 100)
             : 0,
         };
       });
-      return json({ date, members });
+      return json({
+        date,
+        cutoff: KRA_CUTOFF,
+        cutoff_label: "7:00 PM",
+        members,
+      });
     }
 
     // ---- NOTIFICATIONS ----
@@ -5676,6 +8249,25 @@ async function handleRoute(request, { params }) {
       await db
         .collection("notifications")
         .updateMany({ user_id: session.id }, { $set: { read: true } });
+      return json({ ok: true });
+    }
+    if (
+      seg[0] === "notifications" &&
+      seg[1] &&
+      seg[2] === "read" &&
+      method === "POST"
+    ) {
+      const notification = await db.collection("notifications").findOne({
+        id: seg[1],
+        user_id: session.id,
+      });
+      if (!notification)
+        return json({ error: "Notification not found" }, 404);
+      if (!notification.read)
+        await db.collection("notifications").updateOne(
+          { id: notification.id, user_id: session.id },
+          { $set: { read: true, read_at: new Date() } },
+        );
       return json({ ok: true });
     }
 

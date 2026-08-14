@@ -5,7 +5,13 @@ import { api } from "@/lib/appapi";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertTriangle, Bell, Building2, Download, Laptop } from "lucide-react";
+import {
+  AlertTriangle,
+  Bell,
+  Building2,
+  Download,
+  Laptop,
+} from "lucide-react";
 import { toast } from "sonner";
 import { workingHoursBetween } from "@/lib/sla";
 
@@ -217,22 +223,6 @@ const rangeMembers = (members, tickets) =>
     };
   });
 
-function Sparkline({ up = false }) {
-  const points = up
-    ? "0,17 18,14 36,15 54,9 72,11 92,6 112,2"
-    : "0,4 18,9 36,7 54,14 72,11 92,17 112,20";
-  return (
-    <svg className="h-8 w-28" viewBox="0 0 112 24" aria-hidden="true">
-      <polyline
-        points={points}
-        fill="none"
-        stroke={up ? "#DC3D3D" : "#1E9E6A"}
-        strokeWidth="2.5"
-      />
-    </svg>
-  );
-}
-
 function CategoryRows({ rows, tickets, color }) {
   const top = [...(rows || [])].sort((a, b) => b.value - a.value).slice(0, 6);
   const max = Math.max(...top.map((row) => row.value), 1);
@@ -343,40 +333,49 @@ function MemberPerformance({ rows, color }) {
       <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[#9CA3AF]">
         Member SLA performance
       </p>
-      <div className="space-y-3">
+      <div className="grid gap-3 xl:grid-cols-2">
         {(rows || []).map((member) => (
           <div
             key={member.member_id}
-            className="grid grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-3 text-sm sm:grid-cols-[36px_minmax(115px,1fr)_auto_90px_auto]"
+            className="rounded-xl border border-[#E5E9EF] bg-[#FAFBFC] p-3 text-sm"
           >
-            <span
-              className="grid h-9 w-9 place-items-center rounded-full text-xs font-semibold text-white"
-              style={{ background: member.assigned ? color : "#8B93A1" }}
-            >
-              {initials(member.member_name)}
-            </span>
-            <div className="min-w-0">
-              <p className="truncate font-semibold">{member.member_name}</p>
-              <p className="truncate text-xs text-[#9CA3AF]">
-                {member.location || "Location not set"}
-              </p>
+            <div className="flex items-center gap-3">
+              <span
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-xs font-semibold text-white shadow-sm"
+                style={{ background: member.assigned ? color : "#8B93A1" }}
+              >
+                {initials(member.member_name)}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-semibold">{member.member_name}</p>
+                <p className="truncate text-xs text-[#9CA3AF]">
+                  {member.location || "Location not set"}
+                </p>
+              </div>
+              <span
+                className={`rounded-full px-2.5 py-1 text-xs font-semibold ${member.assigned ? (member.sla_compliance >= 75 ? "bg-[#E4F5EE] text-[#0E6B47]" : "bg-[#FDF3E0] text-[#8A5A06]") : "bg-[#EDF0F4] text-[#9CA3AF]"}`}
+              >
+                {member.assigned ? `${member.sla_compliance}% overall` : "No data"}
+              </span>
             </div>
-            <span className="col-span-3 text-xs text-[#4B5563] sm:col-span-1">
-              {member.assigned
-                ? `${member.assigned} assigned · ${member.open} open · Work ${member.avg_working_hours || 0}h · Response ${member.response_sla_compliance || 0}% · Resolution ${member.resolution_sla_compliance || 0}%`
-                : "0 assigned"}
-            </span>
-            <div className="col-span-2 col-start-2 h-2 overflow-hidden rounded-full bg-[#EDF0F4] sm:col-auto">
-              <div
-                className={`h-full ${member.sla_compliance >= 75 ? "bg-[#1E9E6A]" : member.assigned ? "bg-[#E8930C]" : ""}`}
-                style={{ width: `${member.sla_compliance}%` }}
-              />
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {[
+                ["Workload", `${member.assigned || 0} / ${member.open || 0}`, "assigned / open"],
+                ["Response", `${member.avg_response_hours || 0}h`, `${member.response_sla_compliance || 0}% SLA · ${member.response_sla_breached || 0} breach`],
+                ["Resolution", `${member.avg_resolution_hours || 0}h`, `${member.resolution_sla_compliance || 0}% SLA · ${member.resolution_sla_breached || 0} breach`],
+                ["Active work", `${member.avg_working_hours || 0}h`, `${member.total_working_hours || 0}h total`],
+              ].map(([label, value, detail]) => (
+                <div key={label} className="rounded-lg bg-white px-2.5 py-2">
+                  <p className="text-[9px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
+                    {label}
+                  </p>
+                  <b className="mt-0.5 block tabular-nums text-[#111827]">
+                    {value}
+                  </b>
+                  <p className="text-[9px] text-[#697087]">{detail}</p>
+                </div>
+              ))}
             </div>
-            <span
-              className={`col-start-3 row-start-1 min-w-16 rounded-full px-2 py-1 text-center text-xs font-semibold sm:col-auto sm:row-auto ${member.assigned ? (member.sla_compliance >= 75 ? "bg-[#E4F5EE] text-[#0E6B47]" : "bg-[#FDF3E0] text-[#8A5A06]") : "bg-[#EDF0F4] text-[#9CA3AF]"}`}
-            >
-              {member.assigned ? `${member.sla_compliance}%` : "— no data"}
-            </span>
           </div>
         ))}
       </div>
@@ -436,12 +435,9 @@ function DeskCard({ department, stats, tickets, members }) {
           </p>
           <div className="mt-1 flex items-center gap-2">
             <p className="text-xl font-bold">{stats.avg_response_hours}h</p>
-            <span
-              className={`text-xs font-semibold ${department === "IT" ? "text-green-700" : "text-amber-600"}`}
-            >
-              {department === "IT" ? "▼ 0.4h" : "▲ 0.3h"}
+            <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${stats.response_sla_breached ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>
+              {stats.response_sla_breached || 0} response breach
             </span>
-            <Sparkline up={department === "Admin"} />
           </div>
         </div>
         <div className="px-5 py-4">
@@ -449,17 +445,12 @@ function DeskCard({ department, stats, tickets, members }) {
             Avg resolution
           </p>
           <div className="mt-1 flex items-center gap-2">
-            <p
-              className={`text-xl font-bold ${department === "Admin" ? "text-red-600" : ""}`}
-            >
+            <p className="text-xl font-bold">
               {stats.avg_resolution_hours}h
             </p>
-            <span
-              className={`text-xs font-semibold ${department === "IT" ? "text-green-700" : "text-red-700"}`}
-            >
-              {department === "IT" ? "▼ 1.2h" : "▲ 6h"}
+            <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${stats.resolution_sla_breached ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>
+              {stats.resolution_sla_breached || 0} resolution breach
             </span>
-            <Sparkline up={department === "Admin"} />
           </div>
         </div>
       </div>
@@ -628,7 +619,7 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
   if (!data) return <Skeleton className="h-[520px] w-full rounded-xl" />;
   const kraMembers = data.kra.members || [];
   const submitted = kraMembers.filter(
-    (member) => member.status !== "Not Submitted",
+    (member) => member.submitted_lists > 0,
   ).length;
   const pendingTasks = kraMembers.reduce(
     (sum, member) => sum + Math.max(0, member.total_items - member.done_items),
@@ -963,6 +954,7 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
         </span>
       </div>
 
+
       <div className="grid gap-4 xl:grid-cols-[1fr_120px_1fr]">
         <DeskCard
           department="IT"
@@ -1033,7 +1025,8 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
           {kraMembers.map((member) => (
             <span
               key={member.member_id}
-              className="grid h-9 w-9 place-items-center rounded-full border-2 border-white bg-[#FADDDD] text-xs font-semibold text-[#A32D2D]"
+              title={`${member.member_name}: ${member.status}`}
+              className={`grid h-9 w-9 place-items-center rounded-full border-2 border-white text-xs font-semibold ${member.status === "Completed" ? "bg-[#DDF4E9] text-[#0E6B47]" : member.status === "Issue" ? "bg-[#DC3D3D] text-white" : member.status === "Partial" ? "bg-[#FDF3E0] text-[#8A5A06]" : "bg-[#EEF0F3] text-[#697087]"}`}
             >
               {initials(member.member_name)}
             </span>

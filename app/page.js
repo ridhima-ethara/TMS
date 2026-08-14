@@ -1,13 +1,11 @@
 "use client";
 import Image from "next/image";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ROLE_LABEL } from "@/lib/appapi";
 import Login from "@/components/app/Login";
 import Dashboard from "@/components/app/Dashboard";
 import EmployeeAcknowledgements from "@/components/app/EmployeeAcknowledgements";
 import TicketsView from "@/components/app/TicketsView";
-import TasksView from "@/components/app/TasksView";
-import ChecklistsView from "@/components/app/ChecklistsView";
 import MyChecklist from "@/components/app/MyChecklist";
 import SuperAdminMemberKra from "@/components/app/SuperAdminMemberKra";
 import AuditView from "@/components/app/AuditView";
@@ -39,8 +37,6 @@ import {
   Ticket,
   LayoutDashboard,
   FileCheck2,
-  ListChecks,
-  ClipboardList,
   ClipboardCheck,
   ScrollText,
   Bell,
@@ -51,6 +47,15 @@ import {
   Car,
   Settings,
   Shield,
+  AlertTriangle,
+  CheckCheck,
+  CheckCircle2,
+  Clock3,
+  MessageSquare,
+  Sparkles,
+  UserPlus,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 
 const NAV = {
@@ -86,6 +91,113 @@ const NAV = {
   ],
 };
 
+function viewFromUrl(role) {
+  if (typeof window === "undefined") return "dashboard";
+  const requested = new URL(window.location.href).searchParams.get("view");
+  const allowed = (NAV[role] || NAV.employee).some(
+    (item) => item.k === requested,
+  );
+  return allowed ? requested : "dashboard";
+}
+
+function updateViewUrl(view, { replace = false } = {}) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (view === "dashboard") url.searchParams.delete("view");
+  else url.searchParams.set("view", view);
+  window.history[replace ? "replaceState" : "pushState"](
+    { ...window.history.state, view },
+    "",
+    `${url.pathname}${url.search}${url.hash}`,
+  );
+}
+
+function notificationPresentation(notification) {
+  const message = String(notification.message || "").toLowerCase();
+  const kind =
+    notification.kind ||
+    (/sla breach|escalat|overdue/.test(message)
+      ? "escalation"
+      : /resolved|closed|confirmed/.test(message)
+        ? "resolution"
+        : /assign|new .*ticket|ticket .*raised/.test(message)
+          ? "assignment"
+          : /comment|response/.test(message)
+            ? "comment"
+            : /approval|approved|rejected|clarification/.test(message)
+              ? "approval"
+              : /remind|pending/.test(message)
+                ? "reminder"
+                : "general");
+  return {
+    escalation: {
+      Icon: AlertTriangle,
+      icon: "bg-red-100 text-red-700",
+      edge: "border-l-red-500",
+      label: "Escalation",
+    },
+    resolution: {
+      Icon: CheckCircle2,
+      icon: "bg-emerald-100 text-emerald-700",
+      edge: "border-l-emerald-500",
+      label: "Resolution",
+    },
+    assignment: {
+      Icon: UserPlus,
+      icon: "bg-blue-100 text-blue-700",
+      edge: "border-l-blue-500",
+      label: "Assignment",
+    },
+    comment: {
+      Icon: MessageSquare,
+      icon: "bg-purple-100 text-purple-700",
+      edge: "border-l-purple-500",
+      label: "Conversation",
+    },
+    approval: {
+      Icon: FileCheck2,
+      icon: "bg-amber-100 text-amber-700",
+      edge: "border-l-amber-500",
+      label: "Approval",
+    },
+    reminder: {
+      Icon: Clock3,
+      icon: "bg-orange-100 text-orange-700",
+      edge: "border-l-orange-500",
+      label: "Reminder",
+    },
+    general: {
+      Icon: Bell,
+      icon: "bg-slate-100 text-slate-700",
+      edge: "border-l-slate-400",
+      label: "Update",
+    },
+  }[kind] || {
+    Icon: Bell,
+    icon: "bg-slate-100 text-slate-700",
+    edge: "border-l-slate-400",
+    label: "Update",
+  };
+}
+
+function relativeNotificationTime(value) {
+  const at = new Date(value).getTime();
+  if (!Number.isFinite(at)) return "Just now";
+  const elapsed = Math.max(0, Date.now() - at);
+  const minutes = Math.floor(elapsed / 60000);
+  if (minutes < 1) return "Just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return days < 7
+    ? `${days}d ago`
+    : new Date(value).toLocaleDateString("en-GB", {
+        day: "2-digit",
+        month: "short",
+      });
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(true);
@@ -95,13 +207,36 @@ export default function App() {
   const [users, setUsers] = useState([]);
   const [notifs, setNotifs] = useState([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const notificationIdsRef = useRef(new Set());
+  const notificationsReadyRef = useRef(false);
+  const userInteractedRef = useRef(false);
+  const soundEnabledRef = useRef(false);
 
   const doRefresh = useCallback(() => setRefresh((n) => n + 1), []);
+
+  const navigateView = useCallback(
+    (requested, options) => {
+      const allowed = (NAV[user?.role] || NAV.employee).some(
+        (item) => item.k === requested,
+      );
+      const next = allowed ? requested : "dashboard";
+      setView(next);
+      updateViewUrl(next, options);
+    },
+    [user?.role],
+  );
 
   const boot = useCallback(async () => {
     try {
       const { user } = await api("/auth/me");
-      if (user) setUser(user);
+      if (user) {
+        setUser(user);
+        const restoredView = viewFromUrl(user.role);
+        setView(restoredView);
+        updateViewUrl(restoredView, { replace: true });
+      }
     } catch (e) {
       /* ignore */
     } finally {
@@ -112,21 +247,131 @@ export default function App() {
     boot();
   }, [boot]);
 
+  useEffect(() => {
+    if (!user) return undefined;
+    const restoreBrowserView = () => setView(viewFromUrl(user.role));
+    window.addEventListener("popstate", restoreBrowserView);
+    return () => window.removeEventListener("popstate", restoreBrowserView);
+  }, [user]);
+
+  useEffect(() => {
+    const enabled = window.localStorage.getItem("ticketflow-notification-sound") === "true";
+    setSoundEnabled(enabled);
+    soundEnabledRef.current = enabled;
+  }, []);
+
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
+
+  useEffect(() => {
+    if (!user) return undefined;
+    const markInteraction = () => {
+      userInteractedRef.current = true;
+    };
+    window.addEventListener("pointerdown", markInteraction, { once: true });
+    window.addEventListener("keydown", markInteraction, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", markInteraction);
+      window.removeEventListener("keydown", markInteraction);
+    };
+  }, [user]);
+
+  const playNotificationSound = useCallback(() => {
+    if (!soundEnabledRef.current || !userInteractedRef.current) return;
+    try {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) return;
+      const context = new AudioContext();
+      const gain = context.createGain();
+      const oscillator = context.createOscillator();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(660, context.currentTime);
+      oscillator.frequency.exponentialRampToValueAtTime(
+        880,
+        context.currentTime + 0.12,
+      );
+      gain.gain.setValueAtTime(0.0001, context.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.075, context.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.24);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start();
+      oscillator.stop(context.currentTime + 0.25);
+      oscillator.addEventListener("ended", () => context.close());
+    } catch {
+      // Sound is an enhancement; browser audio restrictions must not affect alerts.
+    }
+  }, []);
+
+  const loadNotifications = useCallback(
+    async ({ announceNew = true } = {}) => {
+      try {
+        const items = await api("/notifications");
+        const newlyArrived = notificationsReadyRef.current
+          ? items.filter(
+              (item) =>
+                !item.read && !notificationIdsRef.current.has(item.id),
+            )
+          : [];
+        notificationIdsRef.current = new Set(items.map((item) => item.id));
+        notificationsReadyRef.current = true;
+        setNotifs(items);
+        if (announceNew && newlyArrived.length) {
+          playNotificationSound();
+          const latest = newlyArrived[0];
+          toast.info(
+            newlyArrived.length === 1
+              ? latest.message
+              : `${newlyArrived.length} new service updates`,
+            {
+              description:
+                newlyArrived.length === 1
+                  ? latest.ticket_human_id || "TicketFlow notification"
+                  : latest.message,
+              action: latest.ticket_id
+                ? {
+                    label: "View",
+                    onClick: () => setOpenTicketId(latest.ticket_id),
+                  }
+                : undefined,
+            },
+          );
+        }
+      } catch {
+        // Background polling stays quiet; foreground API errors remain actionable.
+      }
+    },
+    [playNotificationSound],
+  );
+
   const loadMeta = useCallback(async () => {
     if (!user) return;
     try {
       setUsers(await api("/users"));
-    } catch (e) {}
-    try {
-      setNotifs(await api("/notifications"));
     } catch (e) {}
   }, [user]);
   useEffect(() => {
     loadMeta();
   }, [loadMeta, refresh]);
 
+  useEffect(() => {
+    notificationIdsRef.current = new Set();
+    notificationsReadyRef.current = false;
+    if (!user) {
+      setNotifs([]);
+      return undefined;
+    }
+    loadNotifications({ announceNew: false });
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") loadNotifications();
+    }, 25000);
+    return () => window.clearInterval(interval);
+  }, [user, loadNotifications]);
+
   const logout = async () => {
     await api("/auth/logout", { method: "POST" });
+    updateViewUrl("dashboard", { replace: true });
     setUser(null);
     setView("dashboard");
   };
@@ -135,6 +380,35 @@ export default function App() {
       await api("/notifications/read", { method: "POST" });
       setNotifs((n) => n.map((x) => ({ ...x, read: true })));
     } catch (e) {}
+  };
+  const markNotificationRead = async (notification) => {
+    if (notification.read) return;
+    try {
+      await api(`/notifications/${notification.id}/read`, { method: "POST" });
+      setNotifs((items) =>
+        items.map((item) =>
+          item.id === notification.id ? { ...item, read: true } : item,
+        ),
+      );
+    } catch (error) {
+      toast.error(error.message);
+    }
+  };
+  const openNotification = async (notification) => {
+    await markNotificationRead(notification);
+    if (notification.ticket_id) setOpenTicketId(notification.ticket_id);
+    setNotificationsOpen(false);
+  };
+  const toggleNotificationSound = () => {
+    userInteractedRef.current = true;
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    soundEnabledRef.current = next;
+    window.localStorage.setItem(
+      "ticketflow-notification-sound",
+      String(next),
+    );
+    toast.success(next ? "Notification sound enabled" : "Notification sound muted");
   };
 
   if (booting)
@@ -149,6 +423,9 @@ export default function App() {
         <Login
           onLogin={(u) => {
             setUser(u);
+            const restoredView = viewFromUrl(u.role);
+            setView(restoredView);
+            updateViewUrl(restoredView, { replace: true });
             doRefresh();
           }}
         />
@@ -163,8 +440,6 @@ export default function App() {
     tickets: nav.find((n) => n.k === "tickets")?.label,
     acknowledgements: "Resolution Acknowledgements",
     approvals: "Approvals",
-    tasks: "Operational Tasks",
-    checklists: "Checklists",
     mychecklist: "My KRA / Daily Tasks",
     "member-checklists": "Member KRA",
     parking: "Tulip Parking",
@@ -191,7 +466,7 @@ export default function App() {
             <button
               key={n.k}
               onClick={() => {
-                setView(n.k);
+                navigateView(n.k);
                 setSidebarOpen(false);
               }}
               className={`dashboard-nav-item flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all ${active ? "bg-fuchsia-50 text-[#9D139D] shadow-[inset_3px_0_0_#ee00ee]" : "text-[#4B5563] hover:bg-[#F4F6F8] hover:text-[#111827]"}`}
@@ -247,47 +522,121 @@ export default function App() {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1 sm:gap-3">
-            <Popover
-              onOpenChange={(o) => {
-                if (o && unread) markRead();
-              }}
-            >
+            <Popover open={notificationsOpen} onOpenChange={setNotificationsOpen}>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="relative">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className={`relative ${unread ? "notification-bell-active border-fuchsia-200 bg-fuchsia-50 text-[#9D139D]" : ""}`}
+                  aria-label={`${unread} unread notification${unread === 1 ? "" : "s"}`}
+                >
                   <Bell className="h-4 w-4" />
                   {unread > 0 && (
-                    <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-red-500 text-[10px] text-white flex items-center justify-center">
-                      {unread}
+                    <span className="absolute -right-1.5 -top-1.5 flex min-h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-bold text-white shadow-sm">
+                      {unread > 99 ? "99+" : unread}
                     </span>
                   )}
                 </Button>
               </PopoverTrigger>
-              <PopoverContent align="end" className="w-[calc(100vw-1rem)] max-w-80 p-0">
-                <div className="p-3 font-medium text-sm border-b">
-                  Notifications
+              <PopoverContent
+                align="end"
+                className="w-[calc(100vw-1rem)] max-w-[390px] overflow-hidden rounded-2xl border-[#DDE3EA] p-0 shadow-2xl"
+              >
+                <div className="border-b border-[#E5E9EF] bg-gradient-to-r from-[#111827] to-[#20283A] p-4 text-white">
+                  <div className="flex items-center gap-3">
+                    <span className="relative grid h-10 w-10 place-items-center rounded-xl bg-white/10">
+                      <Bell className="h-5 w-5" />
+                      {unread > 0 && (
+                        <i className="notification-live-dot absolute right-1 top-1 h-2 w-2 rounded-full bg-emerald-400" />
+                      )}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-semibold">Notification centre</p>
+                      <p className="text-xs text-white/65">
+                        {unread
+                          ? `${unread} update${unread === 1 ? "" : "s"} need your attention`
+                          : "You are all caught up"}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={toggleNotificationSound}
+                      className="grid h-8 w-8 place-items-center rounded-lg text-white/75 transition-colors hover:bg-white/10 hover:text-white"
+                      aria-label={soundEnabled ? "Mute notification sounds" : "Enable notification sounds"}
+                      title={soundEnabled ? "Mute notification sounds" : "Enable notification sounds"}
+                    >
+                      {soundEnabled ? (
+                        <Volume2 className="h-4 w-4" />
+                      ) : (
+                        <VolumeX className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                  {unread > 0 && (
+                    <button
+                      type="button"
+                      onClick={markRead}
+                      className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-emerald-300 hover:text-emerald-200"
+                    >
+                      <CheckCheck className="h-3.5 w-3.5" />
+                      Mark all as read
+                    </button>
+                  )}
                 </div>
-                <ScrollArea className="h-72">
+                <ScrollArea className="h-[min(430px,60vh)] bg-[#FAFBFC]">
                   {notifs.length === 0 ? (
-                    <p className="p-4 text-sm text-muted-foreground">
-                      No notifications
-                    </p>
+                    <div className="flex min-h-64 flex-col items-center justify-center px-8 text-center">
+                      <span className="grid h-14 w-14 place-items-center rounded-2xl bg-emerald-100 text-emerald-700">
+                        <Sparkles className="h-6 w-6" />
+                      </span>
+                      <p className="mt-4 font-semibold text-[#111827]">
+                        Quiet, in a good way
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-[#697087]">
+                        Assignments, SLA escalations, approvals, and resolution
+                        updates will appear here.
+                      </p>
+                    </div>
                   ) : (
-                    notifs.map((n) => (
-                      <button
-                        key={n.id}
-                        onClick={() =>
-                          n.ticket_id && setOpenTicketId(n.ticket_id)
-                        }
-                        className={`w-full text-left px-3 py-2 border-b text-sm hover:bg-muted/50 ${!n.read ? "bg-fuchsia-50" : ""}`}
-                      >
-                        <p>{n.message}</p>
-                        {n.ticket_human_id && (
-                          <p className="text-xs text-muted-foreground font-mono">
-                            {n.ticket_human_id}
-                          </p>
-                        )}
-                      </button>
-                    ))
+                    <div className="p-2">
+                      {notifs.map((notification) => {
+                        const meta = notificationPresentation(notification);
+                        const Icon = meta.Icon;
+                        return (
+                          <button
+                            key={notification.id}
+                            type="button"
+                            onClick={() => openNotification(notification)}
+                            className={`notification-item mb-1 flex w-full items-start gap-3 rounded-xl border-l-[3px] px-3 py-3 text-left transition-colors hover:bg-white hover:shadow-sm ${meta.edge} ${!notification.read ? "notification-arrival bg-white" : "bg-transparent opacity-80"}`}
+                          >
+                            <span className={`mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl ${meta.icon}`}>
+                              <Icon className="h-4 w-4" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="flex items-center gap-2">
+                                <b className="text-[10px] uppercase tracking-wider text-[#697087]">
+                                  {meta.label}
+                                </b>
+                                {!notification.read && (
+                                  <i className="h-1.5 w-1.5 rounded-full bg-[#ee00ee]" />
+                                )}
+                                <time className="ml-auto text-[10px] text-[#9CA3AF]">
+                                  {relativeNotificationTime(notification.created_at)}
+                                </time>
+                              </span>
+                              <span className="mt-1 block text-sm leading-5 text-[#202633]">
+                                {notification.message}
+                              </span>
+                              {notification.ticket_human_id && (
+                                <span className="mt-1.5 inline-block rounded-md bg-[#F0F2F5] px-2 py-0.5 font-mono text-[10px] font-semibold text-[#4B5563]">
+                                  {notification.ticket_human_id}
+                                </span>
+                              )}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
                 </ScrollArea>
               </PopoverContent>
@@ -320,21 +669,21 @@ export default function App() {
           {view === "dashboard" &&
             (user.role === "super_admin" ? (
               <SuperAdminDashboard
-                onViewKra={() => setView("member-checklists")}
+                onViewKra={() => navigateView("member-checklists")}
                 onOpenTicket={setOpenTicketId}
               />
             ) : ["it", "admin"].includes(user.role) ? (
               <AgentDashboard
                 user={user}
-                onGoTickets={() => setView("tickets")}
-                onGoKra={() => setView("mychecklist")}
+                onGoTickets={() => navigateView("tickets")}
+                onGoKra={() => navigateView("mychecklist")}
               />
             ) : (
               <Dashboard
                 user={user}
                 onOpenTicket={setOpenTicketId}
-                onGoTickets={() => setView("tickets")}
-                onGoAcknowledgements={() => setView("acknowledgements")}
+                onGoTickets={() => navigateView("tickets")}
+                onGoAcknowledgements={() => navigateView("acknowledgements")}
                 refresh={refresh}
               />
             ))}
@@ -360,10 +709,6 @@ export default function App() {
             ))}
           {view === "approvals" && (
             <ApprovalsView user={user} onOpenTicket={setOpenTicketId} />
-          )}
-          {view === "tasks" && <TasksView user={user} />}
-          {view === "checklists" && (
-            <ChecklistsView user={user} onRefresh={doRefresh} />
           )}
           {view === "mychecklist" &&
             (["it", "admin"].includes(user.role) ? (

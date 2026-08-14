@@ -156,6 +156,7 @@ function DailyKra({ refresh }) {
     Completed: { cls: 'border-green-300 bg-green-50', badge: 'bg-green-100 text-green-700', icon: CheckCircle2, tone: 'text-green-600' },
     Partial: { cls: 'border-amber-300 bg-amber-50', badge: 'bg-amber-100 text-amber-700', icon: CircleAlert, tone: 'text-amber-600' },
     'Not Submitted': { cls: 'border-red-300 bg-red-50', badge: 'bg-red-100 text-red-700', icon: XCircle, tone: 'text-red-600' },
+    Issue: { cls: 'border-red-400 bg-red-50', badge: 'bg-red-600 text-white', icon: XCircle, tone: 'text-red-600' },
   }
   return (
     <Card>
@@ -208,12 +209,13 @@ function MyKra({ refresh }) {
           const done = sub ? (sub.responses || []).filter((r) => r.done).length : 0
           const total = l.items.length
           const complete = sub && sub.status === 'Completed'
+          const issue = l.overdue || sub?.status === 'Late'
           return (
-            <div key={l.id} className={`rounded-md border p-3 ${!sub ? 'border-red-300 bg-red-50' : complete ? 'border-green-300 bg-green-50' : 'border-amber-300 bg-amber-50'}`}>
+            <div key={l.id} className={`rounded-md border p-3 ${issue ? 'border-red-400 bg-red-50' : !sub ? 'border-slate-200 bg-slate-50' : complete ? 'border-green-300 bg-green-50' : 'border-amber-300 bg-amber-50'}`}>
               <div className="flex items-center justify-between">
                 <p className="font-medium text-sm">{l.title}</p>
-                <span className={`text-xs px-2 py-0.5 rounded-full ${!sub ? 'bg-red-100 text-red-700' : complete ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
-                  {!sub ? 'Not submitted' : complete ? 'Completed' : 'In progress'}
+                <span className={`text-xs px-2 py-0.5 rounded-full ${issue ? 'bg-red-600 text-white' : !sub ? 'bg-slate-100 text-slate-700' : complete ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                  {issue ? 'Issue · overdue' : !sub ? 'Not submitted' : complete ? 'Completed' : 'In progress'}
                 </span>
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5">

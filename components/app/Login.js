@@ -17,59 +17,22 @@ import {
   EyeOff,
   Loader2,
   LogIn,
+  MailCheck,
   Moon,
+  RefreshCw,
   ShieldCheck,
   Sun,
   User,
   Wrench,
 } from "lucide-react";
 
-const QUICK_LOGIN_ENABLED =
-  process.env.NODE_ENV !== "production" &&
-  process.env.NEXT_PUBLIC_ENABLE_QUICK_LOGIN === "true";
-
-const QUICK_LOGIN_ROLES = [
-  {
-    role: "employee",
-    label: "Employee",
-    hint: "Raise tickets",
-    initials: "EM",
-    icon: User,
-    tone: "bg-slate-500",
-  },
-  {
-    role: "it",
-    label: "IT team",
-    hint: "Agent view",
-    initials: "IT",
-    icon: Wrench,
-    tone: "bg-blue-600",
-  },
-  {
-    role: "admin",
-    label: "Admin team",
-    hint: "Agent view",
-    initials: "AD",
-    icon: Building2,
-    tone: "bg-emerald-600",
-  },
-  {
-    role: "super_admin",
-    label: "Super admin",
-    hint: "Full access",
-    initials: "SA",
-    icon: ShieldCheck,
-    tone: "bg-fuchsia-700",
-  },
-];
-
 const ROLE_OPTIONS = [
   { value: "employee", label: "Employee", hint: "Raise tickets", icon: User },
-  { value: "it", label: "IT team", hint: "Needs approval", icon: Wrench },
+  { value: "it", label: "IT team", hint: "Direct access", icon: Wrench },
   {
     value: "admin",
     label: "Admin team",
-    hint: "Needs approval",
+    hint: "Direct access",
     icon: Building2,
   },
 ];
@@ -140,66 +103,32 @@ function Field({ label, htmlFor, right, children }) {
   );
 }
 
-function QuickLogin({ loadingRole, onSelect }) {
-  return (
-    <div>
-      <div className="my-6 flex items-center gap-3">
-        <span className="h-px flex-1 bg-[var(--login-divider)]" />
-        <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--login-faint)]">
-          Quick login
-        </span>
-        <span className="h-px flex-1 bg-[var(--login-divider)]" />
-      </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {QUICK_LOGIN_ROLES.map((item) => (
-          <button
-            key={item.role}
-            type="button"
-            onClick={() => onSelect(item.role)}
-            disabled={Boolean(loadingRole)}
-            className="rounded-lg border border-[var(--login-border)] bg-[var(--login-option)] px-2 py-2.5 text-center transition duration-200 hover:-translate-y-0.5 hover:border-[#ED00ED]/55 hover:bg-[#ED00ED]/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ED00ED]/45 disabled:pointer-events-none disabled:opacity-60"
-          >
-            <span
-              className={`mx-auto grid h-8 w-8 place-items-center rounded-full text-[10px] font-bold text-white ${item.tone}`}
-            >
-              {loadingRole === item.role ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                item.initials
-              )}
-            </span>
-            <b className="mt-2 block truncate text-[10px] font-semibold text-[var(--login-text-soft)]">
-              {item.label}
-            </b>
-            <span className="mt-0.5 block truncate text-[9px] text-[var(--login-faint)]">
-              {item.hint}
-            </span>
-          </button>
-        ))}
-      </div>
-      <p className="mt-3 text-center text-[10px] text-[var(--login-placeholder)]">
-        Development fixture access · no password is exposed
-      </p>
-    </div>
-  );
-}
-
 export default function Login({ onLogin }) {
   const [mode, setMode] = useState("login");
   const [appearance, setAppearance] = useState("light");
   const [loading, setLoading] = useState(false);
-  const [quickLoginRole, setQuickLoginRole] = useState(null);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [remember, setRemember] = useState(false);
-  const [accepted, setAccepted] = useState(false);
-  const [login, setLogin] = useState({ email: "", password: "" });
+  const [login, setLogin] = useState({
+    email: "",
+    password: "",
+  });
+  const [otp, setOtp] = useState({
+    code: "",
+    maskedEmail: "",
+    expiresAt: 0,
+    resendAt: 0,
+    deliveryState: "sent",
+  });
+  const [otpClock, setOtpClock] = useState(() => Date.now());
   const [reg, setReg] = useState({
     name: "",
     email: "",
     password: "",
     confirm: "",
     role: "employee",
+    location: "Tulip",
   });
 
   useEffect(() => {
@@ -225,6 +154,13 @@ export default function Login({ onLogin }) {
     }
   }, []);
 
+  useEffect(() => {
+    if (mode !== "otp") return undefined;
+    setOtpClock(Date.now());
+    const timer = window.setInterval(() => setOtpClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [mode]);
+
   const toggleAppearance = () => {
     setAppearance((current) => {
       const next = current === "light" ? "dark" : "light";
@@ -241,7 +177,7 @@ export default function Login({ onLogin }) {
   const passwordsMatch = Boolean(reg.confirm) && reg.password === reg.confirm;
   const strength = useMemo(() => {
     let score = 0;
-    if (reg.password.length >= 8) score++;
+    if (reg.password.length >= 12) score++;
     if (/[A-Z]/.test(reg.password) && /[a-z]/.test(reg.password)) score++;
     if (/\d/.test(reg.password)) score++;
     if (/[^A-Za-z0-9]/.test(reg.password)) score++;
@@ -252,10 +188,24 @@ export default function Login({ onLogin }) {
     event?.preventDefault();
     setLoading(true);
     try {
-      const { user } = await api("/auth/login", {
+      const result = await api("/auth/login", {
         method: "POST",
-        body: login,
+        body: { ...login, remember },
       });
+      if (result.otp_required) {
+        const now = Date.now();
+        setOtp({
+          code: "",
+          maskedEmail: result.masked_email,
+          expiresAt: now + Number(result.expires_in || 600) * 1000,
+          resendAt: now + Number(result.resend_after || 60) * 1000,
+          deliveryState: result.delivery_state || "sent",
+        });
+        setMode("otp");
+        toast.success("Verification code sent to your company email");
+        return;
+      }
+      const { user } = result;
       toast.success(`Welcome, ${user.name}`);
       onLogin(user);
     } catch (error) {
@@ -265,14 +215,80 @@ export default function Login({ onLogin }) {
     }
   };
 
+  const verifyOtp = async (event) => {
+    event?.preventDefault();
+    if (!/^\d{6}$/.test(otp.code))
+      return toast.error("Enter the complete 6-digit code");
+    setLoading(true);
+    try {
+      const { user } = await api("/auth/login/otp/verify", {
+        method: "POST",
+        body: { code: otp.code },
+      });
+      toast.success(`Identity confirmed. Welcome, ${user.name}`);
+      onLogin(user);
+    } catch (error) {
+      toast.error(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const resendOtp = async () => {
+    if (otp.resendAt > Date.now()) return;
+    setLoading(true);
+    try {
+      const result = await api("/auth/login/otp/resend", {
+        method: "POST",
+      });
+      const now = Date.now();
+      setOtp((current) => ({
+        ...current,
+        code: "",
+        maskedEmail: result.masked_email || current.maskedEmail,
+        expiresAt: now + Number(result.expires_in || 600) * 1000,
+        resendAt: now + Number(result.resend_after || 60) * 1000,
+        deliveryState: result.delivery_state || "sent",
+      }));
+      toast.success("A new verification code was sent");
+    } catch (error) {
+      toast.error(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const leaveOtp = () => {
+    setMode("login");
+    setOtp((current) => ({ ...current, code: "" }));
+    setLogin((current) => ({ ...current, password: "" }));
+  };
+
+  const otpSeconds = Math.max(
+    0,
+    Math.ceil((Number(otp.expiresAt) - otpClock) / 1000),
+  );
+  const resendSeconds = Math.max(
+    0,
+    Math.ceil((Number(otp.resendAt) - otpClock) / 1000),
+  );
+  const otpTime = `${String(Math.floor(otpSeconds / 60)).padStart(2, "0")}:${String(otpSeconds % 60).padStart(2, "0")}`;
+
   const doRegister = async (event) => {
     event?.preventDefault();
     if (!emailValid) return toast.error("Please use your @ethara.ai email");
-    if (reg.password.length < 8)
-      return toast.error("Password must be at least 8 characters");
+    if (reg.password.length < 12)
+      return toast.error("Password must be at least 12 characters");
+    if (
+      !/[a-z]/.test(reg.password) ||
+      !/[A-Z]/.test(reg.password) ||
+      !/\d/.test(reg.password) ||
+      !/[^A-Za-z0-9]/.test(reg.password)
+    )
+      return toast.error(
+        "Password must include uppercase, lowercase, a number and a symbol",
+      );
     if (!passwordsMatch) return toast.error("Passwords do not match");
-    if (!accepted)
-      return toast.error("Please accept the acceptable use policy");
     setLoading(true);
     try {
       const result = await api("/auth/register", {
@@ -282,6 +298,7 @@ export default function Login({ onLogin }) {
           email: reg.email,
           password: reg.password,
           role: reg.role,
+          location: reg.location,
         },
       });
       if (result.pending) {
@@ -296,22 +313,6 @@ export default function Login({ onLogin }) {
       toast.error(error.message);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const doQuickLogin = async (role) => {
-    setQuickLoginRole(role);
-    try {
-      const { user } = await api("/auth/quick-login", {
-        method: "POST",
-        body: { role },
-      });
-      toast.success(`Welcome, ${user.name}`);
-      onLogin(user);
-    } catch (error) {
-      toast.error(error.message);
-    } finally {
-      setQuickLoginRole(null);
     }
   };
 
@@ -452,13 +453,6 @@ export default function Login({ onLogin }) {
                   </Button>
                 </form>
 
-                {QUICK_LOGIN_ENABLED && (
-                  <QuickLogin
-                    loadingRole={quickLoginRole}
-                    onSelect={doQuickLogin}
-                  />
-                )}
-
                 <div className="mt-6 border-t border-[var(--login-divider)] pt-5 text-sm text-[var(--login-muted)]">
                   New to the portal?{" "}
                   <button
@@ -467,6 +461,117 @@ export default function Login({ onLogin }) {
                     className="font-semibold text-[#ED00ED] transition hover:text-[#FF39FF]"
                   >
                     Create an account
+                  </button>
+                </div>
+              </>
+            ) : mode === "otp" ? (
+              <>
+                <button
+                  type="button"
+                  onClick={leaveOtp}
+                  className="mb-5 inline-flex items-center gap-2 text-xs font-semibold text-[var(--login-muted)] transition hover:text-[#ED00ED]"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  Back to sign in
+                </button>
+                <div className="mb-6">
+                  <span className="mb-4 grid h-12 w-12 place-items-center rounded-xl bg-[#ED00ED]/10 text-[#ED00ED]">
+                    <MailCheck className="h-6 w-6" />
+                  </span>
+                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-[#ED00ED]">
+                    Secure sign in
+                  </p>
+                  <h1 className="text-2xl font-semibold tracking-tight text-[var(--login-text)] sm:text-[28px]">
+                    Check your email
+                  </h1>
+                  <p className="mt-2 text-sm leading-6 text-[var(--login-muted)]">
+                    Enter the 6-digit code sent to{" "}
+                    <b className="text-[var(--login-text-soft)]">
+                      {otp.maskedEmail}
+                    </b>
+                    . The code is valid for 10 minutes and works once.
+                  </p>
+                </div>
+
+                <form onSubmit={verifyOtp} className="space-y-5">
+                  <Field
+                    label="Verification code"
+                    htmlFor="login-otp"
+                    right={
+                      <span
+                        className={`text-xs font-semibold tabular-nums ${otpSeconds < 60 ? "text-amber-500" : "text-[var(--login-muted)]"}`}
+                      >
+                        {otpSeconds ? otpTime : "Expired"}
+                      </span>
+                    }
+                  >
+                    <Input
+                      id="login-otp"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      autoFocus
+                      maxLength={6}
+                      className={`${INPUT_CLASS} h-14 text-center font-mono text-2xl font-semibold tracking-[0.45em]`}
+                      value={otp.code}
+                      onChange={(event) =>
+                        setOtp((current) => ({
+                          ...current,
+                          code: event.target.value.replace(/\D/g, "").slice(0, 6),
+                        }))
+                      }
+                      placeholder="000000"
+                      disabled={loading || otpSeconds === 0}
+                      aria-describedby="otp-security-note"
+                      required
+                    />
+                  </Field>
+                  <div
+                    id="otp-security-note"
+                    className="flex items-start gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/[0.07] p-3 text-xs leading-5 text-[var(--login-muted)]"
+                  >
+                    <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
+                    <span>
+                      Never share this code. Ethara support will not ask for it
+                      over phone, chat, or email.
+                    </span>
+                  </div>
+                  {otp.deliveryState === "queued" && (
+                    <p className="rounded-lg border border-amber-400/25 bg-amber-400/[0.08] px-3 py-2 text-xs text-amber-600">
+                      Your message is queued with the email provider. Delivery
+                      may take a moment.
+                    </p>
+                  )}
+                  <Button
+                    type="submit"
+                    disabled={loading || otp.code.length !== 6 || otpSeconds === 0}
+                    className="login-submit-button h-11 w-full rounded-lg border-0 bg-[linear-gradient(135deg,#ED00ED_0%,#B84EDC_55%,#908DCE_100%)] font-semibold text-white shadow-[0_12px_26px_rgba(0,0,0,0.24)] hover:brightness-110"
+                  >
+                    {loading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Verifying...
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="h-4 w-4" />
+                        Verify &amp; sign in
+                      </>
+                    )}
+                  </Button>
+                </form>
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--login-divider)] pt-5 text-xs text-[var(--login-muted)]">
+                  <span>Didn&apos;t receive the email?</span>
+                  <button
+                    type="button"
+                    onClick={resendOtp}
+                    disabled={loading || resendSeconds > 0}
+                    className="inline-flex items-center gap-1.5 font-semibold text-[#ED00ED] transition hover:text-[#FF39FF] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                    {resendSeconds
+                      ? `Resend in ${resendSeconds}s`
+                      : "Resend code"}
                   </button>
                 </div>
               </>
@@ -568,10 +673,38 @@ export default function Login({ onLogin }) {
                       })}
                     </div>
                     <p className="mt-2 text-[10px] leading-4 text-[var(--login-faint)]">
-                      Team roles require super-admin approval. Employee access
-                      is activated immediately.
+                      All roles are activated immediately after registration.
                     </p>
                   </div>
+
+                  <Field label="Work location" htmlFor="register-location">
+                    <div
+                      id="register-location"
+                      className="grid grid-cols-2 gap-2"
+                      role="group"
+                      aria-label="Work location"
+                    >
+                      {["Tulip", "Lotus"].map((location) => (
+                        <button
+                          key={location}
+                          type="button"
+                          aria-pressed={reg.location === location}
+                          disabled={loading}
+                          onClick={() =>
+                            setReg((current) => ({ ...current, location }))
+                          }
+                          className={`flex h-11 items-center justify-center gap-2 rounded-lg border text-sm font-semibold transition ${
+                            reg.location === location
+                              ? "border-[#ED00ED]/70 bg-[#ED00ED]/10 text-[#ED00ED] ring-1 ring-[#ED00ED]/20"
+                              : "border-[var(--login-border)] bg-[var(--login-option)] text-[var(--login-muted)] hover:border-[#ED00ED]/40"
+                          }`}
+                        >
+                          <Building2 className="h-4 w-4" />
+                          {location}
+                        </button>
+                      ))}
+                    </div>
+                  </Field>
 
                   <Field label="Password" htmlFor="register-password">
                     <div className="relative">
@@ -584,7 +717,7 @@ export default function Login({ onLogin }) {
                         onChange={(event) =>
                           setReg({ ...reg, password: event.target.value })
                         }
-                        placeholder="Minimum 8 characters"
+                        placeholder="Minimum 12 characters"
                         disabled={loading}
                         required
                       />
@@ -622,7 +755,7 @@ export default function Login({ onLogin }) {
                     <p className="mt-1 text-[10px] text-[var(--login-faint)]">
                       {strength >= 4
                         ? "Strong password"
-                        : "Use 8+ characters, uppercase, a number and a symbol."}
+                        : "Use 12+ characters, uppercase, lowercase, a number and a symbol."}
                     </p>
                   </div>
 
@@ -668,23 +801,6 @@ export default function Login({ onLogin }) {
                       </button>
                     </div>
                   </Field>
-
-                  <label className="flex cursor-pointer items-start gap-2.5 text-xs leading-5 text-[var(--login-muted)]">
-                    <Checkbox
-                      className="mt-0.5 border-[var(--login-checkbox)] data-[state=checked]:border-[#ED00ED] data-[state=checked]:bg-[#ED00ED]"
-                      checked={accepted}
-                      onCheckedChange={(value) =>
-                        setAccepted(Boolean(value))
-                      }
-                    />
-                    <span>
-                      I agree to the{" "}
-                      <span className="font-semibold text-[#ED00ED]">
-                        acceptable use policy
-                      </span>{" "}
-                      and understand tickets are logged for audit.
-                    </span>
-                  </label>
 
                   <Button
                     type="submit"

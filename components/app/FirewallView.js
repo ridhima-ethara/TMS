@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/appapi";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -71,6 +71,32 @@ const APPLICATION_TONES = [
   "border-teal-200 bg-teal-50 text-teal-700",
 ];
 
+const EMPTY_FIREWALL_ROWS = [];
+
+const BANDWIDTH_RANGES = [
+  ["today", "Today whole day"],
+  ["24h", "Last 24 hours"],
+  ["1h", "Last 1 hour"],
+  ["7d", "Last 7 days"],
+  ["day", "Select a day"],
+];
+
+function bandwidthQuery(range, selectedDate) {
+  if (range === "today") return "today=true";
+  if (range === "24h") return "hours=24";
+  if (range === "1h") return "hours=1";
+  if (range === "7d") return "days=7";
+  return `date=${selectedDate}`;
+}
+
+function bandwidthRangeLabel(range, selectedDate) {
+  if (range === "day") return selectedDate;
+  return (
+    BANDWIDTH_RANGES.find(([value]) => value === range)?.[1] ||
+    "Today whole day"
+  );
+}
+
 function applicationTone(category, name) {
   const key = String(category || name || "Unclassified");
   const hash = [...key].reduce((total, character) => total + character.charCodeAt(0), 0);
@@ -106,6 +132,15 @@ const textFrom = (value, keys, fallback = "—") => {
       return String(found);
   }
   return fallback;
+};
+const firewallMacKey = (value) => {
+  const compact = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-f0-9]/g, "");
+  return compact.length === 12
+    ? compact
+    : String(value || "").trim().toLowerCase();
 };
 
 function firewallLocalDate(value = new Date()) {
@@ -234,6 +269,9 @@ function systemTypeFrom(device) {
     device.hostname,
     device.hardware_vendor,
     device.vendor,
+    device.client_identifier,
+    device.vendor_class,
+    device.vci,
   ]
     .filter(Boolean)
     .join(" ")
@@ -304,7 +342,7 @@ function ConnectedDevicesPanel({
   const [query, setQuery] = useState("");
   const [interfaceFilter, setInterfaceFilter] = useState("all");
   const [mappingFilter, setMappingFilter] = useState("all");
-  const [bandwidthRange, setBandwidthRange] = useState("current");
+  const [bandwidthRange, setBandwidthRange] = useState("today");
   const [bandwidthDate, setBandwidthDate] = useState(
     firewallLocalDate(),
   );
@@ -313,30 +351,14 @@ function ConnectedDevicesPanel({
   const [bandwidthError, setBandwidthError] = useState("");
   const [bandwidthLoading, setBandwidthLoading] = useState(false);
   useEffect(() => {
-    if (bandwidthRange === "current") {
-      setPeriodLogs(null);
-      setBandwidthMeta(null);
-      setBandwidthError("");
-      setBandwidthLoading(false);
-      return;
-    }
-    const queryString =
-      bandwidthRange === "today"
-        ? "today=true"
-        : bandwidthRange === "1h"
-        ? "hours=1"
-        : bandwidthRange === "25h"
-          ? "hours=25"
-          : bandwidthRange === "7d"
-            ? "days=7"
-            : `date=${bandwidthDate}`;
+    const queryString = bandwidthQuery(bandwidthRange, bandwidthDate);
     setBandwidthLoading(true);
     setBandwidthError("");
     setPeriodLogs(null);
     const controller = new AbortController();
     api(`/firewall/report?${queryString}&firewall=${firewall}`, {
       signal: controller.signal,
-      timeout: 30000,
+      timeout: 60000,
     })
       .then((report) => {
         setPeriodLogs(report.records || []);
@@ -438,10 +460,47 @@ function ConnectedDevicesPanel({
     }))
     .sort((a, b) => b.count - a.count);
   const effectiveBandwidthLogs = periodLogs ?? logs;
-  const trafficByIp = listFrom(effectiveBandwidthLogs).reduce(
+  const normalizedNetworkIdentifier = (value) =>
+    String(value || "").trim().toLowerCase();
+  const normalizedMacIdentifier = (value) => {
+    const compact = normalizedNetworkIdentifier(value).replace(/[^a-f0-9]/g, "");
+    return compact.length === 12 ? compact : normalizedNetworkIdentifier(value);
+  };
+  const devicesByIp = new Map();
+  const devicesByMac = new Map();
+  rows.forEach((row) => {
+    [row.ipv4_address, row.ip_address, row.ip].forEach((value) => {
+      const identifier = normalizedNetworkIdentifier(value);
+      if (identifier) devicesByIp.set(identifier, row);
+    });
+    [row.mac, row.mac_address, row.master_mac, row.hwaddr].forEach((value) => {
+      const identifier = normalizedMacIdentifier(value);
+      if (identifier) devicesByMac.set(identifier, row);
+    });
+  });
+  const trafficByClient = listFrom(effectiveBandwidthLogs).reduce(
     (summary, row) => {
-      const ip = textFrom(row, ["srcip", "source_ip", "ip"], "");
-      if (!ip) return summary;
+      const ip = textFrom(
+        row,
+        ["srcip", "source_ip", "sourceIp", "src_ip", "ip"],
+        "",
+      );
+      const mac = textFrom(
+        row,
+        ["srcmac", "source_mac", "mastersrcmac", "master_mac", "mac"],
+        "",
+      );
+      const normalizedIp = normalizedNetworkIdentifier(ip);
+      const normalizedMac = normalizedMacIdentifier(mac);
+      if (!normalizedIp && !normalizedMac) return summary;
+      const device =
+        devicesByMac.get(normalizedMac) || devicesByIp.get(normalizedIp) || {};
+      const deviceMac = normalizedMacIdentifier(
+        device.mac || device.mac_address || device.master_mac || device.hwaddr,
+      );
+      const clientKey = deviceMac || normalizedMac
+        ? `mac:${deviceMac || normalizedMac}`
+        : `ip:${normalizedIp}`;
       const application = textFrom(
         row,
         ["app", "application", "appname", "service"],
@@ -454,44 +513,115 @@ function ConnectedDevicesPanel({
       ]);
       const sent = numberFrom(row, ["sentbyte", "sent_bytes", "upload"]);
       const bytes = received + sent;
-      if (!summary[ip])
-        summary[ip] = {
+      if (!summary[clientKey])
+        summary[clientKey] = {
+          ip: ip || device.ipv4_address || device.ip_address || device.ip || "",
+          mac: mac || device.mac || device.mac_address || device.master_mac || "",
+          device,
           total: 0,
           received: 0,
           sent: 0,
           sessions: 0,
           applications: {},
+          sourceName: textFrom(
+            row,
+            ["srcname", "source_name", "hostname", "host_name"],
+            "",
+          ),
+          deviceType: textFrom(
+            row,
+            ["srcdevtype", "source_device_type", "device_type", "devtype"],
+            "",
+          ),
+          osName: textFrom(
+            row,
+            ["srcosname", "source_os_name", "os_name", "osname"],
+            "",
+          ),
+          vendor: textFrom(
+            row,
+            ["srchwvendor", "source_vendor", "hardware_vendor", "vendor", "manufacturer"],
+            "",
+          ),
+          assetUserName: row.asset_user_name || device.asset_user_name || "",
+          employeeCode: row.employee_code || device.employee_code || "",
+          avStatus: row.av_status || device.av_status || "Unknown",
+          inventoryMatch: Boolean(row.inventory_match || device.inventory_match),
         };
-      summary[ip].total += bytes;
-      summary[ip].received += received;
-      summary[ip].sent += sent;
-      summary[ip].sessions += 1;
-      summary[ip].applications[application] =
-        (summary[ip].applications[application] || 0) + bytes;
+      const client = summary[clientKey];
+      client.ip ||= ip;
+      client.mac ||= mac;
+      client.sourceName ||= textFrom(
+        row,
+        ["srcname", "source_name", "hostname", "host_name"],
+        "",
+      );
+      client.deviceType ||= textFrom(
+        row,
+        ["srcdevtype", "source_device_type", "device_type", "devtype"],
+        "",
+      );
+      client.osName ||= textFrom(
+        row,
+        ["srcosname", "source_os_name", "os_name", "osname"],
+        "",
+      );
+      client.vendor ||= textFrom(
+        row,
+        ["srchwvendor", "source_vendor", "hardware_vendor", "vendor", "manufacturer"],
+        "",
+      );
+      client.assetUserName ||= row.asset_user_name || device.asset_user_name || "";
+      client.employeeCode ||= row.employee_code || device.employee_code || "";
+      client.avStatus ||= row.av_status || device.av_status || "Unknown";
+      client.inventoryMatch ||= Boolean(row.inventory_match || device.inventory_match);
+      client.total += bytes;
+      client.received += received;
+      client.sent += sent;
+      client.sessions += 1;
+      client.applications[application] =
+        (client.applications[application] || 0) + bytes;
       return summary;
     },
     {},
   );
-  const devicesByIp = Object.fromEntries(
-    rows
-      .filter((row) => row.ipv4_address)
-      .map((row) => [row.ipv4_address, row]),
-  );
-  const bandwidthRows = Object.entries(trafficByIp)
-    .map(([ip, traffic]) => {
-      const device = devicesByIp[ip] || {};
+  const bandwidthRows = Object.values(trafficByClient)
+    .map((traffic) => {
+      const device = traffic.device || {};
+      const systemType = systemTypeFrom({
+        ...device,
+        device_type: device.device_type || traffic.deviceType,
+        os_name: device.os_name || traffic.osName,
+        hardware_vendor: device.hardware_vendor || traffic.vendor,
+      });
       return {
-        ip,
-        name: device.asset_user_name
-          ? `${device.asset_user_name}${device.employee_code ? ` · ${device.employee_code}` : ""}`
-          : device.hostname || device.device_type || ip,
-        memberName: device.asset_user_name || "Unmapped member",
-        employeeCode: device.employee_code || "",
-        hostname: device.hostname || device.device_type || "Unknown system",
-        mac: device.mac || device.master_mac || "",
-        avStatus: device.av_status || "Unknown",
-        inventoryMatch: Boolean(device.inventory_match),
-        ...traffic,
+        ip: traffic.ip,
+        name: traffic.assetUserName
+          ? `${traffic.assetUserName}${traffic.employeeCode ? ` · ${traffic.employeeCode}` : ""}`
+          : device.hostname ||
+            traffic.sourceName ||
+            device.device_type ||
+            traffic.deviceType ||
+            traffic.ip ||
+            traffic.mac,
+        memberName: traffic.assetUserName || "Unmapped member",
+        employeeCode: traffic.employeeCode || "",
+        hostname:
+          device.hostname ||
+          traffic.sourceName ||
+          device.device_type ||
+          traffic.deviceType ||
+          "Unknown system",
+        mac: traffic.mac || device.mac || device.master_mac || "",
+        systemType: systemType.label,
+        systemTypeTone: systemType.tone,
+        avStatus: traffic.avStatus || "Unknown",
+        inventoryMatch: Boolean(traffic.inventoryMatch),
+        total: traffic.total,
+        received: traffic.received,
+        sent: traffic.sent,
+        sessions: traffic.sessions,
+        applications: traffic.applications,
         receivedMb: Number((traffic.received / 1024 ** 2).toFixed(2)),
         sentMb: Number((traffic.sent / 1024 ** 2).toFixed(2)),
       };
@@ -500,6 +630,9 @@ function ConnectedDevicesPanel({
   const totalObservedBandwidth = bandwidthRows.reduce(
     (sum, row) => sum + row.total,
     0,
+  );
+  const mobileBandwidthConsumers = bandwidthRows.filter((row) =>
+    /android|iphone|ios|tablet|mobile/i.test(row.systemType),
   );
   const infectedDevices = rows.filter(deviceThreatDetected);
   const threatRows = Object.entries(threats || {}).flatMap(
@@ -654,18 +787,8 @@ function ConnectedDevicesPanel({
           <div className="mr-auto">
             <h3 className="text-sm font-bold">Top bandwidth consumers</h3>
             <p className="text-xs text-[#98A0B3]">
-              Upload, download and sessions ·{" "}
-              {bandwidthRange === "current"
-                ? "current API window"
-                : bandwidthRange === "today"
-                  ? `today · ${firewallLocalDate()}`
-                : bandwidthRange === "1h"
-                  ? "last 1 hour"
-                  : bandwidthRange === "25h"
-                    ? "last 25 hours"
-                    : bandwidthRange === "7d"
-                      ? "last 7 days"
-                      : bandwidthDate}
+              Upload, download and traffic records ·{" "}
+              {bandwidthRangeLabel(bandwidthRange, bandwidthDate)}
             </p>
           </div>
           <select
@@ -673,12 +796,9 @@ function ConnectedDevicesPanel({
             onChange={(event) => setBandwidthRange(event.target.value)}
             className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
           >
-            <option value="current">Latest API snapshot</option>
-            <option value="today">Today</option>
-            <option value="1h">Last 1 hour</option>
-            <option value="25h">Last 25 hours</option>
-            <option value="7d">Last 7 days</option>
-            <option value="day">Select a day</option>
+            {BANDWIDTH_RANGES.map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
           </select>
           {bandwidthRange === "day" && (
             <input
@@ -693,7 +813,7 @@ function ConnectedDevicesPanel({
             <RefreshCw className="h-4 w-4 animate-spin text-[#4F6EF7]" />
           )}
         </div>
-        {bandwidthRange !== "current" && !bandwidthLoading && (
+        {!bandwidthLoading && (
           <div className={`border-b px-5 py-3 text-xs ${bandwidthError ? "border-red-200 bg-red-50 text-red-700" : "border-[#E5E9EF] bg-[#F8FAFC] text-[#69738B]"}`}>
             {bandwidthError ? (
               `Unable to load bandwidth details: ${bandwidthError}`
@@ -710,14 +830,27 @@ function ConnectedDevicesPanel({
                     API row limit reached; displayed usage may be partial.
                   </span>
                 )}
+                {bandwidthMeta.summary?.source_complete === false &&
+                  !bandwidthMeta.summary?.record_limit_reached && (
+                    <span className="font-semibold text-[#B45309]">
+                      The firewall did not return every retained source row;
+                      totals may be partial.
+                    </span>
+                  )}
               </span>
             ) : null}
           </div>
         )}
-        <div className="grid gap-px bg-[#E3E6EE] sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-px bg-[#E3E6EE] sm:grid-cols-2 lg:grid-cols-5">
           {[
-            ["Observed bandwidth", formatBytes(totalObservedBandwidth)],
-            ["Devices with traffic", bandwidthRows.length],
+            [
+              bandwidthRange === "day"
+                ? "Selected day total"
+                : "Observed bandwidth",
+              formatBytes(totalObservedBandwidth),
+            ],
+            ["Clients with traffic", bandwidthRows.length],
+            ["Mobile / tablet clients", mobileBandwidthConsumers.length],
             ["Highest consumer", bandwidthRows[0]?.name || "—"],
             [
               "Highest usage",
@@ -784,10 +917,15 @@ function ConnectedDevicesPanel({
                     <p className="truncate text-xs text-[#69738B]">
                       {device.hostname}
                     </p>
+                    <span
+                      className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-semibold ${device.systemTypeTone}`}
+                    >
+                      {device.systemType}
+                    </span>
                     <span className="text-xs text-[#98A0B3]">
                       {device.ip}
                       {device.mac ? ` · ${device.mac}` : ""} · {device.sessions}{" "}
-                      sessions
+                      records
                     </span>
                     <span
                       className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-semibold ${device.inventoryMatch ? (/installed|active|protected|running/i.test(device.avStatus) ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800") : "bg-red-100 text-red-800"}`}
@@ -955,7 +1093,15 @@ function ConnectedDevicesPanel({
             {pageRows.map((row, index) => {
               const systemType = systemTypeFrom(row);
               const threatDetected = deviceThreatDetected(row);
-              const traffic = trafficByIp[row.ipv4_address];
+              const deviceMac = normalizedMacIdentifier(
+                row.mac || row.mac_address || row.master_mac || row.hwaddr,
+              );
+              const deviceIp = normalizedNetworkIdentifier(
+                row.ipv4_address || row.ip_address || row.ip,
+              );
+              const traffic = deviceMac
+                ? trafficByClient[`mac:${deviceMac}`]
+                : trafficByClient[`ip:${deviceIp}`];
               const topApplication = traffic
                 ? Object.entries(traffic.applications).sort(
                     (a, b) => b[1] - a[1],
@@ -1150,11 +1296,15 @@ function UserActivityExplorer({ logs, devices, firewall }) {
   const pageSize = 10;
   const deviceRows = listFrom(devices);
   const byIp = Object.fromEntries(deviceRows.filter((row) => row.ipv4_address).map((row) => [row.ipv4_address, row]));
-  const byMac = Object.fromEntries(deviceRows.flatMap((row) => [row.mac, row.master_mac].filter(Boolean).map((mac) => [String(mac).toLowerCase(), row])));
+  const byMac = Object.fromEntries(deviceRows.flatMap((row) => [row.mac, row.master_mac].filter(Boolean).map((mac) => [firewallMacKey(mac), row])));
   const activity = Object.values(logs.reduce((summary, row) => {
     const ip = textFrom(row, ["srcip", "source_ip", "ip"], "Unknown IP");
-    const mac = textFrom(row, ["srcmac", "mastersrcmac", "mac"], "");
-    const device = byIp[ip] || byMac[mac.toLowerCase()] || {};
+    const mac = textFrom(
+      row,
+      ["srcmac", "source_mac", "mastersrcmac", "mac"],
+      "",
+    );
+    const device = byIp[ip] || byMac[firewallMacKey(mac)] || {};
     const member = row.asset_user_name || device.asset_user_name || "Unmapped user";
     const employeeCode = row.employee_code || device.employee_code || "";
     const key = mac || ip;
@@ -1166,12 +1316,12 @@ function UserActivityExplorer({ logs, devices, firewall }) {
       email: row.asset_email || device.asset_email || "",
       inventoryMatch: Boolean(row.inventory_match || device.inventory_match),
       avStatus: row.av_status || device.av_status || "Unknown",
-      hostname: row.srcname || device.hostname || row.devtype || device.device_type || "Unknown system",
-      os: row.osname || device.os_name || device.asset_os_version || "Unknown OS",
-      hardware: row.srchwvendor || device.hardware_vendor || device.asset_brand || "Unknown hardware",
+      hostname: row.srcname || row.source_name || device.hostname || row.devtype || row.source_device_type || device.device_type || "Unknown system",
+      os: row.osname || row.source_os_name || device.os_name || device.asset_os_version || "Unknown OS",
+      hardware: row.srchwvendor || row.source_vendor || device.hardware_vendor || device.asset_brand || "Unknown hardware",
       ip,
       mac,
-      interface: row.srcintf || device.detected_interface || "—",
+      interface: row.srcintf || row.source_interface || device.detected_interface || "—",
       total: 0,
       sent: 0,
       received: 0,
@@ -1193,7 +1343,7 @@ function UserActivityExplorer({ logs, devices, firewall }) {
     item.total += bytes;
     item.sent += sent;
     item.received += received;
-    item.duration += numberFrom(row, ["duration"], 0);
+    item.duration += numberFrom(row, ["duration", "duration_seconds"], 0);
     item.sessions += 1;
     if (/deny|block|drop/i.test(action)) item.blocked += 1;
     const appCurrent = item.applications.get(application.name) || { bytes: 0, sessions: 0, confidence: application.confidence };
@@ -1212,13 +1362,13 @@ function UserActivityExplorer({ logs, devices, firewall }) {
       application: application.name,
       confidence: application.confidence,
       destination: destination || "—",
-      port: row.dstport || "—",
+      port: row.dstport || row.destination_port || "—",
       country: country || "—",
-      service: row.service || "—",
+      service: row.service || row.application || "—",
       action,
       policy: policy || "—",
       bytes,
-      duration: numberFrom(row, ["duration"], 0),
+      duration: numberFrom(row, ["duration", "duration_seconds"], 0),
       time: timestamp || "—",
     });
     return summary;
@@ -1244,10 +1394,10 @@ function UserActivityExplorer({ logs, devices, firewall }) {
       <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search user, system, IP or app…" className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-[#FAFBFC] px-3 text-sm sm:min-w-64 sm:w-auto" />
     </div>
     <div className="grid gap-px bg-[#E5E9EF] sm:grid-cols-2 lg:grid-cols-4">
-      {[["Users/systems observed", activity.length], ["Inventory mapped", activity.filter((item) => item.inventoryMatch).length], ["Destinations reached", new Set(activity.flatMap((item) => item.destinations)).size], ["Blocked sessions", activity.reduce((sum, item) => sum + item.blocked, 0)]].map(([label, metric]) => <div key={label} className="bg-white p-4"><p className="text-[10px] font-semibold uppercase tracking-wider text-[#8B93A1]">{label}</p><b className="mt-1 block text-2xl">{metric}</b></div>)}
+      {[["Users/systems observed", activity.length], ["Inventory mapped", activity.filter((item) => item.inventoryMatch).length], ["Destinations reached", new Set(activity.flatMap((item) => item.destinations)).size], ["Blocked records", activity.reduce((sum, item) => sum + item.blocked, 0)]].map(([label, metric]) => <div key={label} className="bg-white p-4"><p className="text-[10px] font-semibold uppercase tracking-wider text-[#8B93A1]">{label}</p><b className="mt-1 block text-2xl">{metric}</b></div>)}
     </div>
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[1050px] text-left text-sm"><thead className="bg-[#FAFBFC] text-[10px] uppercase tracking-wider text-[#8B93A1]"><tr><th className="px-4 py-3">Member and system</th><th className="px-4 py-3">Network identity</th><th className="px-4 py-3">Top usage</th><th className="px-4 py-3">Destinations</th><th className="px-4 py-3 text-right">Sessions</th><th className="px-4 py-3 text-right">Bandwidth</th><th className="px-4 py-3">Last activity</th><th className="px-4 py-3" /></tr></thead>
+      <table className="w-full min-w-[1050px] text-left text-sm"><thead className="bg-[#FAFBFC] text-[10px] uppercase tracking-wider text-[#8B93A1]"><tr><th className="px-4 py-3">Member and system</th><th className="px-4 py-3">Network identity</th><th className="px-4 py-3">Top usage</th><th className="px-4 py-3">Destinations</th><th className="px-4 py-3 text-right">Records</th><th className="px-4 py-3 text-right">Bandwidth</th><th className="px-4 py-3">Last activity</th><th className="px-4 py-3" /></tr></thead>
       <tbody>{pageRows.map((item) => <tr key={item.key} className="border-t border-[#EDF0F4] align-top hover:bg-[#FAFBFC]"><td className="px-4 py-3"><b className={item.inventoryMatch ? "text-[#111827]" : "text-red-700"}>{item.member}</b><p className="text-xs text-[#69738B]">{item.employeeCode || "No employee code"} · {item.hostname}</p><p className="text-[11px] text-[#98A0B3]">{item.os} · AV: {item.avStatus}</p></td><td className="px-4 py-3 font-mono text-xs"><p>{item.ip}</p><p className="text-[#69738B]">{item.mac || "No MAC"}</p><p className="text-[#98A0B3]">{item.interface}</p></td><td className="px-4 py-3">{item.applications.slice(0, 3).map((app) => <span key={app.name} className="mr-1 mt-1 inline-block rounded-md bg-[#EEF1FF] px-2 py-1 text-[11px] font-semibold text-[#4456A6]">{app.name} · {formatBytes(app.bytes)}</span>)}</td><td className="px-4 py-3"><b>{item.destinations.length}</b><p className="max-w-48 truncate text-xs text-[#69738B]">{item.countries.slice(0, 3).join(", ") || "Unknown country"}</p></td><td className="px-4 py-3 text-right"><b>{item.sessions.toLocaleString()}</b>{item.blocked > 0 && <p className="text-xs text-red-600">{item.blocked} blocked</p>}</td><td className="px-4 py-3 text-right"><b>{formatBytes(item.total)}</b><p className="text-[11px] text-[#8B93A1]">↑ {formatBytes(item.sent)} · ↓ {formatBytes(item.received)}</p></td><td className="whitespace-nowrap px-4 py-3 text-xs">{item.lastActivity || "—"}</td><td className="px-4 py-3"><Button variant="outline" size="sm" onClick={() => setSelected(item.key)}>Inspect</Button></td></tr>)}</tbody></table>
     </div>
     {filtered.length > 0 && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#E5E9EF] bg-[#FAFBFC] px-5 py-3"><p className="text-xs text-[#69738B]">Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filtered.length)} of {filtered.length} systems</p><div className="flex items-center gap-2"><Button variant="outline" size="sm" disabled={currentPage === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>Previous</Button><span className="min-w-20 text-center text-xs font-semibold">Page {currentPage} of {pageCount}</span><Button variant="outline" size="sm" disabled={currentPage === pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>Next</Button></div></div>}
@@ -1370,8 +1520,8 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
           application,
           ip,
           device: row.asset_user_name
-            ? `${row.asset_user_name} · ${row.srcname || row.devtype || "system"}`
-            : deviceNames[ip] || row.srcname || ip,
+            ? `${row.asset_user_name} · ${row.srcname || row.source_name || row.devtype || row.source_device_type || "system"}`
+            : deviceNames[ip] || row.srcname || row.source_name || ip,
           total: 0,
         };
       summary[key].total +=
@@ -1407,7 +1557,9 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
     )
     .reduce((sum, app) => sum + app.sessions, 0);
   const identifiedDevices = new Set(
-    logs.map((row) => row.srcip || row.source_ip || row.srcmac).filter(Boolean),
+    logs
+      .map((row) => row.srcip || row.source_ip || row.srcmac || row.source_mac)
+      .filter(Boolean),
   ).size;
   return (
     <div className="flex flex-col gap-4">
@@ -1477,7 +1629,7 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
               "devices represented in traffic logs",
             ],
             [
-              "Generic/encrypted sessions",
+              "Generic/encrypted records",
               genericSessions.toLocaleString(),
               "requires deeper Application Control classification",
             ],
@@ -1948,7 +2100,7 @@ function SecurityEventsSummary({ value, onOpen }) {
   return (
     <div className="overflow-hidden rounded-2xl border border-[#DDE2EA] bg-white shadow-sm">
       <div className="flex items-center justify-between border-b border-[#DDE2EA] px-6 py-5">
-        <h3 className="text-lg font-bold">Security events today</h3>
+        <h3 className="text-lg font-bold">Retained security events</h3>
         <button
           type="button"
           onClick={onOpen}
@@ -2171,7 +2323,7 @@ function SecurityEventsPanel({ value }) {
       <div className="grid gap-3.5 xl:grid-cols-[1.55fr_1fr]">
         <div className={FW_CARD}>
           <div className="flex flex-wrap items-start justify-between gap-3 px-[18px] pt-4">
-            <div><h3 className="text-sm font-bold">Events per hour · today</h3><p className="mt-0.5 text-xs text-[#98A0B5]">{events.length.toLocaleString()} events total · grouped by severity</p></div>
+            <div><h3 className="text-sm font-bold">Retained events by hour</h3><p className="mt-0.5 text-xs text-[#98A0B5]">{events.length.toLocaleString()} retained events · grouped by severity</p></div>
             <div className="flex flex-wrap gap-3 text-[11.5px] text-[#5B6178]">{severityCounts.map((item) => <span key={item.name} className="flex items-center gap-1.5 capitalize"><i className="h-2.5 w-2.5 rounded-[3px]" style={{ background: item.color }} />{item.name}</span>)}</div>
           </div>
           <div className="h-[190px] px-3 pb-3 pt-2">
@@ -2338,23 +2490,14 @@ function InterfacePeriodUsage({ firewall }) {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const queryString =
-      range === "today"
-        ? "today=true"
-        : range === "1h"
-          ? "hours=1"
-          : range === "25h"
-            ? "hours=25"
-            : range === "7d"
-              ? "days=7"
-              : `date=${selectedDate}`;
+    const queryString = bandwidthQuery(range, selectedDate);
     const controller = new AbortController();
     setLoading(true);
     setError("");
     setReport(null);
     api(`/firewall/report?${queryString}&firewall=${firewall}`, {
       signal: controller.signal,
-      timeout: 30000,
+      timeout: 60000,
     })
       .then(setReport)
       .catch((requestError) => {
@@ -2399,11 +2542,9 @@ function InterfacePeriodUsage({ firewall }) {
           onChange={(event) => setRange(event.target.value)}
           className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
         >
-          <option value="today">Today</option>
-          <option value="1h">Last 1 hour</option>
-          <option value="25h">Last 25 hours</option>
-          <option value="7d">Last 7 days</option>
-          <option value="day">Select a day</option>
+          {BANDWIDTH_RANGES.map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
         </select>
         {range === "day" && (
           <input
@@ -2437,6 +2578,13 @@ function InterfacePeriodUsage({ firewall }) {
                 · API row limit reached; totals may be partial.
               </span>
             )}
+            {report.summary?.source_complete === false &&
+              !report.summary?.record_limit_reached && (
+                <span className="font-semibold text-[#B45309]">
+                  · The firewall did not return every retained source row;
+                  totals may be partial.
+                </span>
+              )}
           </span>
         ) : (
           "Loading the selected usage period…"
@@ -2823,8 +2971,8 @@ function policyText(value) {
 }
 
 function hq2FloorFor(value) {
-  const name = `${policyText(value.name)} ${policyText(value.comments)} ${policyText(value.policyname)}`.toLowerCase();
-  const interfaces = `${policyText(value.srcintf)} ${policyText(value.dstintf)} ${policyText(value.detected_interface)}`.toLowerCase();
+  const name = `${policyText(value.name)} ${policyText(value.comments)} ${policyText(value.policyname)} ${policyText(value.policy)}`.toLowerCase();
+  const interfaces = `${policyText(value.srcintf)} ${policyText(value.source_interface)} ${policyText(value.dstintf)} ${policyText(value.destination_interface)} ${policyText(value.detected_interface)}`.toLowerCase();
   if (/cctv|camera/.test(name)) return "Shared";
   if (/\b(?:gf|ground[ _-]*floor)\b/.test(name) || /\bport13\b/.test(interfaces)) return 1;
   if (/\b(?:ff|first[ _-]*floor)\b/.test(name) || /\bport(?:3|4)\b/.test(interfaces)) return 2;
@@ -2842,8 +2990,8 @@ function HQ2FloorUsage({ logs }) {
     const floorRows = rows.filter((row) => hq2FloorFor(row) === floor);
     const systems = Object.values(floorRows.reduce((summary, row) => {
       const ip = textFrom(row, ["srcip", "source_ip"], "Unknown IP");
-      const mac = textFrom(row, ["srcmac", "mastersrcmac"], "");
-      const key = mac || ip;
+      const mac = textFrom(row, ["srcmac", "source_mac", "mastersrcmac"], "");
+      const key = firewallMacKey(mac) || ip;
       const sent = numberFrom(row, ["sentbyte", "sent_bytes"]);
       const received = numberFrom(row, ["rcvdbyte", "received_bytes"]);
       if (!summary[key]) summary[key] = {
@@ -2851,8 +2999,8 @@ function HQ2FloorUsage({ logs }) {
         member: row.asset_user_name || "Unmapped user",
         employeeCode: row.employee_code || "",
         mapped: Boolean(row.inventory_match),
-        hostname: row.srcname || row.devtype || "Unknown system",
-        os: row.osname || row.asset_os_version || "Unknown OS",
+        hostname: row.srcname || row.source_name || row.devtype || row.source_device_type || "Unknown system",
+        os: row.osname || row.source_os_name || row.asset_os_version || "Unknown OS",
         av: row.av_status || "Unknown",
         ip,
         mac,
@@ -2887,14 +3035,14 @@ function HQ2FloorUsage({ logs }) {
   });
   const totalBytes = groups.reduce((sum, group) => sum + group.bytes, 0);
   return <section className="overflow-hidden rounded-2xl border border-[#DDE2EA] bg-white shadow-sm">
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5E9EF] px-5 py-4"><div><h3 className="font-bold">HQ2 utilization and systems by floor</h3><p className="mt-1 text-xs text-[#8B93A1]">Live traffic and endpoint bifurcation using the HQ2 interface and policy layout.</p></div><Badge className="bg-blue-50 text-blue-700">{groups.reduce((sum, group) => sum + group.systems.length, 0)} systems observed</Badge></div>
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5E9EF] px-5 py-4"><div><h3 className="font-bold">HQ2 utilization and systems by floor</h3><p className="mt-1 text-xs text-[#8B93A1]">Today&apos;s retained traffic records classified using the HQ2 interface and policy layout.</p></div><Badge className="bg-blue-50 text-blue-700">{groups.reduce((sum, group) => sum + group.systems.length, 0)} systems observed</Badge></div>
     <div className="grid gap-4 p-4 xl:grid-cols-2">{groups.map((group, index) => {
       const share = totalBytes ? (group.bytes / totalBytes) * 100 : 0;
       return <article key={group.floor} className="overflow-hidden rounded-xl border border-[#E1E6ED] bg-[#FAFBFC]">
-        <div className="border-b border-[#E5E9EF] bg-white p-4"><div className="flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-xl text-sm font-bold text-white" style={{ background: colors[index] }}>{group.floor}F</span><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><h4 className="font-bold">{floorLabels[index]}</h4><b style={{ color: colors[index] }}>{formatBytes(group.bytes)}</b></div><p className="text-xs text-[#8B93A1]">{policyLabels[index]} group · {group.systems.length} systems · {group.rows.length} sessions</p></div></div><div className="mt-3 h-2 overflow-hidden rounded-full bg-[#E8ECF2]"><div className="h-full rounded-full" style={{ width: `${share}%`, background: colors[index] }} /></div><div className="mt-2 flex justify-between text-[11px] text-[#69738B]"><span>{share.toFixed(1)}% of observed floor traffic</span><span>{group.mapped}/{group.systems.length} inventory mapped</span></div></div>
+        <div className="border-b border-[#E5E9EF] bg-white p-4"><div className="flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-xl text-sm font-bold text-white" style={{ background: colors[index] }}>{group.floor}F</span><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><h4 className="font-bold">{floorLabels[index]}</h4><b style={{ color: colors[index] }}>{formatBytes(group.bytes)}</b></div><p className="text-xs text-[#8B93A1]">{policyLabels[index]} group · {group.systems.length} systems · {group.rows.length} traffic records</p></div></div><div className="mt-3 h-2 overflow-hidden rounded-full bg-[#E8ECF2]"><div className="h-full rounded-full" style={{ width: `${share}%`, background: colors[index] }} /></div><div className="mt-2 flex justify-between text-[11px] text-[#69738B]"><span>{share.toFixed(1)}% of observed floor traffic</span><span>{group.mapped}/{group.systems.length} inventory mapped</span></div></div>
         <div className="grid grid-cols-3 gap-px bg-[#E5E9EF]"><div className="bg-white p-3 text-center"><b>{group.systems.length}</b><p className="text-[9px] uppercase text-[#8B93A1]">Systems</p></div><div className="bg-white p-3 text-center"><b>{group.mapped}</b><p className="text-[9px] uppercase text-[#8B93A1]">Mapped users</p></div><div className="bg-white p-3 text-center"><b>{group.services.length}</b><p className="text-[9px] uppercase text-[#8B93A1]">Services</p></div></div>
         <div className="flex flex-wrap gap-1.5 border-b border-[#E5E9EF] px-4 py-3">{group.services.slice(0, 5).map((service) => <span key={service.name} className="rounded-md border bg-white px-2 py-1 text-[10px] font-semibold text-[#596278]">{service.name} · {formatBytes(service.bytes)}</span>)}{!group.services.length && <span className="text-xs text-[#9CA3AF]">No service activity returned.</span>}</div>
-        <div className="max-h-80 divide-y divide-[#E8ECF2] overflow-auto">{group.systems.map((system) => <div key={system.key} className="flex items-start gap-3 bg-white px-4 py-3"><span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${system.mapped ? "bg-emerald-500" : "bg-red-500"}`} /><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><b className={`block truncate text-sm ${system.mapped ? "text-[#1F2937]" : "text-red-700"}`}>{system.member}</b><p className="truncate text-xs text-[#69738B]">{system.employeeCode ? `${system.employeeCode} · ` : ""}{system.hostname}</p></div><b className="whitespace-nowrap text-xs">{formatBytes(system.total)}</b></div><p className="mt-1 truncate font-mono text-[10px] text-[#8B93A1]">{system.ip} · {system.mac || "No MAC"}</p><div className="mt-1 flex flex-wrap gap-x-3 text-[10px] text-[#69738B]"><span>{system.sessions} sessions</span><span>↑ {formatBytes(system.sent)}</span><span>↓ {formatBytes(system.received)}</span><span>{system.os}</span><span>AV: {system.av}</span></div></div></div>)}{!group.systems.length && <p className="bg-white px-4 py-8 text-center text-xs text-[#9CA3AF]">No systems observed on this floor in the current traffic sample.</p>}</div>
+        <div className="max-h-80 divide-y divide-[#E8ECF2] overflow-auto">{group.systems.map((system) => <div key={system.key} className="flex items-start gap-3 bg-white px-4 py-3"><span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${system.mapped ? "bg-emerald-500" : "bg-red-500"}`} /><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><b className={`block truncate text-sm ${system.mapped ? "text-[#1F2937]" : "text-red-700"}`}>{system.member}</b><p className="truncate text-xs text-[#69738B]">{system.employeeCode ? `${system.employeeCode} · ` : ""}{system.hostname}</p></div><b className="whitespace-nowrap text-xs">{formatBytes(system.total)}</b></div><p className="mt-1 truncate font-mono text-[10px] text-[#8B93A1]">{system.ip} · {system.mac || "No MAC"}</p><div className="mt-1 flex flex-wrap gap-x-3 text-[10px] text-[#69738B]"><span>{system.sessions} records</span><span>↑ {formatBytes(system.sent)}</span><span>↓ {formatBytes(system.received)}</span><span>{system.os}</span><span>AV: {system.av}</span></div></div></div>)}{!group.systems.length && <p className="bg-white px-4 py-8 text-center text-xs text-[#9CA3AF]">No systems observed on this floor in the current traffic sample.</p>}</div>
       </article>;
     })}</div>
     <div className="border-t border-[#E5E9EF] bg-[#FAFBFC] px-5 py-3 text-[11px] text-[#69738B]">Floor mapping: 1F = GF/port13 · 2F = FF/port3–4 · 3F = SF/port9/lan · 4F = TF/port10. Red systems are not mapped in the supplied asset inventory.</div>
@@ -2961,6 +3109,32 @@ function firewallSnapshot(data) {
     memory: numberFrom(sections.statistics, ["results.mem.0.current", "memory.current", "memory"]),
     traffic: logs.reduce((sum, row) => sum + numberFrom(row, ["rcvdbyte", "received_bytes", "download"]) + numberFrom(row, ["sentbyte", "sent_bytes", "upload"]), 0),
     model: sections.status?.results?.model_name || sections.status?.results?.model || "Firewall",
+  };
+}
+
+function mergeFirewallOverview(current, incoming) {
+  if (!current) return incoming;
+  if (!incoming) return current;
+  return {
+    ...current,
+    ...incoming,
+    configured: current.configured || incoming.configured,
+    connected: current.connected || incoming.connected,
+    operational_state:
+      current.operational_state === "down"
+        ? incoming.operational_state || current.operational_state
+        : current.operational_state || incoming.operational_state,
+    sections: { ...(current.sections || {}), ...(incoming.sections || {}) },
+    section_meta: {
+      ...(current.section_meta || {}),
+      ...(incoming.section_meta || {}),
+    },
+    errors: { ...(current.errors || {}), ...(incoming.errors || {}) },
+    threat_errors: {
+      ...(current.threat_errors || {}),
+      ...(incoming.threat_errors || {}),
+    },
+    last_updated: incoming.last_updated || current.last_updated,
   };
 }
 
@@ -3192,6 +3366,15 @@ function FirewallDowntimeSection({
                       <p className="mt-1 text-[11px] text-[#5B6178]">
                         Detected {formatDowntimeTimestamp(currentOutage.started_at)}
                       </p>
+                      {currentOutage.pre_downtime_snapshot && (
+                        <p className="mt-1.5 text-[10.5px] font-semibold text-[#4A5FE8]">
+                          Pre-downtime report saved · {Number(
+                            currentOutage.pre_downtime_snapshot.stored_records || 0,
+                          ).toLocaleString()} records · {formatDowntimeTimestamp(
+                            currentOutage.pre_downtime_snapshot.captured_at,
+                          )}
+                        </p>
+                      )}
                     </div>
                   ) : lastOutage ? (
                     <div className="mt-3 rounded-[11px] border border-[#E7E9F2] bg-white p-3">
@@ -3202,6 +3385,13 @@ function FirewallDowntimeSection({
                         {formatDowntimeTimestamp(lastOutage.started_at)} →{" "}
                         {formatDowntimeTimestamp(lastOutage.ended_at)}
                       </p>
+                      {lastOutage.pre_downtime_snapshot && (
+                        <p className="mt-1.5 text-[10.5px] font-semibold text-[#4A5FE8]">
+                          Pre-downtime report saved · {Number(
+                            lastOutage.pre_downtime_snapshot.stored_records || 0,
+                          ).toLocaleString()} records
+                        </p>
+                      )}
                     </div>
                   ) : (
                     <div className="mt-3 rounded-[11px] border border-[#D9EBDD] bg-[#F7FBF8] p-3 text-[11.5px] font-semibold text-[#15803D]">
@@ -3407,49 +3597,6 @@ function InventoryCoverage({ devices, firewall }) {
   );
 }
 
-const ARCHIVE_COLUMNS = [
-  "archive_date",
-  "timestamp",
-  "source_ip",
-  "source_mac",
-  "source_name",
-  "employee_code",
-  "destination_ip",
-  "destination_country",
-  "application",
-  "category",
-  "action",
-  "severity",
-  "policy",
-  "sent_bytes",
-  "received_bytes",
-  "duration_seconds",
-  "message",
-];
-
-function downloadFirewallArchive(records, filename) {
-  const cell = (value) => {
-    const text = String(value ?? "");
-    const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
-    return `"${safe.replace(/"/g, '""')}"`;
-  };
-  const csv = [
-    ARCHIVE_COLUMNS,
-    ...records.map((record) =>
-      ARCHIVE_COLUMNS.map((column) => record[column] ?? ""),
-    ),
-  ]
-    .map((row) => row.map(cell).join(","))
-    .join("\r\n");
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(
-    new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }),
-  );
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(link.href);
-}
-
 function FirewallArchivePanel({ firewall, configured }) {
   const [archives, setArchives] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -3490,12 +3637,12 @@ function FirewallArchivePanel({ firewall, configured }) {
     setSyncing(true);
     try {
       const result = await api(
-        `/firewall/report?days=7&firewall=${firewall}`,
-        { timeout: 60_000 },
+        `/firewall/archive/sync?firewall=${firewall}`,
+        { method: "POST", timeout: 120_000 },
       );
       await load();
       toast.success(
-        `Archived ${result.archive?.dates_archived || 0} day(s) from ${result.summary.records} records`,
+        `Archived ${result.dates_archived || 0} day(s) from ${Number(result.records_observed || 0).toLocaleString()} detailed records`,
       );
     } catch (error) {
       toast.error(error.message);
@@ -3504,12 +3651,14 @@ function FirewallArchivePanel({ firewall, configured }) {
     }
   };
 
-  const openDay = async (date) => {
+  const openDay = async (date, targetPage = 1) => {
     try {
-      setSelected(
-        await api(`/firewall/archive?firewall=${firewall}&date=${date}`),
+      const result = await api(
+        `/firewall/archive?firewall=${firewall}&date=${date}&record_page=${targetPage}&record_limit=${recordPageSize}`,
+        { timeout: 60_000 },
       );
-      setRecordPage(1);
+      setSelected(result);
+      setRecordPage(result.record_pagination?.page || targetPage);
     } catch (error) {
       toast.error(error.message);
     }
@@ -3520,21 +3669,13 @@ function FirewallArchivePanel({ firewall, configured }) {
     const days = Math.ceil((new Date(to) - new Date(from)) / 86400000) + 1;
     if (days > 7)
       return toast.error("Export up to 7 archived days at a time");
-    try {
-      const result = await api(
-        `/firewall/archive?firewall=${firewall}&from=${from}&to=${to}&include_records=true&limit=7`,
-        { timeout: 60_000 },
-      );
-      if (!result.records?.length)
-        return toast.error("No archived records in the selected range");
-      downloadFirewallArchive(
-        result.records,
-        `${firewall}-firewall-archive-${from}-to-${to}.csv`,
-      );
-      toast.success(`Exported ${result.records.length} archived records`);
-    } catch (error) {
-      toast.error(error.message);
-    }
+    const link = document.createElement("a");
+    link.href = `/api/firewall/archive/export?firewall=${firewall}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+    link.download = `${firewall}-firewall-archive-${from}-to-${to}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    toast.success("Detailed archive export started");
   };
 
   if (loading)
@@ -3546,14 +3687,10 @@ function FirewallArchivePanel({ firewall, configured }) {
     currentPage * pageSize,
   );
   const selectedRecords = selected?.records || [];
-  const recordPages = Math.max(
-    1,
-    Math.ceil(selectedRecords.length / recordPageSize),
-  );
-  const visibleRecords = selectedRecords.slice(
-    (recordPage - 1) * recordPageSize,
-    recordPage * recordPageSize,
-  );
+  const recordPages = selected?.record_pagination?.total_pages || 1;
+  const totalSelectedRecords =
+    selected?.record_pagination?.total_records || selectedRecords.length;
+  const visibleRecords = selectedRecords;
   const escalationDays = archives.filter(
     (item) => item.escalation_count > 0,
   ).length;
@@ -3629,7 +3766,7 @@ function FirewallArchivePanel({ firewall, configured }) {
         </div>
         {visible.length ? (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] text-left text-sm">
+            <table className="w-full min-w-[1120px] text-left text-sm">
               <thead className="bg-[#FAFBFC] text-[10px] uppercase tracking-wider text-[#8B93A1]">
                 <tr>
                   <th className="px-4 py-3">Date</th>
@@ -3640,6 +3777,7 @@ function FirewallArchivePanel({ firewall, configured }) {
                   <th className="px-4 py-3">Blocked</th>
                   <th className="px-4 py-3">Threats</th>
                   <th className="px-4 py-3">Escalation</th>
+                  <th className="px-4 py-3">Snapshot</th>
                   <th className="px-4 py-3" />
                 </tr>
               </thead>
@@ -3667,6 +3805,26 @@ function FirewallArchivePanel({ firewall, configured }) {
                           Clear
                         </span>
                       )}
+                    </td>
+                    <td className="px-4 py-3">
+                      {archive.protected_before_downtime ? (
+                        <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-700">
+                          Saved before downtime
+                        </span>
+                      ) : archive.archive_complete ? (
+                        <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-700">
+                          Detailed · complete
+                        </span>
+                      ) : (
+                        <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700">
+                          Detailed · retained source
+                        </span>
+                      )}
+                      <p className="mt-1 text-[10px] text-[#8B93A1]">
+                        {archive.captured_at
+                          ? formatDowntimeTimestamp(archive.captured_at)
+                          : "Awaiting snapshot"}
+                      </p>
                     </td>
                     <td className="px-4 py-3">
                       <Button variant="outline" size="sm" onClick={() => openDay(archive.date)}>
@@ -3703,20 +3861,21 @@ function FirewallArchivePanel({ firewall, configured }) {
                 {selected.firewall_label} · {selected.date}
               </h3>
               <p className="text-xs text-[#8B93A1]">
-                {selectedRecords.length.toLocaleString()} stored records · captured {selected.captured_at ? new Date(selected.captured_at).toLocaleString("en-GB") : "—"}
+                {Number(totalSelectedRecords).toLocaleString()} stored records · captured {selected.captured_at ? new Date(selected.captured_at).toLocaleString("en-GB") : "—"}
+              </p>
+              <p className="mt-1 text-[11px] font-medium text-[#4A5FE8]">
+                {selected.protected_before_downtime
+                  ? `Protected before downtime at ${formatDowntimeTimestamp(selected.last_pre_downtime_protected_at)}`
+                  : `Automatic daily snapshot · ${selected.archive_complete ? "complete daily coverage" : selected.source_complete ? "complete retained source; daily coverage may contain a gap" : "retained source may be partial"}`}
               </p>
             </div>
-            <Button
-              variant="outline"
-              onClick={() =>
-                downloadFirewallArchive(
-                  selectedRecords.map((record) => ({ archive_date: selected.date, ...record })),
-                  `${firewall}-firewall-archive-${selected.date}.csv`,
-                )
-              }
-              disabled={!selectedRecords.length}
-            >
-              <Download className="h-4 w-4" /> Export day
+            <Button variant="outline" asChild>
+              <a
+                href={`/api/firewall/archive/export?firewall=${firewall}&date=${encodeURIComponent(selected.date)}`}
+                download={`${firewall}-firewall-archive-${selected.date}.csv`}
+              >
+                <Download className="h-4 w-4" /> Export day
+              </a>
             </Button>
             <Button variant="ghost" onClick={() => setSelected(null)}>Close</Button>
           </div>
@@ -3753,10 +3912,10 @@ function FirewallArchivePanel({ firewall, configured }) {
               </tbody>
             </table>
           </div>
-          {selectedRecords.length > recordPageSize && (
+          {recordPages > 1 && (
             <div className="flex items-center justify-between border-t bg-[#FAFBFC] px-5 py-3 text-xs">
               <span>Records page {recordPage} of {recordPages}</span>
-              <div className="flex gap-2"><Button variant="outline" size="sm" disabled={recordPage === 1} onClick={() => setRecordPage((value) => value - 1)}>Previous</Button><Button variant="outline" size="sm" disabled={recordPage === recordPages} onClick={() => setRecordPage((value) => value + 1)}>Next</Button></div>
+              <div className="flex gap-2"><Button variant="outline" size="sm" disabled={recordPage === 1} onClick={() => openDay(selected.date, recordPage - 1)}>Previous</Button><Button variant="outline" size="sm" disabled={recordPage === recordPages} onClick={() => openDay(selected.date, recordPage + 1)}>Next</Button></div>
             </div>
           )}
         </section>
@@ -3768,6 +3927,8 @@ function FirewallArchivePanel({ firewall, configured }) {
 export default function FirewallView() {
   const [data, setData] = useState(null);
   const [comparison, setComparison] = useState({ hq: null, hq2: null });
+  const [trafficReport, setTrafficReport] = useState(null);
+  const [trafficReportError, setTrafficReportError] = useState("");
   const [downtime, setDowntime] = useState({ hq: null, hq2: null });
   const [downtimeDays, setDowntimeDays] = useState(7);
   const [downtimeLoading, setDowntimeLoading] = useState(true);
@@ -3775,9 +3936,11 @@ export default function FirewallView() {
   const [tab, setTab] = useState("overview");
   const [activeMetric, setActiveMetric] = useState("System status");
   const [loading, setLoading] = useState(true);
+  const [liveDetailsLoading, setLiveDetailsLoading] = useState(false);
   const [comparisonLoading, setComparisonLoading] = useState(true);
   const [reportLoading, setReportLoading] = useState(false);
   const detailRef = useRef(null);
+  const loadRequestRef = useRef(0);
   const loadDowntime = (period = downtimeDays) => {
     setDowntimeLoading(true);
     return Promise.all([
@@ -3789,34 +3952,123 @@ export default function FirewallView() {
       .finally(() => setDowntimeLoading(false));
   };
   const load = () => {
+    const targetFirewall = firewall;
+    const requestId = ++loadRequestRef.current;
+    const isCurrentRequest = () => loadRequestRef.current === requestId;
     setLoading(true);
-    api(`/firewall/overview?firewall=${firewall}`)
-      .then((result) => {
-        setData(result);
-        setComparison((current) => ({ ...current, [firewall]: result }));
+    setLiveDetailsLoading(false);
+    setTrafficReport(null);
+    setTrafficReportError("");
+    api(`/firewall/overview?firewall=${targetFirewall}&scope=summary`, {
+      timeout: 30000,
+    })
+      .then((overview) => {
+        if (!isCurrentRequest()) return;
+        setData(overview);
+        setComparison((current) => ({
+          ...current,
+          [targetFirewall]: overview,
+        }));
+        setLoading(false);
+        setLiveDetailsLoading(true);
+
+        return Promise.allSettled([
+          api(`/firewall/report?today=true&firewall=${targetFirewall}`, {
+            timeout: 120000,
+          }),
+          api(
+            `/firewall/overview?firewall=${targetFirewall}&scope=security`,
+            { timeout: 120000 },
+          ),
+        ]).then(([reportResult, securityResult]) => {
+          if (!isCurrentRequest()) return;
+          if (reportResult.status === "fulfilled") {
+            const report = reportResult.value;
+            const trafficPayload = {
+              sections: { logs: report.records || [] },
+              section_meta: {
+                logs: {
+                  source: report.summary?.source || "firewall_report",
+                  fetched_at: report.generated_at,
+                  records_returned: Number(report.summary?.records || 0),
+                  records_available: Number(
+                    report.summary?.api_rows_available ||
+                      report.summary?.records ||
+                      0,
+                  ),
+                  complete: Boolean(report.summary?.source_complete),
+                },
+              },
+              last_updated: report.generated_at,
+            };
+            setTrafficReport(report);
+            setData((current) => mergeFirewallOverview(current, trafficPayload));
+            setComparison((current) => ({
+              ...current,
+              [targetFirewall]: mergeFirewallOverview(
+                current[targetFirewall],
+                trafficPayload,
+              ),
+            }));
+          } else {
+            setTrafficReportError(
+              reportResult.reason?.message || "Report unavailable",
+            );
+          }
+          if (securityResult.status === "fulfilled") {
+            setData((current) =>
+              mergeFirewallOverview(current, securityResult.value),
+            );
+            setComparison((current) => ({
+              ...current,
+              [targetFirewall]: mergeFirewallOverview(
+                current[targetFirewall],
+                securityResult.value,
+              ),
+            }));
+          } else {
+            toast.error(
+              securityResult.reason?.message ||
+                "Live firewall security details are temporarily unavailable",
+            );
+          }
+        });
       })
-      .catch((error) => toast.error(error.message))
-      .finally(() => setLoading(false));
+      .catch((error) => {
+        if (isCurrentRequest()) toast.error(error.message);
+      })
+      .finally(() => {
+        if (!isCurrentRequest()) return;
+        setLoading(false);
+        setLiveDetailsLoading(false);
+      });
   };
   const loadComparison = () => {
     setComparisonLoading(true);
-    Promise.all([
-      api("/firewall/overview?firewall=hq"),
-      api("/firewall/overview?firewall=hq2"),
-    ])
-      .then(([hq, hq2]) => setComparison({ hq, hq2 }))
-      .then(() => loadDowntime())
+    const otherFirewall = firewall === "hq" ? "hq2" : "hq";
+    api(`/firewall/overview?firewall=${otherFirewall}&scope=summary`, {
+      timeout: 30000,
+    })
+      .then((overview) =>
+        setComparison((current) => ({
+          ...current,
+          [otherFirewall]: overview,
+        })),
+      )
       .catch((error) => toast.error(error.message))
       .finally(() => setComparisonLoading(false));
   };
   const refreshAll = () => {
     load();
     loadComparison();
+    loadDowntime();
   };
   const exportSevenDayReport = async () => {
     setReportLoading(true);
     try {
-      const report = await api(`/firewall/report?days=7&firewall=${firewall}`);
+      const report = await api(`/firewall/report?days=7&firewall=${firewall}`, {
+        timeout: 60000,
+      });
       const columns = [
         "timestamp",
         "source_ip",
@@ -3868,6 +4120,10 @@ export default function FirewallView() {
     loadDowntime(downtimeDays);
   }, [downtimeDays]);
   const sections = data?.sections || {};
+  const trafficLogs = useDeferredValue(
+    trafficReport?.records || EMPTY_FIREWALL_ROWS,
+  );
+  const trafficPeriod = trafficReport?.period || null;
   const threatSections = Object.fromEntries(
     Object.entries(sections).filter(([name]) => name.startsWith("threat_")),
   );
@@ -3894,13 +4150,38 @@ export default function FirewallView() {
     "bandwidth",
     "current_throughput",
   ]);
-  const applicationTraffic = listFrom(sections.logs).reduce(
-    (sum, row) =>
-      sum +
-      numberFrom(row, ["rcvdbyte", "received_bytes", "download"]) +
-      numberFrom(row, ["sentbyte", "sent_bytes", "upload"]),
-    0,
-  );
+  const { applicationTraffic, unclassifiedTraffic, applicationCount } =
+    useMemo(() => {
+      let total = 0;
+      let unclassified = 0;
+      const applications = new Set();
+      for (const row of trafficLogs) {
+        const received = numberFrom(row, [
+          "rcvdbyte",
+          "received_bytes",
+          "download",
+        ]);
+        const sent = numberFrom(row, ["sentbyte", "sent_bytes", "upload"]);
+        const bytes = received + sent;
+        const name = textFrom(
+          row,
+          ["app", "application", "appname", "service"],
+          "Other traffic",
+        );
+        total += bytes;
+        applications.add(name);
+        if (
+          /^(unscanned|unknown|other traffic|other|unclassified)$/i.test(name) ||
+          /^(udp|tcp)[/:]\d+/i.test(name)
+        )
+          unclassified += bytes;
+      }
+      return {
+        applicationTraffic: total,
+        unclassifiedTraffic: unclassified,
+        applicationCount: applications.size,
+      };
+    }, [trafficLogs]);
   const interfaceResults = sections.interfaces?.results || {};
   const interfaceRows = Array.isArray(interfaceResults)
     ? interfaceResults
@@ -3978,35 +4259,49 @@ export default function FirewallView() {
 
   // ---- redesign-derived signals (computed from the live payload) ----
   const eventList = listFrom(sections.events);
-  const severityOf = (row) => {
-    const level = textFrom(row, ["level", "severity", "crlevel"], "").toLowerCase();
-    if (/emergency|alert|critical|error/.test(level)) return "alert";
-    if (/warn/.test(level)) return "warning";
-    if (/notice/.test(level)) return "notice";
-    return "information";
-  };
-  const severityTally = eventList.reduce((tally, row) => {
-    const key = severityOf(row);
-    tally[key] = (tally[key] || 0) + 1;
-    return tally;
-  }, {});
-  const alertEvents = severityTally.alert || 0;
-  const noticeEvents = severityTally.notice || 0;
-  const infoEvents = severityTally.information || 0;
-  const eventGroups = Object.values(
-    eventList.reduce((groups, row) => {
-      const title = textFrom(row, ["logdesc", "msg", "message", "eventtype"], "Security event");
+  const { severityTally, eventGroups } = useMemo(() => {
+    const severityOf = (row) => {
+      const level = textFrom(
+        row,
+        ["level", "severity", "crlevel"],
+        "",
+      ).toLowerCase();
+      if (/emergency|alert|critical|error/.test(level)) return "alert";
+      if (/warn/.test(level)) return "warning";
+      if (/notice/.test(level)) return "notice";
+      return "information";
+    };
+    const tally = {};
+    const groups = {};
+    for (const row of eventList) {
       const severity = severityOf(row);
+      tally[severity] = (tally[severity] || 0) + 1;
+      const title = textFrom(
+        row,
+        ["logdesc", "msg", "message", "eventtype"],
+        "Security event",
+      );
       const key = `${title}|${severity}`;
       if (!groups[key])
         groups[key] = { title, severity, count: 0, sources: {} };
       groups[key].count += 1;
-      const source = textFrom(row, ["srcip", "source_ip", "sourceIp", "src_ip", "srcname"], "");
+      const source = textFrom(
+        row,
+        ["srcip", "source_ip", "sourceIp", "src_ip", "srcname"],
+        "",
+      );
       if (source && source !== "—")
-        groups[key].sources[source] = (groups[key].sources[source] || 0) + 1;
-      return groups;
-    }, {}),
-  ).sort((a, b) => b.count - a.count);
+        groups[key].sources[source] =
+          (groups[key].sources[source] || 0) + 1;
+    }
+    return {
+      severityTally: tally,
+      eventGroups: Object.values(groups).sort((a, b) => b.count - a.count),
+    };
+  }, [eventList]);
+  const alertEvents = severityTally.alert || 0;
+  const noticeEvents = severityTally.notice || 0;
+  const infoEvents = severityTally.information || 0;
   const topAlertGroup = eventGroups.find(
     (group) => group.severity === "alert" || group.severity === "warning",
   );
@@ -4023,36 +4318,23 @@ export default function FirewallView() {
     ? Math.round((unmappedDevices / deviceList.length) * 100)
     : 0;
 
-  const genericAppLabel = (name) =>
-    /^(unscanned|unknown|other traffic|other|unclassified)$/i.test(name) ||
-    /^(udp|tcp)[/:]\d+/i.test(name);
-  const unclassifiedTraffic = listFrom(sections.logs).reduce((sum, row) => {
-    const name = textFrom(
-      row,
-      ["app", "application", "appname", "service"],
-      "unscanned",
-    );
-    if (!genericAppLabel(name)) return sum;
-    return (
-      sum +
-      numberFrom(row, ["rcvdbyte", "received_bytes", "download"]) +
-      numberFrom(row, ["sentbyte", "sent_bytes", "upload"])
-    );
-  }, 0);
   const unclassifiedPct = applicationTraffic
     ? Math.round((unclassifiedTraffic / applicationTraffic) * 100)
     : 0;
 
   const interfacesDown = Math.max(0, interfaceRows.length - interfacesUp);
-  const applicationCount = new Set(
-    listFrom(sections.logs).map((row) =>
-      textFrom(row, ["app", "application", "appname", "service"], "Other traffic"),
-    ),
-  ).size;
   const system = sections.status?.results || {};
   const configuration = sections.configuration?.results || {};
   const hqSnapshot = firewallSnapshot(comparison.hq || (firewall === "hq" ? data : null));
   const hq2Snapshot = firewallSnapshot(comparison.hq2 || (firewall === "hq2" ? data : null));
+  const hqSerial = comparison.hq?.appliance_identity?.serial;
+  const hq2Serial = comparison.hq2?.appliance_identity?.serial;
+  const duplicateAppliance = Boolean(
+    hqSerial && hq2Serial && hqSerial === hq2Serial,
+  );
+  const incompleteSections = Object.entries(data?.section_meta || {}).filter(
+    ([, metadata]) => metadata.complete === false,
+  );
   const headerName = system.hostname || configuration.hostname || data?.name || "Primary Firewall";
   const headerMeta = [
     system.model_name || system.model,
@@ -4130,8 +4412,8 @@ export default function FirewallView() {
             </button>
           ))}
         </div>
-        <Button variant="outline" className="w-full rounded-[10px] border-[#E7E9F2] bg-white text-[12.5px] sm:w-auto" onClick={refreshAll} disabled={loading || comparisonLoading}>
-          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+        <Button variant="outline" className="w-full rounded-[10px] border-[#E7E9F2] bg-white text-[12.5px] sm:w-auto" onClick={refreshAll} disabled={loading || comparisonLoading || liveDetailsLoading}>
+          <RefreshCw className={`h-4 w-4 ${loading || liveDetailsLoading ? "animate-spin" : ""}`} />
           Refresh
         </Button>
         <Button
@@ -4145,6 +4427,19 @@ export default function FirewallView() {
           7-day report
         </Button>
       </div>
+      {liveDetailsLoading && data && (
+        <div
+          role="status"
+          className="flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-800"
+        >
+          <RefreshCw className="h-4 w-4 shrink-0 animate-spin" />
+          <span>
+            <b>Live overview ready.</b> Retained traffic and security details
+            are loading in the background; the page remains available while
+            they sync.
+          </span>
+        </div>
+      )}
       {data?.configured && Object.keys(data.errors || {}).length > 0 && (
         <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -4156,6 +4451,69 @@ export default function FirewallView() {
                 .join(" · ")}
             </p>
           </div>
+        </div>
+      )}
+      {duplicateAppliance && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <b>HQ and HQ2 currently resolve to the same firewall appliance.</b>
+            <p className="mt-1 text-xs">
+              Both profiles returned serial {hqSerial}. Values are shown exactly
+              as returned, but they cannot be treated as two independent locations
+              until the second firewall API URL or token points to its own appliance.
+            </p>
+          </div>
+        </div>
+      )}
+      {trafficReportError && (
+        <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <b>Today&apos;s traffic report could not be verified.</b>
+            <p className="mt-1 text-xs">{trafficReportError}</p>
+          </div>
+        </div>
+      )}
+      {trafficReport && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-[#DDE2EA] bg-white px-4 py-3 text-xs text-[#5B6178]">
+          <Shield className="h-4 w-4 text-[#4A5FE8]" />
+          <b className="text-[#374151]">Verified traffic period</b>
+          <span>
+            {formatUsageRangeTimestamp(trafficPeriod?.start)} →{" "}
+            {formatUsageRangeTimestamp(trafficPeriod?.end)} IST
+          </span>
+          <span>{Number(trafficReport.summary?.records || 0).toLocaleString()} unique records</span>
+          <span>
+            {Number(trafficReport.summary?.api_rows_fetched || trafficReport.summary?.api_rows_returned || 0).toLocaleString()}
+            /{Number(trafficReport.summary?.api_rows_available || 0).toLocaleString()}
+            {" "}retained API rows fetched
+          </span>
+          <span>
+            {Number(trafficReport.summary?.api_pages_fetched || 1)} firewall page(s)
+          </span>
+          <FwPill
+            tone={trafficReport.summary?.source_complete ? "green" : "amber"}
+          >
+            {trafficReport.summary?.source_complete
+              ? "Complete retained source"
+              : "Partial source"}
+          </FwPill>
+          <span className="basis-full text-[11px] text-[#7B8498]">
+            Period totals combine the firewall&apos;s currently retained memory
+            logs with daily records already archived by this platform.
+          </span>
+        </div>
+      )}
+      {incompleteSections.length > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+          <b>Partial firewall section data:</b>{" "}
+          {incompleteSections
+            .map(
+              ([name, metadata]) =>
+                `${name} (${metadata.records_returned}/${metadata.records_available})`,
+            )
+            .join(" · ")}
         </div>
       )}
       {topAlertGroup && topAlertGroup.count >= 5 && (
@@ -4380,7 +4738,7 @@ export default function FirewallView() {
               </div>
               <div className="grid gap-3.5 lg:grid-cols-2">
                 <TopApplicationsOverview
-                  value={sections.logs}
+                  value={trafficLogs}
                   onOpen={() => openDetail("applications", "Throughput")}
                 />
                 <FirewallEstateComparison values={comparison} onSelect={setFirewall} />
@@ -4401,7 +4759,7 @@ export default function FirewallView() {
               </details>
               {firewall === "hq2" && (
                 <>
-                  <HQ2FloorUsage logs={sections.logs} />
+                  <HQ2FloorUsage logs={trafficLogs} />
                   <HQ2FloorPolicies value={sections.policies} />
                 </>
               )}
@@ -4446,7 +4804,7 @@ export default function FirewallView() {
               </div>
             )}
             <ApplicationUsagePanel
-              value={sections.logs}
+              value={trafficLogs}
               devices={sections.devices}
               firewall={firewall}
             />

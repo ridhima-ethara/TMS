@@ -158,6 +158,8 @@ function MiniKra({ lists, onGoKra }) {
       </Card>
     );
   const submission = list.today_submission;
+  const displayStatus = list.today_status || submission?.status || "Not submitted";
+  const issue = list.overdue || ["Late", "Issue"].includes(displayStatus);
   const responses = submission?.responses || [];
   const done = responses.filter((response) => response.done).length;
   return (
@@ -165,12 +167,12 @@ function MiniKra({ lists, onGoKra }) {
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="font-bold">My KRA — today</h3>
         <span
-          className={`rounded-full px-3 py-1 text-xs font-semibold ${submission ? (submission.status === "Completed" ? "bg-[#E4F5EE] text-[#0E6B47]" : "bg-[#FDF3E0] text-[#8A5A06]") : "bg-[#FDECEC] text-[#A32D2D]"}`}
+          className={`rounded-full px-3 py-1 text-xs font-semibold ${issue ? "bg-[#FDECEC] text-[#A32D2D]" : submission ? (submission.status === "Completed" ? "bg-[#E4F5EE] text-[#0E6B47]" : "bg-[#FDF3E0] text-[#8A5A06]") : "bg-[#FDECEC] text-[#A32D2D]"}`}
         >
-          {submission?.status || "Not submitted"}
+          {displayStatus}
         </span>
         <span className="ml-auto text-xs text-[#4B5563]">
-          ⏱ cut-off 6:00 PM
+          ⏱ cut-off 7:00 PM
         </span>
       </div>
       <div className="mt-4 flex items-center gap-3">
@@ -713,11 +715,11 @@ function TicketActionMenu({ ticket, done, user, onOpenTicket, onUpdated }) {
         View
       </Button>
     );
-  const update = async (payload, message) => {
+  const update = async (payload, message, updateOptions = {}) => {
     try {
       await api(`/tickets/${ticket.id}`, { method: "PATCH", body: payload });
       toast.success(message);
-      onUpdated();
+      onUpdated(updateOptions);
     } catch (error) {
       toast.error(error.message);
     }
@@ -797,6 +799,7 @@ function TicketActionMenu({ ticket, done, user, onOpenTicket, onUpdated }) {
                     update(
                       { assignee_id: null },
                       `${ticket.human_id} returned to the pending team queue`,
+                      { returnedToTeam: true },
                     )
                   }
                 >
@@ -853,11 +856,24 @@ export function AgentTickets({ user, onOpenTicket }) {
   const categoryOptions = [
     ...new Set(tickets.map((ticket) => ticket.category).filter(Boolean)),
   ].sort();
+  const unallocatedCount = tickets.filter(
+    (ticket) => !ticket.assignee_id && !DONE.includes(ticket.status),
+  ).length;
+  const handleTicketUpdated = ({ returnedToTeam = false } = {}) => {
+    if (returnedToTeam) {
+      setQuick("all");
+      if (scope !== "team") {
+        setScope("team");
+        return;
+      }
+    }
+    load();
+  };
   const filtered = tickets
     .filter(
       (ticket) =>
         (!search ||
-          `${ticket.human_id} ${ticket.title}`
+          `${ticket.human_id} ${ticket.title} ${ticket.issue_user_name || ticket.raised_for_name || ""} ${ticket.issue_user_email || ""} ${ticket.issue_user_employee_code || ""}`
             .toLowerCase()
             .includes(search.toLowerCase())) &&
         (priority === "all" || ticket.priority === priority) &&
@@ -950,9 +966,19 @@ export function AgentTickets({ user, onOpenTicket }) {
             onClick={() => setScope("team")}
             className={`rounded-md px-4 py-2 text-sm font-semibold ${scope === "team" ? "bg-white shadow-sm" : "text-[#4B5563]"}`}
           >
-            Team
+            Team tickets · {scope === "team" ? tickets.length : "—"}
           </button>
         </div>
+        {scope === "team" && (
+          <>
+            <span className="rounded-full bg-amber-100 px-3 py-2 text-xs font-semibold text-amber-800">
+              {unallocatedCount} pending / unallocated
+            </span>
+            <span className="rounded-full bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600">
+              {user.location || meta.team} scope
+            </span>
+          </>
+        )}
         {[
           ["overdue", "Overdue", "bg-red-100 text-red-800"],
           ["progress", "In progress", "bg-blue-100 text-blue-800"],
@@ -1140,7 +1166,7 @@ export function AgentTickets({ user, onOpenTicket }) {
                                     done={done}
                                     user={user}
                                     onOpenTicket={onOpenTicket}
-                                    onUpdated={load}
+                                    onUpdated={handleTicketUpdated}
                                   />
                                 </div>
                               </div>
@@ -1175,7 +1201,7 @@ export function AgentTickets({ user, onOpenTicket }) {
   );
 }
 
-function CompliancePanel({ submissions, assignedAt }) {
+function CompliancePanel({ submissions, assignedAt, overdue }) {
   const dates = Array.from({ length: 30 }, (_, index) => {
     const date = new Date();
     date.setDate(date.getDate() - (29 - index));
@@ -1189,7 +1215,8 @@ function CompliancePanel({ submissions, assignedAt }) {
     return relevant.length
       ? Math.round(
           (records.reduce(
-            (sum, item) => sum + (item.status === "Completed" ? 1 : 0.5),
+            (sum, item) =>
+              sum + (item.status === "Completed" ? 1 : item.status === "Partial" ? 0.5 : 0),
             0,
           ) /
             relevant.length) *
@@ -1239,7 +1266,7 @@ function CompliancePanel({ submissions, assignedAt }) {
             <span
               key={date}
               title={`${date}: ${date < assignedDate ? "Before assignment" : record?.status || (date === dayKey(new Date()) ? "Today" : "Missed")}`}
-              className={`h-4 w-4 rounded-[4px] ${date === dayKey(new Date()) ? "border-2 border-[#111827] " : ""}${date < assignedDate ? "bg-[#D9DEE5]" : record?.status === "Completed" ? "bg-[#1E9E6A]" : record?.status === "Partial" ? "bg-[#E8930C]" : date >= dayKey(new Date()) ? "bg-[#EDF0F4]" : "bg-[#DC3D3D]"}`}
+              className={`h-4 w-4 rounded-[4px] ${date === dayKey(new Date()) ? "border-2 border-[#111827] " : ""}${date < assignedDate ? "bg-[#D9DEE5]" : record?.status === "Completed" ? "bg-[#1E9E6A]" : record?.status === "Partial" ? "bg-[#E8930C]" : date === dayKey(new Date()) && overdue ? "bg-[#DC3D3D]" : date >= dayKey(new Date()) ? "bg-[#EDF0F4]" : "bg-[#DC3D3D]"}`}
             />
           );
         })}
@@ -1294,8 +1321,10 @@ function TodayChecklist({ list, onSubmitted }) {
             month: "short",
           })}
         </h3>
-        <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800">
-          {done === rows.length
+        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${list.overdue ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}>
+          {list.overdue
+            ? "Issue · overdue"
+            : done === rows.length
             ? "Complete"
             : done
               ? "In progress"
@@ -1462,7 +1491,7 @@ function TodayChecklist({ list, onSubmitted }) {
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-2 border-t pt-4">
         <span className="w-full text-xs text-[#9CA3AF] sm:w-auto">
-          Submit before the 6:00 PM cut-off
+          Submit before the 7:00 PM cut-off
         </span>
         <Button
           variant="outline"
@@ -1518,7 +1547,7 @@ export function AgentKra({ user }) {
         </div>
         <span className="ml-auto flex items-center gap-1 text-xs text-[#4B5563]">
           <Clock3 className="h-4 w-4" />
-          Cut-off 6:00 PM
+          Cut-off 7:00 PM
         </span>
       </div>
       {mode === "today" ? (
@@ -1536,6 +1565,7 @@ export function AgentKra({ user }) {
           <div className="space-y-4">
             <CompliancePanel
               submissions={submissions}
+              overdue={lists.some((list) => list.overdue)}
               assignedAt={
                 lists
                   .map((list) => list.created_at)
@@ -1563,7 +1593,7 @@ export function AgentKra({ user }) {
                     </p>
                   </div>
                   <span
-                    className={`rounded-full px-3 py-1 text-xs font-semibold ${submission.status === "Completed" ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800"}`}
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ${submission.status === "Completed" ? "bg-green-100 text-green-800" : submission.status === "Late" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}
                   >
                     {submission.status}
                   </span>
@@ -1680,7 +1710,7 @@ function SubmissionHistory({
                 {submission.done_count}/{submission.total}
               </span>
               <span
-                className={`rounded-full px-3 py-1 text-xs font-semibold ${submission.status === "Completed" ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800"}`}
+                className={`rounded-full px-3 py-1 text-xs font-semibold ${submission.status === "Completed" ? "bg-green-100 text-green-800" : submission.status === "Late" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}
               >
                 {submission.status}
               </span>

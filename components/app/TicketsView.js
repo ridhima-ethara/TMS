@@ -50,8 +50,248 @@ import {
   Search,
   Download,
   Inbox,
+  LayoutGrid,
+  List,
   UserRound,
 } from "lucide-react";
+
+const EMPLOYEE_DONE_STATUSES = ["Resolved", "Closed", "Cancelled"];
+const EMPLOYEE_WAITING_STATUSES = [
+  "Approval Preparation",
+  "Pending Super Admin Approval",
+  "Clarification Required",
+  "Approval On Hold",
+  "Approval Rejected",
+  "Pending User Response",
+  "Pending Vendor",
+  "Pending Finance",
+  "Pending Material",
+  "On Hold",
+];
+
+const EMPLOYEE_KANBAN_COLUMNS = [
+  {
+    key: "raised",
+    label: "Raised / Pending",
+    color: "#6C5CE7",
+    soft: "bg-[#F5F2FF]",
+  },
+  {
+    key: "assigned",
+    label: "Assigned",
+    color: "#2E7CD6",
+    soft: "bg-[#EEF5FD]",
+  },
+  {
+    key: "progress",
+    label: "In progress",
+    color: "#E8930C",
+    soft: "bg-[#FFF8EA]",
+  },
+  {
+    key: "waiting",
+    label: "Waiting / Approval",
+    color: "#9B59B6",
+    soft: "bg-[#FAF3FC]",
+  },
+  {
+    key: "done",
+    label: "Resolved / Closed",
+    color: "#1E9E6A",
+    soft: "bg-[#EFFAF5]",
+  },
+];
+
+function employeeTicketStage(ticket) {
+  if (EMPLOYEE_DONE_STATUSES.includes(ticket.status)) return "done";
+  if (EMPLOYEE_WAITING_STATUSES.includes(ticket.status)) return "waiting";
+  if (["In Progress", "Approved - Ready for Action"].includes(ticket.status))
+    return "progress";
+  if (
+    ticket.assignee_id ||
+    ["Assigned", "Acknowledged"].includes(ticket.status)
+  )
+    return "assigned";
+  return "raised";
+}
+
+function employeeStatusTime(ticket) {
+  const key = String(ticket.status || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+  const value =
+    ticket.status_timestamps?.[key] || ticket.updated_at || ticket.created_at;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Time unavailable";
+  return date.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function EmployeeTicketProgress({ stage }) {
+  const progressIndex = {
+    raised: 0,
+    assigned: 1,
+    progress: 2,
+    waiting: 2,
+    done: 3,
+  }[stage];
+  const labels = ["Raised", "Assigned", "Working", "Resolved"];
+  return (
+    <div className="mt-4">
+      <div className="relative flex justify-between">
+        <div className="absolute left-2 right-2 top-1.5 h-0.5 bg-[#E1E5EB]" />
+        <div
+          className="absolute left-2 top-1.5 h-0.5 bg-[#ED00ED] transition-all duration-500"
+          style={{ width: `${(progressIndex / 3) * 92}%` }}
+        />
+        {labels.map((label, index) => (
+          <div key={label} className="relative z-10 flex flex-col items-center">
+            <span
+              className={`h-3.5 w-3.5 rounded-full border-2 transition-colors ${
+                index <= progressIndex
+                  ? "border-[#ED00ED] bg-[#ED00ED]"
+                  : "border-[#CBD1DB] bg-white"
+              }`}
+            />
+            <span
+              className={`mt-1.5 text-[9px] font-semibold ${
+                index <= progressIndex ? "text-[#A520B8]" : "text-[#9CA3AF]"
+              }`}
+            >
+              {label}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EmployeeKanban({ tickets, loading, onOpenTicket }) {
+  if (loading)
+    return (
+      <Card className="border-[#E5E9EF] py-20 text-center text-sm text-[#9CA3AF] shadow-none">
+        Loading your live ticket progress…
+      </Card>
+    );
+  return (
+    <Card className="overflow-hidden border-[#E5E9EF] bg-[#F7F8FA] shadow-none">
+      <div className="overflow-x-auto p-4">
+        <div className="flex min-w-max items-start gap-3">
+          {EMPLOYEE_KANBAN_COLUMNS.map((column) => {
+            const rows = tickets.filter(
+              (ticket) => employeeTicketStage(ticket) === column.key,
+            );
+            return (
+              <section key={column.key} className="w-[290px] shrink-0">
+                <div
+                  className={`mb-3 flex items-center rounded-xl border border-white px-3 py-3 shadow-sm ${column.soft}`}
+                >
+                  <span
+                    className="mr-2 h-2.5 w-2.5 rounded-full"
+                    style={{ background: column.color }}
+                  />
+                  <h3 className="text-sm font-bold">{column.label}</h3>
+                  <span className="ml-auto rounded-full bg-white px-2 py-0.5 text-xs font-semibold shadow-sm">
+                    {rows.length}
+                  </span>
+                </div>
+                <div className="space-y-3">
+                  {rows.map((ticket) => {
+                    const stage = employeeTicketStage(ticket);
+                    const done = EMPLOYEE_DONE_STATUSES.includes(ticket.status);
+                    const sla = slaRemaining(ticket.sla_resolution_due);
+                    return (
+                      <button
+                        key={ticket.id}
+                        type="button"
+                        onClick={() => onOpenTicket(ticket.id)}
+                        className={`block w-full overflow-hidden rounded-xl border bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+                          sla.breach && !done
+                            ? "border-l-[3px] border-l-red-500"
+                            : "border-[#E5E9EF]"
+                        }`}
+                      >
+                        <div className="border-b border-[#E8ECF2] bg-[#FAFBFC] px-4 py-3">
+                          <p className="text-[9px] font-semibold uppercase tracking-wider text-[#8B93A1]">
+                            {ticket.assignee_name ? "Assigned to" : "Team allocation"}
+                          </p>
+                          <p className="mt-0.5 truncate text-sm font-bold text-[#1F2937]">
+                            {ticket.assignee_name || `${ticket.department} team · Pending`}
+                          </p>
+                        </div>
+                        <div className="p-4">
+                          <div className="flex items-start gap-2">
+                            <span className="font-mono text-[11px] font-semibold text-[#7B8495]">
+                              {ticket.human_id}
+                            </span>
+                            <Badge
+                              className={`ml-auto ${PRIORITY_META[ticket.priority]?.badge}`}
+                            >
+                              {ticket.priority}
+                            </Badge>
+                          </div>
+                          <h4 className="mt-2 line-clamp-2 min-h-10 text-sm font-bold leading-5">
+                            {ticket.title}
+                          </h4>
+                          <p className="mt-2 line-clamp-1 text-[11px] text-[#69738B]">
+                            {ticket.department} · {ticket.category || "Uncategorised"}
+                          </p>
+                          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                            <Badge
+                              variant="outline"
+                              className={statusClass(ticket.status)}
+                            >
+                              {ticket.status}
+                            </Badge>
+                            {!done && (
+                              <span
+                                className={`rounded-full px-2 py-1 text-[10px] font-semibold ${
+                                  sla.breach
+                                    ? "bg-red-100 text-red-800"
+                                    : "bg-emerald-100 text-emerald-800"
+                                }`}
+                              >
+                                {sla.text}
+                              </span>
+                            )}
+                          </div>
+                          <EmployeeTicketProgress stage={stage} />
+                          <p className="mt-3 border-t border-[#EDF0F4] pt-2 text-[10px] font-medium text-[#7B8495]">
+                            Status updated {employeeStatusTime(ticket)}
+                          </p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                  {!rows.length && (
+                    <div className="rounded-xl border border-dashed border-[#D9DEE5] bg-white/70 px-4 py-8 text-center text-xs text-[#9CA3AF]">
+                      No tickets in this stage
+                    </div>
+                  )}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+        {!tickets.length && (
+          <div className="py-12 text-center text-[#9CA3AF]">
+            <Inbox className="mx-auto mb-2 h-8 w-8" />
+            No tickets found
+          </div>
+        )}
+      </div>
+      <p className="border-t px-4 py-3 text-xs text-[#9CA3AF]">
+        Live workflow view · automatically refreshes when IT or Admin updates a ticket
+      </p>
+    </Card>
+  );
+}
 
 function exportCsv(rows) {
   const cols = [
@@ -92,6 +332,7 @@ export default function TicketsView({
   const [loading, setLoading] = useState(true);
   const [cats, setCats] = useState([]);
   const isSuper = user.role === "super_admin";
+  const [employeeView, setEmployeeView] = useState("kanban");
   const [filters, setFilters] = useState({
     search: "",
     status: "all",
@@ -110,8 +351,8 @@ export default function TicketsView({
       .catch(() => {});
   }, [filters.department]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
       const p = new URLSearchParams();
       if (filters.search) p.set("search", filters.search);
@@ -120,7 +361,10 @@ export default function TicketsView({
       if (filters.category !== "all") p.set("category", filters.category);
       if (filters.department !== "all") p.set("department", filters.department);
       p.set("page", String(filters.page));
-      p.set("limit", "15");
+      p.set(
+        "limit",
+        user.role === "employee" && employeeView === "kanban" ? "100" : "15",
+      );
       let items = await api(`/tickets?${p.toString()}`);
       if (preset === "approvals") {
         const APPR = [
@@ -138,15 +382,30 @@ export default function TicketsView({
       }
       setData(items);
     } catch (e) {
-      toast.error(e.message);
+      if (!silent) toast.error(e.message);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  }, [filters, preset]);
+  }, [filters, preset, user.role, employeeView]);
 
   useEffect(() => {
     load();
   }, [load, refresh]);
+
+  useEffect(() => {
+    if (user.role !== "employee") return undefined;
+    const refreshProgress = () => {
+      if (document.visibilityState === "visible") load({ silent: true });
+    };
+    const timer = window.setInterval(refreshProgress, 10000);
+    window.addEventListener("focus", refreshProgress);
+    document.addEventListener("visibilitychange", refreshProgress);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshProgress);
+      document.removeEventListener("visibilitychange", refreshProgress);
+    };
+  }, [user.role, load]);
 
   return (
     <div className="space-y-4">
@@ -267,6 +526,40 @@ export default function TicketsView({
           </Select>
         </div>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+          {user.role === "employee" && (
+            <div
+              className="flex rounded-lg border border-[#DDE2EA] bg-[#F3F5F8] p-1"
+              role="group"
+              aria-label="Ticket view"
+            >
+              <button
+                type="button"
+                onClick={() => setEmployeeView("kanban")}
+                className={`inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-semibold transition ${
+                  employeeView === "kanban"
+                    ? "bg-white text-[#A520B8] shadow-sm"
+                    : "text-[#69738B]"
+                }`}
+                aria-pressed={employeeView === "kanban"}
+              >
+                <LayoutGrid className="h-3.5 w-3.5" />
+                Kanban
+              </button>
+              <button
+                type="button"
+                onClick={() => setEmployeeView("list")}
+                className={`inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-semibold transition ${
+                  employeeView === "list"
+                    ? "bg-white text-[#A520B8] shadow-sm"
+                    : "text-[#69738B]"
+                }`}
+                aria-pressed={employeeView === "list"}
+              >
+                <List className="h-3.5 w-3.5" />
+                List
+              </button>
+            </div>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -297,6 +590,15 @@ export default function TicketsView({
         </div>
       </div>
 
+      {user.role === "employee" && employeeView === "kanban" && (
+        <EmployeeKanban
+          tickets={data.items}
+          loading={loading}
+          onOpenTicket={onOpenTicket}
+        />
+      )}
+
+      {(user.role !== "employee" || employeeView === "list") && (
       <Card>
         <Table className="min-w-[900px]">
           <TableHeader className="sticky top-0 bg-card z-10">
@@ -391,6 +693,7 @@ export default function TicketsView({
           </TableBody>
         </Table>
       </Card>
+      )}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">{data.total} tickets</p>
@@ -470,6 +773,7 @@ export function RaiseTicket({ user, onCreated }) {
     priority: "Medium",
     location: "Tulip - Ground Floor",
     raised_for_name: "",
+    raised_for_id: "",
     employee_id: "",
     email: "",
     assignee_id: "",
@@ -514,7 +818,17 @@ export function RaiseTicket({ user, onCreated }) {
       toast.success(`Raised ${t.human_id}`);
       setOpen(false);
       setAttachments([]);
-      setF({ ...f, title: "", description: "", category: "" });
+      setF((current) => ({
+        ...current,
+        title: "",
+        description: "",
+        category: "",
+        raised_for_id: "",
+        raised_for_name: "",
+        employee_id: "",
+        email: "",
+        assignee_id: "",
+      }));
       onCreated();
     } catch (e) {
       toast.error(e.message);
@@ -570,6 +884,9 @@ export function RaiseTicket({ user, onCreated }) {
       );
   const selectedMember = availableMembers.find(
     (member) => member.id === f.assignee_id,
+  );
+  const hasAffectedEmployee = Boolean(
+    f.raised_for_name.trim() || f.email.trim() || f.employee_id.trim(),
   );
 
   return (
@@ -722,7 +1039,72 @@ export function RaiseTicket({ user, onCreated }) {
               placeholder="Describe the issue"
             />
           </div>
-          {["employee", "it", "admin"].includes(user.role) && (
+          {user.role !== "employee" && (
+            <div className="rounded-xl border border-[#DDE7E3] bg-gradient-to-r from-[#F7FBF9] to-white p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <Label className="text-sm font-semibold">
+                    Affected employee
+                    <span className="ml-1 font-medium text-[#9CA3AF]">
+                      (optional)
+                    </span>
+                  </Label>
+                  <p className="mt-1 text-xs leading-5 text-[#697087]">
+                    Enter the employee details manually. If the email or GRP
+                    code matches a registered employee, the ticket will also
+                    appear on their dashboard.
+                  </p>
+                </div>
+                <span
+                  className={`w-fit rounded-full px-2.5 py-1 text-[10px] font-semibold ${hasAffectedEmployee ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}
+                >
+                  {hasAffectedEmployee
+                    ? "Affected employee recorded"
+                    : "Internal · auto-close"}
+                </span>
+              </div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <div>
+                  <Label className="text-xs">Employee name</Label>
+                  <Input
+                    className="mt-1 h-11 bg-white"
+                    value={f.raised_for_name}
+                    onChange={(event) =>
+                      setF({ ...f, raised_for_name: event.target.value, raised_for_id: "" })
+                    }
+                    placeholder="Full name"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Company email</Label>
+                  <Input
+                    type="email"
+                    className="mt-1 h-11 bg-white"
+                    value={f.email}
+                    onChange={(event) =>
+                      setF({ ...f, email: event.target.value, raised_for_id: "" })
+                    }
+                    placeholder="employee@ethara.ai"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">GRP code</Label>
+                  <Input
+                    className="mt-1 h-11 bg-white"
+                    value={f.employee_id}
+                    onChange={(event) =>
+                      setF({ ...f, employee_id: event.target.value, raised_for_id: "" })
+                    }
+                    placeholder="GRP-0000"
+                  />
+                </div>
+              </div>
+              <p className="mt-2 text-[10px] text-[#9CA3AF]">
+                Leave all three fields blank for an internal team ticket.
+              </p>
+            </div>
+          )}
+          {["employee", "it", "admin", "super_admin"].includes(user.role) && (
             <div
               className={`grid gap-3 ${user.role === "employee" ? "" : "sm:grid-cols-2"}`}
             >

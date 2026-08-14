@@ -138,6 +138,9 @@ code {
   .dashboard-view-enter { animation: dashboard-view-enter 280ms cubic-bezier(.2, .8, .2, 1) both; }
   .dashboard-mobile-backdrop { animation: dashboard-fade-in 180ms ease-out both; }
   .dashboard-mobile-sidebar { animation: dashboard-slide-in 240ms cubic-bezier(.2, .8, .2, 1) both; }
+  .notification-arrival { animation: notification-arrival 320ms cubic-bezier(.2, .8, .2, 1) both; }
+  .notification-bell-active { animation: notification-bell-pulse 2.8s ease-in-out infinite; }
+  .notification-live-dot { animation: notification-live-pulse 1.8s ease-out infinite; }
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -162,6 +165,21 @@ code {
   to { opacity: 1; transform: translateX(0); }
 }
 
+@keyframes notification-arrival {
+  from { opacity: 0; transform: translateY(-5px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes notification-bell-pulse {
+  0%, 72%, 100% { box-shadow: 0 0 0 0 rgba(238, 0, 238, 0); }
+  82% { box-shadow: 0 0 0 5px rgba(238, 0, 238, .08); }
+}
+
+@keyframes notification-live-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, .45); }
+  70%, 100% { box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .brand-emblem,
   .brand-emblem-frame,
@@ -171,7 +189,10 @@ code {
   }
   .dashboard-view-enter,
   .dashboard-mobile-backdrop,
-  .dashboard-mobile-sidebar {
+  .dashboard-mobile-sidebar,
+  .notification-arrival,
+  .notification-bell-active,
+  .notification-live-dot {
     animation: none !important;
   }
   .dashboard-nav-item,
