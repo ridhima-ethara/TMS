@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   PRIORITIES,
@@ -52,6 +52,7 @@ import {
   Check,
   Clock3,
   Download,
+  GripVertical,
   Inbox,
   Plus,
   Search,
@@ -841,6 +842,10 @@ export function AgentTickets({ user, onOpenTicket }) {
   const [category, setCategory] = useState("all");
   const [quick, setQuick] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [draggedTicketId, setDraggedTicketId] = useState(null);
+  const [dragOverColumn, setDragOverColumn] = useState(null);
+  const [movingTicketId, setMovingTicketId] = useState(null);
+  const dragClickGuardRef = useRef(null);
   const load = () => {
     setLoading(true);
     api(
@@ -952,6 +957,70 @@ export function AgentTickets({ user, onOpenTicket }) {
       matches: (ticket) => DONE.includes(ticket.status),
     },
   ];
+  const canDragTicket = (ticket) =>
+    !DONE.includes(ticket.status) &&
+    (!ticket.assignee_id ||
+      ticket.assignee_id === user.id ||
+      user.is_team_head);
+  const movePayload = (ticket, columnKey) => {
+    const assigneeId = ticket.assignee_id || user.id;
+    if (columnKey === "new") return { assignee_id: null };
+    if (columnKey === "acknowledged")
+      return { assignee_id: assigneeId, status: "Acknowledged" };
+    if (columnKey === "progress")
+      return { assignee_id: assigneeId, status: "In Progress" };
+    if (columnKey === "waiting")
+      return { assignee_id: assigneeId, status: "Pending User Response" };
+    if (columnKey === "done")
+      return {
+        assignee_id: assigneeId,
+        resolution: {
+          summary: "Resolved through the Kanban workflow",
+          action_taken: "Ticket moved to the resolved stage by the assigned agent",
+          root_cause: "",
+        },
+      };
+    return null;
+  };
+  const finishDragging = () => {
+    setDraggedTicketId(null);
+    setDragOverColumn(null);
+    window.setTimeout(() => {
+      dragClickGuardRef.current = null;
+    }, 0);
+  };
+  const dropTicket = async (event, column) => {
+    event.preventDefault();
+    const ticketId =
+      event.dataTransfer.getData("application/x-ticket-id") ||
+      event.dataTransfer.getData("text/plain") ||
+      draggedTicketId;
+    const ticket = tickets.find((item) => item.id === ticketId);
+    finishDragging();
+    if (!ticket || movingTicketId) return;
+    if (!canDragTicket(ticket)) {
+      toast.error("You can only move unallocated tickets or tickets assigned to you");
+      return;
+    }
+    const currentColumn = kanbanColumns.find((item) => item.matches(ticket));
+    if (currentColumn?.key === column.key) return;
+    const payload = movePayload(ticket, column.key);
+    if (!payload) return;
+    setMovingTicketId(ticket.id);
+    try {
+      await api(`/tickets/${ticket.id}`, {
+        method: "PATCH",
+        body: payload,
+      });
+      toast.success(`${ticket.human_id} moved to ${column.label}`);
+      handleTicketUpdated({ returnedToTeam: column.key === "new" });
+    } catch (error) {
+      toast.error(error.message);
+      load();
+    } finally {
+      setMovingTicketId(null);
+    }
+  };
   return (
     <div className="space-y-4 text-[#111827]">
       <div className="flex flex-wrap items-center gap-2">
@@ -1037,6 +1106,11 @@ export function AgentTickets({ user, onOpenTicket }) {
         </Button>
         <RaiseTicket user={user} onCreated={load} />
       </div>
+      <p className="flex items-center gap-1.5 text-xs text-[#7B8495]">
+        <GripVertical className="h-3.5 w-3.5" />
+        Drag an eligible ticket card between columns to update its workflow
+        stage. The action menu remains available for keyboard and mobile use.
+      </p>
       <Card className="overflow-hidden border-[#E5E9EF] bg-[#F7F8FA] shadow-none">
         {loading ? (
           <div className="py-20 text-center text-sm text-[#9CA3AF]">
@@ -1048,7 +1122,26 @@ export function AgentTickets({ user, onOpenTicket }) {
               {kanbanColumns.map((column) => {
                 const rows = filtered.filter(column.matches);
                 return (
-                  <section key={column.key} className="w-[300px] shrink-0">
+                  <section
+                    key={column.key}
+                    onDragOver={(event) => {
+                      if (!draggedTicketId) return;
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                      if (dragOverColumn !== column.key)
+                        setDragOverColumn(column.key);
+                    }}
+                    onDragLeave={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget))
+                        setDragOverColumn(null);
+                    }}
+                    onDrop={(event) => dropTicket(event, column)}
+                    className={`w-[300px] shrink-0 rounded-2xl p-1 transition-all ${
+                      dragOverColumn === column.key
+                        ? "bg-fuchsia-50 ring-2 ring-[#ED00ED]/45"
+                        : ""
+                    }`}
+                  >
                     <div
                       className={`mb-3 flex items-center rounded-xl border border-white px-3 py-3 shadow-sm ${column.soft}`}
                     >
@@ -1061,15 +1154,54 @@ export function AgentTickets({ user, onOpenTicket }) {
                         {rows.length}
                       </span>
                     </div>
-                    <div className="space-y-3">
+                    <div className="min-h-44 space-y-3 rounded-xl">
                       {rows.map((ticket) => {
                         const sla = slaRemaining(ticket.sla_resolution_due);
                         const done = DONE.includes(ticket.status);
+                        const draggable = canDragTicket(ticket);
                         return (
                           <Card
                             key={ticket.id}
-                            className={`group cursor-pointer overflow-hidden border-[#E5E9EF] p-0 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${sla.breach && !done ? "border-l-[3px] border-l-[#DC3D3D]" : ""}`}
-                            onClick={() => onOpenTicket(ticket.id)}
+                            draggable={draggable && movingTicketId !== ticket.id}
+                            onDragStart={(event) => {
+                              if (!draggable) {
+                                event.preventDefault();
+                                return;
+                              }
+                              dragClickGuardRef.current = ticket.id;
+                              setDraggedTicketId(ticket.id);
+                              event.dataTransfer.effectAllowed = "move";
+                              event.dataTransfer.setData(
+                                "application/x-ticket-id",
+                                ticket.id,
+                              );
+                              event.dataTransfer.setData("text/plain", ticket.id);
+                            }}
+                            onDragEnd={finishDragging}
+                            className={`group overflow-hidden border-[#E5E9EF] p-0 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${
+                              draggable
+                                ? "cursor-grab active:cursor-grabbing"
+                                : "cursor-pointer"
+                            } ${
+                              draggedTicketId === ticket.id
+                                ? "scale-[.98] opacity-40 ring-2 ring-[#ED00ED]/30"
+                                : ""
+                            } ${
+                              movingTicketId === ticket.id
+                                ? "pointer-events-none opacity-55"
+                                : ""
+                            } ${sla.breach && !done ? "border-l-[3px] border-l-[#DC3D3D]" : ""}`}
+                            onClick={() => {
+                              if (dragClickGuardRef.current === ticket.id) return;
+                              onOpenTicket(ticket.id);
+                            }}
+                            title={
+                              draggable
+                                ? "Drag to another workflow stage"
+                                : done
+                                  ? "Completed tickets cannot be moved"
+                                  : "Only the assigned member or team head can move this ticket"
+                            }
                           >
                             <div
                               className={`flex items-start gap-3 border-b px-4 py-3 ${
@@ -1113,6 +1245,12 @@ export function AgentTickets({ user, onOpenTicket }) {
                                 <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[9.5px] font-bold text-[#2E7CD6] shadow-sm">
                                   Mine
                                 </span>
+                              )}
+                              {draggable && (
+                                <GripVertical
+                                  className="h-4 w-4 shrink-0 text-[#9CA3AF]"
+                                  aria-hidden="true"
+                                />
                               )}
                             </div>
                             <div className="p-4">
