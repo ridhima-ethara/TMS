@@ -834,7 +834,7 @@ function TicketActionMenu({ ticket, done, user, onOpenTicket, onUpdated }) {
 
 export function AgentTickets({ user, onOpenTicket }) {
   const meta = roleMeta(user);
-  const [scope, setScope] = useState("team");
+  const [scope, setScope] = useState("mine");
   const [tickets, setTickets] = useState([]);
   const [search, setSearch] = useState("");
   const [priority, setPriority] = useState("all");

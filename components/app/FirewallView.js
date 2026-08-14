@@ -168,6 +168,36 @@ function formatUsageRangeTimestamp(value) {
   });
 }
 
+function firewallEventTimestamp(row) {
+  const raw =
+    row?.eventtime ??
+    row?.timestamp ??
+    row?.datetime ??
+    row?.time_stamp ??
+    null;
+  if (raw !== null && raw !== "") {
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      const value =
+        numeric > 1e15
+          ? numeric / 1e6
+          : numeric > 1e12
+            ? numeric
+            : numeric * 1000;
+      const timestamp = new Date(value);
+      if (!Number.isNaN(timestamp.getTime())) return timestamp;
+    }
+    const timestamp = new Date(raw);
+    if (!Number.isNaN(timestamp.getTime())) return timestamp;
+  }
+  if (row?.date) {
+    const combined = `${row.date}T${row.time || "00:00:00"}+05:30`;
+    const timestamp = new Date(combined);
+    if (!Number.isNaN(timestamp.getTime())) return timestamp;
+  }
+  return null;
+}
+
 function EmptyPanel({ title, configured }) {
   return (
     <div className="rounded-xl border border-dashed border-[#D9DEE5] bg-[#FAFBFC] px-5 py-12 text-center">
@@ -356,12 +386,12 @@ function ConnectedDevicesPanel({
     setBandwidthError("");
     setPeriodLogs(null);
     const controller = new AbortController();
-    api(`/firewall/report?${queryString}&firewall=${firewall}`, {
+    api(`/firewall/bandwidth?${queryString}&firewall=${firewall}`, {
       signal: controller.signal,
-      timeout: 60000,
+      timeout: 30000,
     })
       .then((report) => {
-        setPeriodLogs(report.records || []);
+        setPeriodLogs(report.clients || []);
         setBandwidthMeta({ period: report.period, summary: report.summary });
       })
       .catch((error) => {
@@ -459,7 +489,9 @@ function ConnectedDevicesPanel({
       color: CHART_COLORS[index % CHART_COLORS.length],
     }))
     .sort((a, b) => b.count - a.count);
-  const effectiveBandwidthLogs = periodLogs ?? logs;
+  // Never mix the small live-memory sample into a selected archive period;
+  // it creates convincing but materially incomplete bandwidth totals.
+  const effectiveBandwidthLogs = periodLogs || EMPTY_FIREWALL_ROWS;
   const normalizedNetworkIdentifier = (value) =>
     String(value || "").trim().toLowerCase();
   const normalizedMacIdentifier = (value) => {
@@ -578,7 +610,7 @@ function ConnectedDevicesPanel({
       client.total += bytes;
       client.received += received;
       client.sent += sent;
-      client.sessions += 1;
+      client.sessions += numberFrom(row, ["traffic_records"], 1);
       client.applications[application] =
         (client.applications[application] || 0) + bytes;
       return summary;
@@ -622,8 +654,6 @@ function ConnectedDevicesPanel({
         sent: traffic.sent,
         sessions: traffic.sessions,
         applications: traffic.applications,
-        receivedMb: Number((traffic.received / 1024 ** 2).toFixed(2)),
-        sentMb: Number((traffic.sent / 1024 ** 2).toFixed(2)),
       };
     })
     .sort((a, b) => b.total - a.total);
@@ -825,6 +855,16 @@ function ConnectedDevicesPanel({
                   {formatUsageRangeTimestamp(bandwidthMeta.period?.end)} IST
                 </span>
                 <span>Firewall: {firewall.toUpperCase()}</span>
+                {bandwidthMeta.summary?.data_end && (
+                  <span>
+                    Latest archived activity: {formatUsageRangeTimestamp(bandwidthMeta.summary.data_end)} IST
+                  </span>
+                )}
+                {bandwidthMeta.summary?.captured_at && (
+                  <span>
+                    Refreshed: {formatUsageRangeTimestamp(bandwidthMeta.summary.captured_at)} IST
+                  </span>
+                )}
                 {bandwidthMeta.summary?.record_limit_reached && (
                   <span className="font-semibold text-[#B45309]">
                     API row limit reached; displayed usage may be partial.
@@ -879,22 +919,26 @@ function ConnectedDevicesPanel({
                     strokeDasharray="3 3"
                     horizontal={false}
                   />
-                  <XAxis type="number" tick={{ fontSize: 10 }} unit=" MB" />
+                  <XAxis
+                    type="number"
+                    tick={{ fontSize: 10 }}
+                    tickFormatter={(bytes) => formatBytes(bytes)}
+                  />
                   <YAxis
                     type="category"
                     dataKey="name"
                     width={120}
                     tick={{ fontSize: 10 }}
                   />
-                  <Tooltip />
+                  <Tooltip formatter={(bytes, name) => [formatBytes(bytes), name]} />
                   <Bar
-                    dataKey="receivedMb"
+                    dataKey="received"
                     name="Downloaded"
                     stackId="bandwidth"
                     fill="#4F6EF7"
                   />
                   <Bar
-                    dataKey="sentMb"
+                    dataKey="sent"
                     name="Uploaded"
                     stackId="bandwidth"
                     fill="#0D9C6F"
@@ -1282,22 +1326,61 @@ function ConnectedDevicesPanel({
   );
 }
 
+function friendlyFirewallApplicationName(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return raw;
+  const matchers = [
+    [/whats[._ -]?app/i, "WhatsApp"],
+    [/instagram/i, "Instagram"],
+    [/youtube/i, "YouTube"],
+    [/google[._ -]?search/i, "Google Search"],
+    [/google[._ -]?accounts?/i, "Google Accounts"],
+    [/facebook/i, "Facebook"],
+  ];
+  return matchers.find(([pattern]) => pattern.test(raw))?.[1] || raw;
+}
+
 function identifiedApplication(row) {
   const explicit = textFrom(row, ["app", "application", "appname"], "");
-  if (explicit) return { name: explicit, confidence: "identified" };
-  const service = textFrom(row, ["service"], "Unknown service");
-  return { name: service, confidence: "protocol" };
+  const explicitlyIdentified =
+    row.application_identified === true ||
+    row.application_source === "fortigate_application_control" ||
+    (row.application_identified === undefined && Boolean(row.app || row.appname));
+  if (explicit && explicitlyIdentified)
+    return {
+      name: friendlyFirewallApplicationName(explicit),
+      rawName: explicit,
+      confidence: "identified",
+    };
+  const service = textFrom(
+    row,
+    ["service", "application"],
+    "Unknown service",
+  );
+  return { name: service, rawName: service, confidence: "protocol" };
 }
 
 function UserActivityExplorer({ logs, devices, firewall }) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(null);
   const [page, setPage] = useState(1);
+  const detailRef = useRef(null);
   const pageSize = 10;
-  const deviceRows = listFrom(devices);
-  const byIp = Object.fromEntries(deviceRows.filter((row) => row.ipv4_address).map((row) => [row.ipv4_address, row]));
-  const byMac = Object.fromEntries(deviceRows.flatMap((row) => [row.mac, row.master_mac].filter(Boolean).map((mac) => [firewallMacKey(mac), row])));
-  const activity = Object.values(logs.reduce((summary, row) => {
+  const activity = useMemo(() => {
+    const deviceRows = listFrom(devices);
+    const byIp = Object.fromEntries(
+      deviceRows
+        .filter((row) => row.ipv4_address)
+        .map((row) => [row.ipv4_address, row]),
+    );
+    const byMac = Object.fromEntries(
+      deviceRows.flatMap((row) =>
+        [row.mac, row.master_mac]
+          .filter(Boolean)
+          .map((mac) => [firewallMacKey(mac), row]),
+      ),
+    );
+    return Object.values(logs.reduce((summary, row) => {
     const ip = textFrom(row, ["srcip", "source_ip", "ip"], "Unknown IP");
     const mac = textFrom(
       row,
@@ -1380,7 +1463,26 @@ function UserActivityExplorer({ logs, devices, firewall }) {
     policies: [...item.policies],
     records: item.records.sort((a, b) => b.time.localeCompare(a.time)),
   })).sort((a, b) => b.total - a.total);
-  const filtered = activity.filter((item) => [item.member, item.employeeCode, item.email, item.hostname, item.ip, item.mac, item.os, ...item.applications.map((app) => app.name)].join(" ").toLowerCase().includes(query.trim().toLowerCase()));
+  }, [devices, logs]);
+  const filtered = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return activity;
+    return activity.filter((item) =>
+      [
+        item.member,
+        item.employeeCode,
+        item.email,
+        item.hostname,
+        item.ip,
+        item.mac,
+        item.os,
+        ...item.applications.map((app) => app.name),
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedQuery),
+    );
+  }, [activity, query]);
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, pageCount);
   const pageRows = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
@@ -1388,6 +1490,13 @@ function UserActivityExplorer({ logs, devices, firewall }) {
     setPage(1);
   }, [query, logs.length, firewall]);
   const detail = activity.find((item) => item.key === selected);
+  useEffect(() => {
+    if (!detail) return;
+    const frame = window.requestAnimationFrame(() =>
+      detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
+    return () => window.cancelAnimationFrame(frame);
+  }, [detail]);
   return <section className="order-4 overflow-hidden rounded-2xl border border-[#D7DDF0] bg-white shadow-sm">
     <div className="flex flex-wrap items-center gap-3 border-b border-[#E5E9EF] px-5 py-4">
       <div className="mr-auto"><h3 className="text-lg font-bold">User and system utilization</h3><p className="text-xs text-[#8B93A1]">Member identity, endpoint, applications/protocols, destinations and policy activity from {firewall.toUpperCase()} traffic logs.</p></div>
@@ -1402,24 +1511,31 @@ function UserActivityExplorer({ logs, devices, firewall }) {
     </div>
     {filtered.length > 0 && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#E5E9EF] bg-[#FAFBFC] px-5 py-3"><p className="text-xs text-[#69738B]">Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filtered.length)} of {filtered.length} systems</p><div className="flex items-center gap-2"><Button variant="outline" size="sm" disabled={currentPage === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>Previous</Button><span className="min-w-20 text-center text-xs font-semibold">Page {currentPage} of {pageCount}</span><Button variant="outline" size="sm" disabled={currentPage === pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>Next</Button></div></div>}
     {!filtered.length && <p className="p-8 text-center text-sm text-[#69738B]">No matching user or system activity found.</p>}
-    {detail && <div className="border-t-2 border-[#D7DDF0] bg-[#F8F9FC] p-4 sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h4 className="text-lg font-bold">Activity details · {detail.member}</h4><p className="text-xs text-[#69738B]">{detail.hostname} · {detail.ip} · {detail.mac || "No MAC"}</p></div><Button variant="outline" size="sm" onClick={() => setSelected(null)}>Close</Button></div><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{[["Applications/protocols", detail.applications.length], ["Unique destinations", detail.destinations.length], ["Countries", detail.countries.length], ["Policies matched", detail.policies.length]].map(([label, metric]) => <div key={label} className="rounded-lg border bg-white p-3"><p className="text-[10px] uppercase text-[#8B93A1]">{label}</p><b className="text-xl">{metric}</b></div>)}</div><div className="mt-4 overflow-x-auto rounded-xl border bg-white"><table className="w-full min-w-[950px] text-left text-xs"><thead className="bg-[#F3F5F8] uppercase text-[#8B93A1]"><tr><th className="px-3 py-2">Time</th><th className="px-3 py-2">Application / service</th><th className="px-3 py-2">Destination</th><th className="px-3 py-2">Country</th><th className="px-3 py-2">Action</th><th className="px-3 py-2">Policy</th><th className="px-3 py-2 text-right">Duration</th><th className="px-3 py-2 text-right">Traffic</th></tr></thead><tbody>{detail.records.slice(0, 100).map((record, index) => <tr key={`${record.time}-${record.destination}-${index}`} className="border-t"><td className="whitespace-nowrap px-3 py-2">{record.time}</td><td className="px-3 py-2"><b>{record.application}</b><p className="text-[10px] text-[#8B93A1]">{record.confidence === "identified" ? "Firewall-identified app" : `Protocol/service · ${record.service}`}</p></td><td className="px-3 py-2 font-mono">{record.destination}:{record.port}</td><td className="px-3 py-2">{record.country}</td><td className="px-3 py-2">{record.action}</td><td className="px-3 py-2">{record.policy}</td><td className="px-3 py-2 text-right">{record.duration}s</td><td className="px-3 py-2 text-right font-semibold">{formatBytes(record.bytes)}</td></tr>)}</tbody></table></div><p className="mt-3 text-[11px] text-[#8B93A1]">Shows network metadata exposed by the firewall. Encrypted page contents, typed text and private message contents are not visible.</p></div>}
+    {detail && <div ref={detailRef} tabIndex={-1} className="scroll-mt-24 border-t-2 border-[#D7DDF0] bg-[#F8F9FC] p-4 outline-none sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h4 className="text-lg font-bold">Activity details · {detail.member}</h4><p className="text-xs text-[#69738B]">{detail.hostname} · {detail.ip} · {detail.mac || "No MAC"}</p></div><Button variant="outline" size="sm" onClick={() => setSelected(null)}>Close</Button></div><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{[["Applications/protocols", detail.applications.length], ["Unique destinations", detail.destinations.length], ["Countries", detail.countries.length], ["Policies matched", detail.policies.length]].map(([label, metric]) => <div key={label} className="rounded-lg border bg-white p-3"><p className="text-[10px] uppercase text-[#8B93A1]">{label}</p><b className="text-xl">{metric}</b></div>)}</div><div className="mt-4 overflow-x-auto rounded-xl border bg-white"><table className="w-full min-w-[950px] text-left text-xs"><thead className="bg-[#F3F5F8] uppercase text-[#8B93A1]"><tr><th className="px-3 py-2">Time</th><th className="px-3 py-2">Application / service</th><th className="px-3 py-2">Destination</th><th className="px-3 py-2">Country</th><th className="px-3 py-2">Action</th><th className="px-3 py-2">Policy</th><th className="px-3 py-2 text-right">Duration</th><th className="px-3 py-2 text-right">Traffic</th></tr></thead><tbody>{detail.records.slice(0, 100).map((record, index) => <tr key={`${record.time}-${record.destination}-${index}`} className="border-t"><td className="whitespace-nowrap px-3 py-2">{record.time}</td><td className="px-3 py-2"><b>{record.application}</b><p className="text-[10px] text-[#8B93A1]">{record.confidence === "identified" ? "Firewall-identified app" : `Protocol/service · ${record.service}`}</p></td><td className="px-3 py-2 font-mono">{record.destination}:{record.port}</td><td className="px-3 py-2">{record.country}</td><td className="px-3 py-2">{record.action}</td><td className="px-3 py-2">{record.policy}</td><td className="px-3 py-2 text-right">{record.duration}s</td><td className="px-3 py-2 text-right font-semibold">{formatBytes(record.bytes)}</td></tr>)}</tbody></table></div><p className="mt-3 text-[11px] text-[#8B93A1]">Shows network metadata exposed by the firewall. Encrypted page contents, typed text and private message contents are not visible.</p></div>}
   </section>;
 }
 
-function ApplicationUsagePanel({ value, devices, firewall }) {
+function ApplicationUsagePanel({
+  value,
+  devices,
+  firewall,
+  inspection,
+  loading = false,
+  policyCoverage,
+  reportSummary,
+  reportPeriod,
+}) {
   const logs = listFrom(value);
-  const applications = Object.values(
+  const usageEntries = Object.values(
     logs.reduce((summary, row) => {
-      const name = textFrom(
-        row,
-        ["app", "application", "appname", "service"],
-        "Other traffic",
-      );
+      const identified = identifiedApplication(row);
+      const name = identified.name;
       const category = textFrom(
         row,
         ["appcat", "category", "service"],
         "Unclassified",
       );
+      const risk = textFrom(row, ["apprisk", "application_risk"], "Unknown");
       const received = numberFrom(row, [
         "rcvdbyte",
         "received_bytes",
@@ -1436,11 +1552,16 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
         summary[name] = {
           name,
           category,
+          risk,
+          identified: false,
           sessions: 0,
           received: 0,
           sent: 0,
           total: 0,
         };
+      summary[name].identified ||= identified.confidence === "identified";
+      if (summary[name].risk === "Unknown" && risk !== "Unknown")
+        summary[name].risk = risk;
       summary[name].sessions += 1;
       summary[name].received += received;
       summary[name].sent += sent;
@@ -1448,11 +1569,36 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
       return summary;
     }, {}),
   ).sort((a, b) => b.total - a.total || b.sessions - a.sessions);
-  if (!applications.length)
+  if (!usageEntries.length && loading)
+    return (
+      <div className="overflow-hidden rounded-2xl border border-[#DDE2EA] bg-white p-6 shadow-sm">
+        <div className="flex items-center gap-3">
+          <RefreshCw className="h-5 w-5 animate-spin text-[#4A5FE8]" />
+          <div>
+            <p className="font-semibold">Loading application usage</p>
+            <p className="text-xs text-[#8B93A1]">
+              Reading current traffic and the verified pre-downtime fallback…
+            </p>
+          </div>
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {[0, 1, 2, 3].map((item) => (
+            <div key={item} className="h-24 animate-pulse rounded-xl bg-[#F0F2F7]" />
+          ))}
+        </div>
+      </div>
+    );
+  if (!usageEntries.length)
     return <EmptyPanel title="Application usage" configured />;
-  const totalTraffic = applications.reduce((sum, app) => sum + app.total, 0);
+  const applications = usageEntries.filter((entry) => entry.identified);
+  const networkServices = usageEntries.filter((entry) => !entry.identified);
+  const totalTraffic = usageEntries.reduce((sum, entry) => sum + entry.total, 0);
+  const identifiedTraffic = applications.reduce(
+    (sum, application) => sum + application.total,
+    0,
+  );
   const categories = Object.values(
-    applications.reduce((summary, app) => {
+    usageEntries.reduce((summary, app) => {
       if (!summary[app.category])
         summary[app.category] = { name: app.category, value: 0 };
       summary[app.category].value += app.total;
@@ -1508,16 +1654,14 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
   );
   const consumers = Object.values(
     logs.reduce((summary, row) => {
-      const application = textFrom(
-        row,
-        ["app", "application", "appname", "service"],
-        "Other traffic",
-      );
+      const detection = identifiedApplication(row);
+      const application = detection.name;
       const ip = textFrom(row, ["srcip", "source_ip", "ip"], "Unknown IP");
       const key = `${application}|${ip}`;
       if (!summary[key])
         summary[key] = {
           application,
+          identified: detection.confidence === "identified",
           ip,
           device: row.asset_user_name
             ? `${row.asset_user_name} · ${row.srcname || row.source_name || row.devtype || row.source_device_type || "system"}`
@@ -1531,6 +1675,9 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
     }, {}),
   )
     .sort((a, b) => b.total - a.total)
+    .filter((consumer) =>
+      applications.length ? consumer.identified : !consumer.identified,
+    )
     .filter(
       (consumer, index, all) =>
         all.findIndex((item) => item.application === consumer.application) ===
@@ -1542,31 +1689,159 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
     .slice()
     .sort((a, b) => a.total - b.total)
     .slice(0, 12);
+  const smallerServices = networkServices
+    .filter((service) => service.total > 0)
+    .slice()
+    .sort((a, b) => a.total - b.total)
+    .slice(0, 12);
   const applicationInventory = applications
     .slice()
     .sort((a, b) => a.name.localeCompare(b.name));
-  const specificallyIdentified = applications.filter(
-    (app) =>
-      !/^(http|https|ssl|quic|tcp\/\d+|udp\/\d+|unclassified|other traffic)$/i.test(
-        app.name,
-      ),
-  );
-  const genericSessions = applications
-    .filter((app) =>
-      /^(http|https|ssl|quic|tcp\/\d+|udp\/\d+|unclassified)$/i.test(app.name),
-    )
-    .reduce((sum, app) => sum + app.sessions, 0);
+  const serviceInventory = networkServices
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const primaryEntries = applications.length ? applications : networkServices;
+  const inventoryEntries = applications.length
+    ? applicationInventory
+    : serviceInventory;
+  const smallerEntries = applications.length
+    ? smallerApplications
+    : smallerServices;
+  const topApplication = primaryEntries[0];
   const identifiedDevices = new Set(
     logs
       .map((row) => row.srcip || row.source_ip || row.srcmac || row.source_mac)
       .filter(Boolean),
   ).size;
+  const activePolicyCount = Number(policyCoverage?.active || 0);
+  const applicationControlPolicyCount = Number(
+    policyCoverage?.configured || 0,
+  );
+  const hasPolicyCoverage = Boolean(policyCoverage);
+  const displayedPeriod =
+    reportPeriod?.start || reportPeriod?.end
+      ? `${formatUsageRangeTimestamp(reportPeriod?.start)} → ${formatUsageRangeTimestamp(reportPeriod?.end)} IST`
+      : "selected reporting period";
+  const trafficScope = reportSummary?.archive_fallback
+    ? "verified saved reporting period"
+    : "selected reporting period";
+  const applicationControlConfigured = applicationControlPolicyCount > 0;
+  const inspectionTitle =
+    inspection?.state === "identified"
+      ? "FortiGate Application Control data verified"
+      : inspection?.state === "unavailable"
+        ? "Application Control endpoint unavailable"
+        : hasPolicyCoverage && !applicationControlConfigured
+          ? "Application identification is not configured on active policies"
+          : "No Application Control detections in this period";
   return (
     <div className="flex flex-col gap-4">
+      {reportSummary?.archive_fallback && (
+        <div className="order-1 flex flex-wrap items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-900">
+          <FileText className="mt-0.5 h-4 w-4 shrink-0 text-blue-700" />
+          <div className="min-w-0 flex-1">
+            <b>Showing the latest verified saved firewall report</b>
+            <p className="mt-1 text-[11px] leading-5 text-blue-800/80">
+              {Number(reportSummary.records || 0).toLocaleString()}
+              {reportSummary.records_sampled
+                ? ` of ${Number(reportSummary.records_available || 0).toLocaleString()}`
+                : ""}{" "}
+              appliance-verified records from{" "}
+              {formatUsageRangeTimestamp(reportPeriod?.start)} →{" "}
+              {formatUsageRangeTimestamp(reportPeriod?.end)} IST. {reportSummary.fallback_reason}.
+              {reportSummary.archive_protected_before_downtime
+                ? " This report was protected before downtime."
+                : ""}
+            </p>
+          </div>
+          <Badge className="border border-blue-200 bg-white text-blue-700">
+            Saved data
+          </Badge>
+        </div>
+      )}
+      {inspection && (
+        <div
+          className={`order-1 rounded-xl border px-4 py-3 text-xs ${
+            inspection.state === "identified"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+              : inspection.state === "unavailable"
+                ? "border-red-200 bg-red-50 text-red-800"
+                : !applicationControlConfigured
+                  ? "border-blue-200 bg-blue-50 text-blue-900"
+                  : "border-amber-200 bg-amber-50 text-amber-900"
+          }`}
+        >
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <b>{inspectionTitle}</b>
+            {hasPolicyCoverage && (
+              <span className="rounded-full border border-current/15 bg-white/70 px-2.5 py-1 font-semibold">
+                {applicationControlPolicyCount.toLocaleString()} of{" "}
+                {activePolicyCount.toLocaleString()} active allow policies
+              </span>
+            )}
+            {inspection.state === "identified" && (
+              <>
+                <span>
+                  {Number(inspection.rows_in_period || 0).toLocaleString()} app
+                  events · {Number(inspection.unique_applications || 0).toLocaleString()} identified apps
+                </span>
+                <span>
+                  {Number(inspection.matched_traffic_records || 0).toLocaleString()} traffic records matched
+                </span>
+              </>
+            )}
+          </div>
+          <p className="mt-1 text-[11px] opacity-80">
+            {inspection.error
+              ? inspection.error
+              : inspection.state === "identified"
+                ? `Categories: ${(inspection.categories || []).join(", ") || "not supplied"} · Risks: ${(inspection.risks || []).join(", ") || "not supplied"}.`
+                : !applicationControlConfigured
+                  ? `Traffic logging is working and the ${trafficScope} still contains exact service/protocol, source, destination and bandwidth data. Exact application names require an Application Control profile on the relevant policy.`
+                  : `Traffic for the ${trafficScope} is still available as exact firewall service/protocol data. Those records are listed separately and are not counted as identified applications.`}
+          </p>
+          {inspection.state !== "identified" &&
+            inspection.retained_applications?.length > 0 && (
+              <details className="group mt-3 rounded-lg border border-current/10 bg-white/70">
+                <summary className="flex cursor-pointer list-none items-center gap-2 p-3 font-semibold">
+                  <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+                  Historical detections ·{" "}
+                  {formatUsageRangeTimestamp(inspection.retained_period?.start)} →{" "}
+                  {formatUsageRangeTimestamp(inspection.retained_period?.end)} IST
+                  <span className="ml-auto font-normal opacity-70">
+                    {inspection.retained_applications.length.toLocaleString()} apps
+                  </span>
+                </summary>
+                <div className="border-t border-current/10 p-3">
+                  <p className="text-[11px] opacity-75">
+                    These are historical firewall detections for reference only.
+                    They are not added to the displayed bandwidth totals.
+                  </p>
+                  <div className="mt-2 flex max-h-40 flex-wrap gap-2 overflow-y-auto">
+                    {inspection.retained_applications.map((app) => {
+                      const friendlyName = friendlyFirewallApplicationName(
+                        app.name,
+                      );
+                      return (
+                      <span
+                        key={app.name}
+                        title={`${friendlyName !== app.name ? `FortiGate signature ${app.name} · ` : ""}${app.category} · risk ${app.risk} · ${app.events} events · ${app.source_systems} source systems`}
+                        className={`rounded-md border px-2.5 py-1.5 text-[11px] font-semibold ${applicationTone(app.category, app.name)}`}
+                      >
+                        {friendlyName} · {Number(app.events).toLocaleString()}
+                      </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              </details>
+            )}
+        </div>
+      )}
       <div className="order-1 grid gap-px overflow-hidden rounded-2xl border border-[#DDE2EA] bg-[#DDE2EA] shadow-sm sm:grid-cols-2 lg:grid-cols-4">
         <div className="bg-white p-5">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
-            App traffic
+            Observed network traffic
           </p>
           <b className="mt-1 block text-xl">{formatBytes(totalTraffic)}</b>
           <span className="text-xs text-[#9CA3AF]">
@@ -1575,13 +1850,13 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
         </div>
         <div className="bg-white p-5">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
-            Top application
+            {applications.length ? "Top application" : "Top network service"}
           </p>
-          <b className="mt-1 block truncate text-xl">{applications[0]?.name}</b>
+          <b className="mt-1 block truncate text-xl">{topApplication?.name}</b>
           <span className="text-xs text-[#9CA3AF]">
-            {formatBytes(applications[0]?.total)} ·{" "}
+            {formatBytes(topApplication?.total)} ·{" "}
             {totalTraffic
-              ? Math.round((applications[0]?.total / totalTraffic) * 100)
+              ? Math.round((topApplication?.total / totalTraffic) * 100)
               : 0}
             % of traffic
           </span>
@@ -1597,11 +1872,21 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
         </div>
         <div className="bg-white p-5">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
-            Named apps
+            {applications.length
+              ? "Currently identified apps"
+              : "Application Control coverage"}
           </p>
-          <b className="mt-1 block text-xl">{specificallyIdentified.length}<span className="text-[13px] font-semibold text-[#98A0B5]"> / {applications.length}</span></b>
+          <b className="mt-1 block text-xl">
+            {applications.length
+              ? applications.length
+              : hasPolicyCoverage
+                ? `${applicationControlPolicyCount} / ${activePolicyCount}`
+                : "—"}
+          </b>
           <span className="text-xs text-[#9CA3AF]">
-            specifically identified applications
+            {applications.length
+              ? `${formatBytes(identifiedTraffic)} identified by Application Control`
+              : "active allow policies have an Application Control profile"}
           </span>
         </div>
       </div>
@@ -1610,35 +1895,65 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
       </div>
       <div className="order-6 overflow-hidden rounded-2xl border border-[#CCD5FF] bg-white shadow-sm">
         <div className="border-b border-[#E0E5FF] px-5 py-4">
-          <h3 className="text-lg font-bold">Application intelligence</h3>
+          <h3 className="text-lg font-bold">
+            {applications.length
+              ? "Application intelligence"
+              : "Current traffic and service intelligence"}
+          </h3>
           <p className="text-xs text-[#98A0B3]">
-            Application identification quality, device reach and long-tail usage
-            from live firewall records
+            Firewall classification coverage, observed traffic and source
+            systems for the {trafficScope}
           </p>
         </div>
         <div className="grid gap-px bg-[#E0E5FF] sm:grid-cols-2 lg:grid-cols-4">
-          {[
-            [
-              "Specifically identified",
-              specificallyIdentified.length,
-              "named applications beyond generic protocols",
-            ],
-            [
-              "Source devices observed",
-              identifiedDevices,
-              "devices represented in traffic logs",
-            ],
-            [
-              "Generic/encrypted records",
-              genericSessions.toLocaleString(),
-              "requires deeper Application Control classification",
-            ],
-            [
-              "Small applications tracked",
-              smallerApplications.length,
-              "lowest-volume consumers retained below",
-            ],
-          ].map(([label, metric, note]) => (
+          {(applications.length
+            ? [
+                [
+                  "Firewall identified",
+                  applications.length,
+                  "applications identified by the firewall",
+                ],
+                [
+                  "Source devices observed",
+                  identifiedDevices,
+                  "devices represented in traffic logs",
+                ],
+                [
+                  "Application traffic",
+                  formatBytes(identifiedTraffic),
+                  "traffic tied to firewall-identified applications",
+                ],
+                [
+                  "Network service labels",
+                  networkServices.length,
+                  "protocol/service entries kept separate from apps",
+                ],
+              ]
+            : [
+                [
+                  "Network service labels",
+                  networkServices.length,
+                  "exact service/protocol labels from traffic logs",
+                ],
+                [
+                  "Source systems observed",
+                  identifiedDevices,
+                  "systems represented in the displayed traffic",
+                ],
+                [
+                  "Observed service traffic",
+                  formatBytes(totalTraffic),
+                  "upload and download volume in this report",
+                ],
+                [
+                  "App Control policies",
+                  hasPolicyCoverage
+                    ? `${applicationControlPolicyCount} / ${activePolicyCount}`
+                    : "—",
+                  "configured active allow policies",
+                ],
+              ]
+          ).map(([label, metric, note]) => (
             <div key={label} className="bg-white p-4">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-[#7B86A4]">
                 {label}
@@ -1648,9 +1963,9 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
             </div>
           ))}
         </div>
-        {specificallyIdentified.length ? (
+        {applications.length ? (
           <div className="flex flex-wrap gap-2 p-5">
-            {specificallyIdentified.map((app) => (
+            {applications.map((app) => (
               <span
                 key={app.name}
                 className="rounded-lg border border-[#DDE3FF] bg-[#F5F7FF] px-3 py-2 text-xs font-semibold text-[#4F63BD]"
@@ -1661,9 +1976,10 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
           </div>
         ) : (
           <div className="p-5 text-sm text-[#69738B]">
-            The current traffic sample contains only generic protocol labels.
-            Enable or permit detailed Application Control logging to identify
-            exact external applications.
+            The displayed traffic contains service/protocol labels, not exact
+            application identities. Enable an Application Control profile on
+            the relevant firewall policies to classify external applications;
+            no application names are inferred or fabricated here.
           </div>
         )}
       </div>
@@ -1674,7 +1990,7 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
               Usage by hour
             </h3>
             <p className="text-xs text-[#9CA3AF]">
-              Observed application volume by hour · peak hour {peakRange}
+              Observed network volume by hour · peak hour {peakRange}
             </p>
           </div>
           <div className="px-5 py-5">
@@ -1768,15 +2084,18 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
         <div className="overflow-hidden rounded-2xl border border-[#DDE2EA] bg-white shadow-sm">
           <div className="border-b border-[#DDE2EA] px-5 py-4">
             <h3 className="text-lg font-bold">
-              Smaller bandwidth-consuming applications
+              {applications.length
+                ? "Smaller bandwidth-consuming applications"
+                : "Lower-volume network services"}
             </h3>
             <p className="text-xs text-[#98A0B3]">
-              Lowest-volume detected applications, retained for long-tail
-              visibility
+              {applications.length
+                ? "Lowest-volume firewall-identified applications"
+                : "Lowest-volume service/protocol labels in this traffic sample"}
             </p>
           </div>
           <div className="grid gap-x-6 px-5 py-4 sm:grid-cols-2">
-            {smallerApplications.map((app, index) => (
+            {smallerEntries.map((app, index) => (
               <div
                 key={app.name}
                 className="flex items-center gap-3 border-b border-[#EDF0F4] py-3"
@@ -1805,14 +2124,20 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
         </div>
         <div className="overflow-hidden rounded-2xl border border-[#DDE2EA] bg-white shadow-sm">
           <div className="border-b border-[#DDE2EA] px-5 py-4">
-            <h3 className="text-lg font-bold">All detected applications</h3>
+            <h3 className="text-lg font-bold">
+              {applications.length
+                ? "All detected applications"
+                : "Network services and protocols"}
+            </h3>
             <p className="text-xs text-[#98A0B3]">
-              {applicationInventory.length} applications in the current firewall
-              sample
+              {inventoryEntries.length}{" "}
+              {applications.length
+                ? "firewall-identified applications"
+                : "service/protocol labels in the current sample"}
             </p>
           </div>
           <div className="flex max-h-80 flex-wrap content-start gap-2 overflow-y-auto p-5">
-            {applicationInventory.map((app) => (
+            {inventoryEntries.map((app) => (
               <span
                 key={app.name}
                 title={`${app.category} · ${formatBytes(app.total)} · ${app.sessions} sessions`}
@@ -1828,16 +2153,22 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
       <div className="order-2 grid items-start gap-4 xl:grid-cols-[1.55fr_1fr]">
         <div className="overflow-x-auto rounded-2xl border border-[#DDE2EA] bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-[#DDE2EA] px-5 py-4">
-            <h3 className="text-lg font-bold">Top applications</h3>
+            <h3 className="text-lg font-bold">
+              {applications.length
+                ? "Top applications"
+                : "Top network services and protocols"}
+            </h3>
             <span className="text-sm text-[#98A0B3]">
-              by total volume today
+              by total volume · {displayedPeriod}
             </span>
           </div>
           <table className="w-full min-w-[760px] text-left text-sm">
             <thead className="bg-[#FAFBFC] text-[11px] uppercase tracking-wider text-[#9CA3AF]">
               <tr>
-                <th className="px-4 py-3">Application</th>
-                <th className="px-4 py-3">Category</th>
+                <th className="px-4 py-3">
+                  {applications.length ? "Application" : "Network service"}
+                </th>
+                <th className="px-4 py-3">Category / risk</th>
                 <th className="px-4 py-3 text-right">Sessions</th>
                 <th className="px-4 py-3 text-right">Received</th>
                 <th className="px-4 py-3 text-right">Sent</th>
@@ -1846,11 +2177,16 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
               </tr>
             </thead>
             <tbody>
-              {applications.slice(0, 8).map((app) => (
+              {primaryEntries.slice(0, 8).map((app) => (
                 <tr key={app.name} className="border-t border-[#EDF0F4]">
                   <td className="px-4 py-3 font-semibold">{app.name}</td>
                   <td className="px-4 py-3">
                     <Badge variant="outline">{app.category}</Badge>
+                    <p className="mt-1 text-[10px] text-[#8B93A1]">
+                      {app.identified
+                        ? `Firewall identified · risk ${app.risk}`
+                        : "Service/protocol only"}
+                    </p>
                   </td>
                   <td className="px-4 py-3 text-right">
                     {app.sessions.toLocaleString()}
@@ -1881,15 +2217,19 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
         </div>
         <div className="overflow-x-auto rounded-2xl border border-[#DDE2EA] bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-[#DDE2EA] px-5 py-4">
-            <h3 className="text-lg font-bold">Top consumers per application</h3>
+            <h3 className="text-lg font-bold">
+              Top consumers per {applications.length ? "application" : "service"}
+            </h3>
             <span className="text-sm text-[#98A0B3]">
-              heaviest device for each app
+              heaviest device for each {applications.length ? "app" : "service"}
             </span>
           </div>
           <table className="w-full min-w-[760px] text-left text-sm">
             <thead className="bg-[#FAFBFC] text-[11px] uppercase tracking-wider text-[#9CA3AF]">
               <tr>
-                <th className="px-4 py-3">Application</th>
+                <th className="px-4 py-3">
+                  {applications.length ? "Application" : "Network service"}
+                </th>
                 <th className="px-4 py-3">Device</th>
                 <th className="px-4 py-3">IP address</th>
                 <th className="px-4 py-3 text-right">Usage</th>
@@ -1913,7 +2253,7 @@ function ApplicationUsagePanel({ value, devices, firewall }) {
                   <td className="px-4 py-3 text-right">
                     {(() => {
                       const appTotal =
-                        applications.find(
+                        usageEntries.find(
                           (app) => app.name === consumer.application,
                         )?.total || 0;
                       return appTotal
@@ -1935,12 +2275,11 @@ function TopApplicationsOverview({ value, onOpen }) {
   const rows = listFrom(value);
   const allApplications = Object.values(
     rows.reduce((summary, row) => {
-      const name = textFrom(
-        row,
-        ["app", "application", "appname", "service"],
-        "Other traffic",
-      );
-      if (!summary[name]) summary[name] = { name, total: 0 };
+      const detection = identifiedApplication(row);
+      const name = detection.name;
+      if (!summary[name])
+        summary[name] = { name, total: 0, identified: false };
+      summary[name].identified ||= detection.confidence === "identified";
       summary[name].total +=
         numberFrom(row, ["rcvdbyte", "received_bytes", "download"]) +
         numberFrom(row, ["sentbyte", "sent_bytes", "upload"]);
@@ -1952,14 +2291,16 @@ function TopApplicationsOverview({ value, onOpen }) {
   const maximum = Math.max(...applications.map((app) => app.total), 1);
   const total = allApplications.reduce((sum, app) => sum + app.total, 0);
   const topTraffic = applications.reduce((sum, app) => sum + app.total, 0);
+  const identifiedCount = allApplications.filter((app) => app.identified).length;
   const colors = ["#4A5FE8", "#7C3AED", "#0E7490", "#5B6178", "#B45309"];
   return (
     <div className={FW_CARD}>
       <div className="flex items-start justify-between gap-3 px-[18px] pt-4">
         <div>
-          <h3 className="text-sm font-bold tracking-tight">Top applications today</h3>
+          <h3 className="text-sm font-bold tracking-tight">Top applications and services today</h3>
           <p className="mt-0.5 text-xs text-[#98A0B5]">
-            By observed volume · {allApplications.length} apps detected in total
+            By observed volume · {identifiedCount} firewall-identified apps ·{" "}
+            {allApplications.length - identifiedCount} service/protocol labels
           </p>
         </div>
         <button
@@ -2142,11 +2483,14 @@ function SecurityEventsSummary({ value, onOpen }) {
   );
 }
 
-function SecurityEventsPanel({ value }) {
-  const events = listFrom(value);
+function SecurityEventsPanel({ value, sourceMeta = {} }) {
+  const allEvents = listFrom(value);
   const [severityFilter, setSeverityFilter] = useState("all");
   const [expandedGroup, setExpandedGroup] = useState(null);
-  if (!events.length) return <EmptyPanel title="Security events" configured />;
+  const [periodFilter, setPeriodFilter] = useState("today");
+  const [selectedDate, setSelectedDate] = useState(firewallLocalDate());
+  if (!allEvents.length)
+    return <EmptyPanel title="Security events" configured />;
   const severityName = (row) => {
     const raw = textFrom(row, ["level", "severity", "crlevel"], "Information").toLowerCase();
     if (/critical|emergency|alert|error/.test(raw)) return "alert";
@@ -2171,6 +2515,57 @@ function SecurityEventsPanel({ value }) {
       )
     );
   };
+  const issueReason = (row) => {
+    const source = textFrom(row, ["security_source"], "System event");
+    const action = textFrom(row, ["action", "status"], "").trim();
+    const explicitReason = textFrom(
+      row,
+      ["reason", "failure_reason", "event_reason"],
+      "",
+    ).trim();
+    const description = textFrom(
+      row,
+      ["msg", "message", "logdesc", "description", "eventtype"],
+      "Security event",
+    ).trim();
+    if (isFailedAdminLogin(row))
+      return `The firewall rejected an administrator sign-in from ${sourceIp(row)} because the credentials or authentication attempt were not accepted.`;
+    if (explicitReason && !/^(unknown|n\/a|none)$/i.test(explicitReason))
+      return `Firewall-supplied reason: ${explicitReason}.`;
+    if (source === "Antivirus") {
+      const detection = textFrom(
+        row,
+        ["virus", "virusname", "filename", "msg"],
+        "suspicious file or payload",
+      );
+      return `The antivirus engine detected ${detection}${action ? ` and recorded the action as ${action}` : ""}.`;
+    }
+    if (source === "Intrusion prevention") {
+      const signature = textFrom(
+        row,
+        ["attack", "attack_name", "signature", "msg"],
+        "an intrusion-prevention signature",
+      );
+      return `Traffic matched the IPS signature “${signature}”${action ? `; the firewall action was ${action}` : ""}.`;
+    }
+    if (source === "Web filter") {
+      const target = textFrom(row, ["hostname", "url", "dstname"], "a web request");
+      const category = textFrom(row, ["catdesc", "category"], "the configured web-filter policy");
+      return `${target} matched ${category}${action ? ` and the firewall action was ${action}` : ""}.`;
+    }
+    if (source === "DNS filter") {
+      const query = textFrom(row, ["qname", "domain", "hostname", "url"], "a DNS request");
+      const category = textFrom(row, ["catdesc", "category"], "the configured DNS-filter policy");
+      return `${query} matched ${category}${action ? ` and the firewall action was ${action}` : ""}.`;
+    }
+    if (/interface|link/.test(description.toLowerCase()) && /down|disconnect|lost/.test(description.toLowerCase()))
+      return "The firewall detected that a network interface or link changed to a down/disconnected state.";
+    if (/config|setting/.test(description.toLowerCase()) && /change|edit|update/.test(description.toLowerCase()))
+      return "The firewall recorded an administrative configuration change for audit and security review.";
+    if (/deny|block|drop/i.test(action))
+      return `The firewall raised this record because the matched policy or security profile recorded the traffic action as ${action}.`;
+    return `FortiGate emitted “${description}” as a ${severityName(row)}-severity ${source.toLowerCase()} record.`;
+  };
   const sourceLocation = (row) => {
     const geo = row.source_geo || row.sourceGeo;
     if (!geo) return null;
@@ -2184,6 +2579,97 @@ function SecurityEventsPanel({ value }) {
       countryCode: geo.country_code || geo.countryCode || "",
     };
   };
+  const eventTimeline = allEvents.map((row) => {
+    const timestamp = firewallEventTimestamp(row);
+    return {
+      row,
+      timestamp,
+      date: timestamp ? firewallLocalDate(timestamp) : null,
+    };
+  });
+  const today = firewallLocalDate();
+  const lastSevenStart = firewallLocalDate(
+    new Date(`${today}T00:00:00+05:30`).getTime() - 6 * 86400000,
+  );
+  const events = eventTimeline
+    .filter((entry) => {
+      if (periodFilter === "retained") return true;
+      if (periodFilter === "today") return entry.date === today;
+      if (periodFilter === "7d")
+        return entry.date && entry.date >= lastSevenStart && entry.date <= today;
+      return entry.date === selectedDate;
+    })
+    .map((entry) => entry.row);
+  const periodLabel =
+    periodFilter === "retained"
+      ? "Retained window"
+      : periodFilter === "today"
+        ? `Today · ${today}`
+        : periodFilter === "7d"
+          ? `${lastSevenStart} to ${today}`
+          : selectedDate;
+  const retainedTimestamps = eventTimeline
+    .map((entry) => entry.timestamp)
+    .filter(Boolean)
+    .sort((left, right) => left - right);
+  const retainedStart = retainedTimestamps[0] || null;
+  const retainedEnd = retainedTimestamps.at(-1) || null;
+  const sourceRows = Object.values(
+    allEvents.reduce((summary, row) => {
+      const name = textFrom(row, ["security_source"], "System event");
+      if (!summary[name])
+        summary[name] = {
+          name,
+          retained: 0,
+          selected: 0,
+          available: Number(sourceMeta[name]?.records_available || 0),
+          complete: sourceMeta[name]?.complete !== false,
+        };
+      summary[name].retained += 1;
+      return summary;
+    }, Object.fromEntries(
+      Object.entries(sourceMeta).map(([name, metadata]) => [
+        name,
+        {
+          name,
+          retained: 0,
+          selected: 0,
+          available: Number(metadata?.records_available || 0),
+          complete: metadata?.complete !== false,
+        },
+      ]),
+    )),
+  );
+  for (const row of events) {
+    const source = sourceRows.find(
+      (item) => item.name === textFrom(row, ["security_source"], "System event"),
+    );
+    if (source) source.selected += 1;
+  }
+  sourceRows.sort((left, right) => right.selected - left.selected || right.retained - left.retained);
+  const retainedAvailable = sourceRows.reduce(
+    (sum, source) => sum + Math.max(source.retained, source.available),
+    0,
+  );
+  const sourceComplete = sourceRows.every((source) => source.complete);
+  const dailyRows = Object.values(
+    eventTimeline.reduce((summary, entry) => {
+      if (!entry.date) return summary;
+      if (!summary[entry.date])
+        summary[entry.date] = {
+          date: entry.date,
+          total: 0,
+          alert: 0,
+          warning: 0,
+          notice: 0,
+          information: 0,
+        };
+      const severity = severityName(entry.row);
+      summary[entry.date].total += 1;
+      summary[entry.date][severity] += 1;
+      return summary;
+    }, {}),
+  ).sort((left, right) => right.date.localeCompare(left.date));
   const failedAdminLogins = events.filter(isFailedAdminLogin);
   const failedLoginOrigins = Object.values(
     failedAdminLogins.reduce((origins, row) => {
@@ -2225,8 +2711,16 @@ function SecurityEventsPanel({ value }) {
     notice: 0,
   }));
   events.forEach((row) => {
-    const raw = String(row.time || row.timestamp || "");
-    const hour = Number(raw.match(/(?:T|^)(\d{2}):/)?.[1] ?? raw.slice(0, 2));
+    const timestamp = firewallEventTimestamp(row);
+    const hour = timestamp
+      ? Number(
+          timestamp.toLocaleString("en-GB", {
+            timeZone: "Asia/Kolkata",
+            hour: "2-digit",
+            hourCycle: "h23",
+          }),
+        )
+      : Number.NaN;
     if (Number.isInteger(hour) && hourly[hour]) hourly[hour][severityName(row)] += 1;
   });
   const groups = Object.values(
@@ -2246,6 +2740,11 @@ function SecurityEventsPanel({ value }) {
           latest: row,
         };
       summary[key].count += 1;
+      if (
+        (firewallEventTimestamp(row)?.getTime() || 0) >
+        (firewallEventTimestamp(summary[key].latest)?.getTime() || 0)
+      )
+        summary[key].latest = row;
       return summary;
     }, {}),
   ).sort((a, b) => b.count - a.count);
@@ -2285,7 +2784,9 @@ function SecurityEventsPanel({ value }) {
         "Description",
         textFrom(row, ["msg", "message", "logdesc", "description"]),
       ],
+      ["Why this was raised", issueReason(row)],
       ["Event type", textFrom(row, ["eventtype", "eventType", "subtype", "type"])],
+      ["Firewall source", textFrom(row, ["security_source"], "System event")],
       ["Event ID", textFrom(row, ["eventid", "eventId", "logid", "id", "uuid"])],
       [
         "Source / destination",
@@ -2297,7 +2798,7 @@ function SecurityEventsPanel({ value }) {
       ],
       [
         "Latest occurrence",
-        [row.date, row.time || row.timestamp].filter(Boolean).join(" ") || "—",
+        formatUsageRangeTimestamp(firewallEventTimestamp(row)),
       ],
     ];
     if (isFailedAdminLogin(row)) {
@@ -2320,10 +2821,138 @@ function SecurityEventsPanel({ value }) {
   };
   return (
     <div className="space-y-4">
+      <section className={`${FW_CARD} overflow-hidden`}>
+        <div className="flex flex-wrap items-center gap-3 border-b border-[#E7E9F2] px-[18px] py-4">
+          <div className="mr-auto">
+            <h3 className="text-sm font-bold">Security event coverage</h3>
+            <p className="mt-0.5 text-xs text-[#98A0B5]">
+              Per-day view and consolidated firewall retention window
+            </p>
+          </div>
+          <select
+            value={periodFilter}
+            onChange={(event) => {
+              setPeriodFilter(event.target.value);
+              setSeverityFilter("all");
+              setExpandedGroup(null);
+            }}
+            className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
+          >
+            <option value="today">Today</option>
+            <option value="7d">Last 7 days</option>
+            <option value="day">Select a day</option>
+            <option value="retained">All retained events</option>
+          </select>
+          {periodFilter === "day" && (
+            <input
+              type="date"
+              value={selectedDate}
+              max={today}
+              onChange={(event) => setSelectedDate(event.target.value)}
+              className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
+            />
+          )}
+        </div>
+        <div className="grid gap-px bg-[#E7E9F2] sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            ["Selected period", events.length.toLocaleString(), periodLabel],
+            [
+              "Today",
+              eventTimeline.filter((entry) => entry.date === today).length.toLocaleString(),
+              today,
+            ],
+            [
+              "Retained records returned",
+              allEvents.length.toLocaleString(),
+              retainedAvailable > allEvents.length
+                ? `${retainedAvailable.toLocaleString()} reported available`
+                : "current API retention window",
+            ],
+            [
+              "Retained coverage",
+              retainedStart && retainedEnd
+                ? `${firewallLocalDate(retainedStart)} → ${firewallLocalDate(retainedEnd)}`
+                : "Time unavailable",
+              sourceComplete ? "all returned sources complete" : "one or more sources are partial",
+            ],
+          ].map(([label, metric, note]) => (
+            <div key={label} className="bg-white p-4">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-[#7B8193]">
+                {label}
+              </p>
+              <b className="mt-1 block text-xl text-[#181C2E]">{metric}</b>
+              <p className="mt-1 text-[11px] text-[#98A0B5]">{note}</p>
+            </div>
+          ))}
+        </div>
+        <div className="grid gap-px border-t border-[#E7E9F2] bg-[#E7E9F2] lg:grid-cols-2">
+          <div className="bg-white p-[18px]">
+            <h4 className="text-sm font-bold">Latest retained dates</h4>
+            <p className="mt-0.5 text-xs text-[#98A0B5]">
+              Daily bifurcation across every returned security source
+            </p>
+            <div className="mt-3 overflow-x-auto rounded-lg border border-[#EDF0F4]">
+              <table className="w-full min-w-[480px] text-left text-xs">
+                <thead className="bg-[#FAFBFC] uppercase tracking-wide text-[#8B93A1]">
+                  <tr>
+                    <th className="px-3 py-2">Date</th>
+                    <th className="px-3 py-2 text-right">Total</th>
+                    <th className="px-3 py-2 text-right">Alerts</th>
+                    <th className="px-3 py-2 text-right">Warnings</th>
+                    <th className="px-3 py-2 text-right">Notice/info</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dailyRows.slice(0, 7).map((row) => (
+                    <tr key={row.date} className="border-t border-[#EDF0F4]">
+                      <td className="px-3 py-2 font-semibold">{row.date}</td>
+                      <td className="px-3 py-2 text-right font-bold">{row.total.toLocaleString()}</td>
+                      <td className="px-3 py-2 text-right text-red-700">{row.alert.toLocaleString()}</td>
+                      <td className="px-3 py-2 text-right text-orange-700">{row.warning.toLocaleString()}</td>
+                      <td className="px-3 py-2 text-right">{(row.notice + row.information).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="bg-white p-[18px]">
+            <h4 className="text-sm font-bold">Source bifurcation</h4>
+            <p className="mt-0.5 text-xs text-[#98A0B5]">
+              Selected-period records versus the retained source response
+            </p>
+            <div className="mt-3 space-y-2">
+              {sourceRows.map((source) => (
+                <div key={source.name} className="flex items-center gap-3 rounded-lg border border-[#EDF0F4] px-3 py-2.5 text-xs">
+                  <span className="min-w-0 flex-1 truncate font-semibold">{source.name}</span>
+                  <span className="text-[#69738B]">
+                    selected <b className="text-[#181C2E]">{source.selected.toLocaleString()}</b>
+                  </span>
+                  <span className="text-[#69738B]">
+                    retained <b className="text-[#181C2E]">{source.retained.toLocaleString()}</b>
+                    {source.available > source.retained
+                      ? ` / ${source.available.toLocaleString()}`
+                      : ""}
+                  </span>
+                  {!source.complete && (
+                    <Badge className="bg-amber-50 text-amber-800">Partial</Badge>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+        <p className="border-t border-[#E7E9F2] bg-[#FFFDF7] px-[18px] py-3 text-[11px] leading-5 text-[#6B6470]">
+          <b>Retention meaning:</b> consolidated counts cover only the records
+          currently retained and returned by the firewall APIs; they are not a
+          lifetime total from appliance startup. The date filter above applies
+          to the event stream, severity chart, and failed-login origins below.
+        </p>
+      </section>
       <div className="grid gap-3.5 xl:grid-cols-[1.55fr_1fr]">
         <div className={FW_CARD}>
           <div className="flex flex-wrap items-start justify-between gap-3 px-[18px] pt-4">
-            <div><h3 className="text-sm font-bold">Retained events by hour</h3><p className="mt-0.5 text-xs text-[#98A0B5]">{events.length.toLocaleString()} retained events · grouped by severity</p></div>
+            <div><h3 className="text-sm font-bold">Events by hour · {periodLabel}</h3><p className="mt-0.5 text-xs text-[#98A0B5]">{events.length.toLocaleString()} events in the selected period · grouped by severity</p></div>
             <div className="flex flex-wrap gap-3 text-[11.5px] text-[#5B6178]">{severityCounts.map((item) => <span key={item.name} className="flex items-center gap-1.5 capitalize"><i className="h-2.5 w-2.5 rounded-[3px]" style={{ background: item.color }} />{item.name}</span>)}</div>
           </div>
           <div className="h-[190px] px-3 pb-3 pt-2">
@@ -2438,13 +3067,16 @@ function SecurityEventsPanel({ value }) {
                 <span className="grid h-9 w-9 place-items-center rounded-lg bg-amber-50 text-amber-700">
                   <ShieldAlert className="h-4 w-4" />
                 </span>
-                <div>
+                <div className="min-w-0 flex-1">
                   <b>{group.title}</b>
                   <p className="text-xs text-[#9CA3AF]">
                     latest{" "}
-                    {[group.latest.date, group.latest.time]
-                      .filter(Boolean)
-                      .join(" ") || "time unavailable"}
+                    {formatUsageRangeTimestamp(
+                      firewallEventTimestamp(group.latest),
+                    )}
+                  </p>
+                  <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-[#69738B]">
+                    <b>Reason:</b> {issueReason(group.latest)}
                   </p>
                 </div>
                 <Badge className="ml-auto bg-amber-100 text-amber-800 capitalize">
@@ -2477,6 +3109,18 @@ function SecurityEventsPanel({ value }) {
             </div>
           );
         })}
+        {!visibleGroups.length && (
+          <div className="px-5 py-10 text-center">
+            <Shield className="mx-auto h-7 w-7 text-[#A5ADBD]" />
+            <p className="mt-2 text-sm font-semibold">
+              No security events in {periodLabel.toLowerCase()}
+            </p>
+            <p className="mt-1 text-xs text-[#98A0B5]">
+              Choose another date or All retained events to inspect the
+              firewall&apos;s retained records.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3138,6 +3782,67 @@ function mergeFirewallOverview(current, incoming) {
   };
 }
 
+async function firewallTrafficReportWithArchiveFallback(firewall) {
+  let liveReport = null;
+  let liveError = null;
+  try {
+    liveReport = await api(
+      `/firewall/report?today=true&firewall=${firewall}`,
+      { timeout: 120000 },
+    );
+    if ((liveReport.records || []).length) return liveReport;
+  } catch (error) {
+    liveError = error;
+  }
+
+  try {
+    const archived = await api(
+      `/firewall/archive/fallback?firewall=${firewall}`,
+      { timeout: 120000 },
+    );
+    return {
+      ...archived,
+      summary: {
+        ...(archived.summary || {}),
+        ...(liveReport?.summary || {}),
+        records: Number(archived.summary?.records || archived.records?.length || 0),
+        records_available: Number(
+          archived.summary?.records_available || archived.records?.length || 0,
+        ),
+        records_sampled: Boolean(archived.summary?.records_sampled),
+        traffic_bytes: Number(archived.summary?.traffic_bytes || 0),
+        archived_rows_available: Number(
+          archived.summary?.archived_rows_available || archived.records?.length || 0,
+        ),
+        archived_rows_considered: Number(
+          archived.summary?.archived_rows_considered || archived.records?.length || 0,
+        ),
+        archive_records_included: true,
+        archive_fallback: true,
+        archive_date: archived.summary?.archive_date,
+        archive_captured_at: archived.summary?.archive_captured_at || null,
+        archive_protected_before_downtime: Boolean(
+          archived.summary?.archive_protected_before_downtime,
+        ),
+        source: archived.summary?.source || "latest_appliance_verified_daily_archive",
+        source_complete: Boolean(archived.summary?.source_complete),
+        source_identity_verified: true,
+        appliance_serial: archived.summary?.appliance_serial || null,
+        live_error: liveError?.message || null,
+        fallback_reason: liveError
+          ? "Live firewall traffic was unavailable"
+          : "The live current-period report returned no records",
+        application_control:
+          liveReport?.summary?.application_control ||
+          archived.summary?.application_control,
+      },
+    };
+  } catch (archiveError) {
+    if (liveReport) return liveReport;
+    throw liveError || archiveError;
+  }
+}
+
 function FirewallEstateComparison({ values, onSelect }) {
   const hq = firewallSnapshot(values.hq);
   const hq2 = firewallSnapshot(values.hq2);
@@ -3235,6 +3940,17 @@ function formatDowntimeTimestamp(value) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function firewallArchiveInputDate(value) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
 function FirewallDowntimeSection({
@@ -3599,15 +4315,19 @@ function InventoryCoverage({ devices, firewall }) {
 
 function FirewallArchivePanel({ firewall, configured }) {
   const [archives, setArchives] = useState([]);
+  const [captureStatus, setCaptureStatus] = useState(null);
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [openingDate, setOpeningDate] = useState("");
   const [page, setPage] = useState(1);
   const [recordPage, setRecordPage] = useState(1);
-  const today = new Date().toISOString().slice(0, 10);
-  const rangeStart = new Date(Date.now() - 6 * 86400000)
-    .toISOString()
-    .slice(0, 10);
+  const selectedRef = useRef(null);
+  const dayRequestRef = useRef(0);
+  const today = firewallArchiveInputDate(new Date());
+  const rangeStart = firewallArchiveInputDate(
+    new Date(Date.now() - 6 * 86400000),
+  );
   const [from, setFrom] = useState(rangeStart);
   const [to, setTo] = useState(today);
   const pageSize = 12;
@@ -3618,8 +4338,10 @@ function FirewallArchivePanel({ firewall, configured }) {
     try {
       const result = await api(
         `/firewall/archive?firewall=${firewall}&limit=365`,
+        { timeout: 30_000 },
       );
       setArchives(result.archives || []);
+      setCaptureStatus(result.capture_status || null);
       setPage(1);
     } catch (error) {
       toast.error(error.message);
@@ -3629,9 +4351,20 @@ function FirewallArchivePanel({ firewall, configured }) {
   };
 
   useEffect(() => {
+    dayRequestRef.current += 1;
+    setOpeningDate("");
     setSelected(null);
     load();
   }, [firewall]);
+
+  useEffect(() => {
+    if (!selected?.date) return;
+    const frame = window.requestAnimationFrame(() => {
+      selectedRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      selectedRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selected?.date]);
 
   const sync = async () => {
     setSyncing(true);
@@ -3652,30 +4385,41 @@ function FirewallArchivePanel({ firewall, configured }) {
   };
 
   const openDay = async (date, targetPage = 1) => {
+    const requestId = ++dayRequestRef.current;
+    setOpeningDate(date);
     try {
       const result = await api(
         `/firewall/archive?firewall=${firewall}&date=${date}&record_page=${targetPage}&record_limit=${recordPageSize}`,
         { timeout: 60_000 },
       );
+      if (requestId !== dayRequestRef.current) return;
       setSelected(result);
       setRecordPage(result.record_pagination?.page || targetPage);
     } catch (error) {
-      toast.error(error.message);
+      if (requestId === dayRequestRef.current) toast.error(error.message);
+    } finally {
+      if (requestId === dayRequestRef.current) setOpeningDate("");
     }
   };
 
-  const exportRange = async () => {
+  const exportRange = (type = "details") => {
     if (from > to) return toast.error("From date must be before To date");
     const days = Math.ceil((new Date(to) - new Date(from)) / 86400000) + 1;
-    if (days > 7)
-      return toast.error("Export up to 7 archived days at a time");
+    if (type === "details" && days > 7)
+      return toast.error("Export up to 7 detailed archived days at a time");
+    if (type === "summary" && days > 366)
+      return toast.error("Export up to 366 archive summary days at a time");
     const link = document.createElement("a");
-    link.href = `/api/firewall/archive/export?firewall=${firewall}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-    link.download = `${firewall}-firewall-archive-${from}-to-${to}.csv`;
+    link.href = `/api/firewall/archive/export?firewall=${firewall}&type=${type}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+    link.download = `${firewall}-firewall-archive-${type}-${from}-to-${to}.csv`;
     document.body.appendChild(link);
     link.click();
     link.remove();
-    toast.success("Detailed archive export started");
+    toast.success(
+      type === "summary"
+        ? "Daily summary export started"
+        : "Detailed record export started",
+    );
   };
 
   if (loading)
@@ -3697,6 +4441,14 @@ function FirewallArchivePanel({ firewall, configured }) {
   const observedTraffic = archives.reduce(
     (sum, item) => sum + Number(item.summary?.traffic_bytes || 0),
     0,
+  );
+  const lastArchiveAt = captureStatus?.last_archive_at
+    ? new Date(captureStatus.last_archive_at)
+    : null;
+  const captureIsCurrent = Boolean(
+    lastArchiveAt &&
+      !Number.isNaN(lastArchiveAt.getTime()) &&
+      Date.now() - lastArchiveAt.getTime() <= 30 * 60_000,
   );
 
   return (
@@ -3729,13 +4481,53 @@ function FirewallArchivePanel({ firewall, configured }) {
         ))}
       </div>
 
+      <div
+        className={`flex flex-wrap items-start gap-3 rounded-xl border px-4 py-3 text-xs ${
+          captureStatus?.last_archive_error
+            ? "border-red-200 bg-red-50 text-red-800"
+            : captureIsCurrent
+              ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+              : "border-amber-200 bg-amber-50 text-amber-900"
+        }`}
+      >
+        <span
+          className={`mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full ${
+            captureStatus?.last_archive_error
+              ? "bg-red-500"
+              : captureIsCurrent
+                ? "bg-emerald-500"
+                : "bg-amber-500"
+          }`}
+        />
+        <div className="min-w-0 flex-1">
+          <b>
+            {captureStatus?.last_archive_error
+              ? "Automatic archive needs attention"
+              : captureIsCurrent
+                ? "Automatic archive is active"
+                : "Waiting for the next automatic capture"}
+          </b>
+          <p className="mt-0.5 text-[11px] opacity-80">
+            {captureStatus?.last_archive_error
+              ? captureStatus.last_archive_error
+              : captureStatus?.last_archive_at
+                ? `Last ${captureStatus.last_archive_reason || "automatic"} capture ${formatDowntimeTimestamp(captureStatus.last_archive_at)} · ${Number(captureStatus.last_archive_records || 0).toLocaleString()} records observed. New retained firewall records are merged every 15 minutes.`
+                : "The first background capture starts shortly after the service becomes available. Use Capture now if an immediate snapshot is required."}
+          </p>
+        </div>
+        <span className="rounded-full border border-current/15 bg-white/70 px-2.5 py-1 font-semibold">
+          {firewall.toUpperCase()} only
+        </span>
+      </div>
+
       <section className="overflow-hidden rounded-2xl border border-[#DDE2EA] bg-white shadow-sm">
         <div className="flex flex-wrap items-end gap-3 border-b border-[#E5E9EF] px-5 py-4">
           <div className="mr-auto">
             <h3 className="text-lg font-bold">Daily firewall report archive</h3>
             <p className="text-xs text-[#8B93A1]">
-              Persistent HQ/HQ2 records, risk escalations and downloadable daily
-              evidence in Asia/Kolkata time.
+              Persistent {firewall.toUpperCase()} traffic records, usage,
+              mappings, security actions and downloadable evidence in
+              Asia/Kolkata time.
             </p>
           </div>
           <label className="w-full text-[11px] font-semibold text-[#69738B] sm:w-auto">
@@ -3756,12 +4548,15 @@ function FirewallArchivePanel({ firewall, configured }) {
               className="mt-1 h-9 w-full rounded-lg border px-2 text-xs sm:ml-2 sm:mt-0 sm:w-auto"
             />
           </label>
-          <Button className="w-full sm:w-auto" variant="outline" onClick={exportRange}>
-            <Download className="h-4 w-4" /> Export range
+          <Button className="w-full sm:w-auto" variant="outline" onClick={() => exportRange("summary")}>
+            <Download className="h-4 w-4" /> Summary CSV
+          </Button>
+          <Button className="w-full sm:w-auto" variant="outline" onClick={() => exportRange("details")}>
+            <Download className="h-4 w-4" /> Detailed CSV
           </Button>
           <Button className="w-full sm:w-auto" onClick={sync} disabled={!configured || syncing}>
             <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
-            Sync last 7 days
+            Capture now
           </Button>
         </div>
         {visible.length ? (
@@ -3772,7 +4567,7 @@ function FirewallArchivePanel({ firewall, configured }) {
                   <th className="px-4 py-3">Date</th>
                   <th className="px-4 py-3">Records</th>
                   <th className="px-4 py-3">Systems</th>
-                  <th className="px-4 py-3">Applications</th>
+                  <th className="px-4 py-3">Identified apps</th>
                   <th className="px-4 py-3">Traffic</th>
                   <th className="px-4 py-3">Blocked</th>
                   <th className="px-4 py-3">Threats</th>
@@ -3807,9 +4602,19 @@ function FirewallArchivePanel({ firewall, configured }) {
                       )}
                     </td>
                     <td className="px-4 py-3">
+                      {!archive.source_identity_verified && (
+                        <span className="mb-1 inline-block rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700">
+                          Appliance identity pending
+                        </span>
+                      )}
+                      <div>
                       {archive.protected_before_downtime ? (
                         <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-700">
                           Saved before downtime
+                        </span>
+                      ) : archive.record_limit_reached ? (
+                        <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800">
+                          Saved · configured limit reached
                         </span>
                       ) : archive.archive_complete ? (
                         <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-700">
@@ -3820,6 +4625,7 @@ function FirewallArchivePanel({ firewall, configured }) {
                           Detailed · retained source
                         </span>
                       )}
+                      </div>
                       <p className="mt-1 text-[10px] text-[#8B93A1]">
                         {archive.captured_at
                           ? formatDowntimeTimestamp(archive.captured_at)
@@ -3827,8 +4633,8 @@ function FirewallArchivePanel({ firewall, configured }) {
                       </p>
                     </td>
                     <td className="px-4 py-3">
-                      <Button variant="outline" size="sm" onClick={() => openDay(archive.date)}>
-                        View day
+                      <Button variant="outline" size="sm" disabled={Boolean(openingDate)} onClick={() => openDay(archive.date)}>
+                        {openingDate === archive.date ? "Loading details…" : "View details"}
                       </Button>
                     </td>
                   </tr>
@@ -3839,7 +4645,7 @@ function FirewallArchivePanel({ firewall, configured }) {
         ) : (
           <div className="p-10 text-center text-sm text-[#69738B]">
             No daily reports have been archived for {firewall.toUpperCase()} yet.
-            {configured ? " Use Sync last 7 days to create the first archive." : " Historical records will remain available after the firewall reconnects."}
+            {configured ? " Use Capture now to create the first archive." : " Historical records will remain available after the firewall reconnects."}
           </div>
         )}
         {archives.length > pageSize && (
@@ -3854,7 +4660,7 @@ function FirewallArchivePanel({ firewall, configured }) {
       </section>
 
       {selected && (
-        <section className="overflow-hidden rounded-2xl border border-[#CCD5FF] bg-white shadow-sm">
+        <section ref={selectedRef} tabIndex={-1} aria-label={`Archived firewall details for ${selected.date}`} className="scroll-mt-24 overflow-hidden rounded-2xl border border-[#CCD5FF] bg-white shadow-sm outline-none">
           <div className="flex flex-wrap items-center gap-3 border-b border-[#DDE3FF] px-5 py-4">
             <div className="mr-auto">
               <h3 className="text-lg font-bold">
@@ -3866,15 +4672,21 @@ function FirewallArchivePanel({ firewall, configured }) {
               <p className="mt-1 text-[11px] font-medium text-[#4A5FE8]">
                 {selected.protected_before_downtime
                   ? `Protected before downtime at ${formatDowntimeTimestamp(selected.last_pre_downtime_protected_at)}`
-                  : `Automatic daily snapshot · ${selected.archive_complete ? "complete daily coverage" : selected.source_complete ? "complete retained source; daily coverage may contain a gap" : "retained source may be partial"}`}
+                  : `Automatic daily snapshot · ${selected.record_limit_reached ? "configured storage limit reached; exported data contains every retained record shown here" : selected.archive_complete ? "complete daily coverage" : selected.source_complete ? "complete retained source; daily coverage may contain a gap" : "retained source may be partial"}`}
               </p>
+              {!selected.source_identity_verified && (
+                <p className="mt-1 text-[11px] font-semibold text-[#B45309]">
+                  Legacy records without an appliance serial are preserved in
+                  this archive but excluded from live HQ/HQ2 report totals.
+                </p>
+              )}
             </div>
             <Button variant="outline" asChild>
               <a
-                href={`/api/firewall/archive/export?firewall=${firewall}&date=${encodeURIComponent(selected.date)}`}
-                download={`${firewall}-firewall-archive-${selected.date}.csv`}
+                href={`/api/firewall/archive/export?firewall=${firewall}&type=details&date=${encodeURIComponent(selected.date)}`}
+                download={`${firewall}-firewall-archive-details-${selected.date}.csv`}
               >
-                <Download className="h-4 w-4" /> Export day
+                <Download className="h-4 w-4" /> Export stored day details
               </a>
             </Button>
             <Button variant="ghost" onClick={() => setSelected(null)}>Close</Button>
@@ -3890,22 +4702,42 @@ function FirewallArchivePanel({ firewall, configured }) {
               ))}
             </div>
           )}
+          <div className="grid gap-px border-b border-[#E5E9EF] bg-[#E5E9EF] sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+            {[
+              ["Stored records", Number(totalSelectedRecords).toLocaleString()],
+              ["Source systems", Number(selected.summary?.unique_sources || 0).toLocaleString()],
+              ["Observed traffic", formatBytes(selected.summary?.traffic_bytes || 0)],
+              ["Identified apps", Number(selected.summary?.applications || 0).toLocaleString()],
+              ["Blocked", Number(selected.summary?.blocked || 0).toLocaleString()],
+              ["Threat events", Number(selected.summary?.threats || 0).toLocaleString()],
+            ].map(([label, metric]) => (
+              <div key={label} className="bg-white px-4 py-3">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[#8B93A1]">
+                  {label}
+                </p>
+                <b className="mt-1 block text-lg">{metric}</b>
+              </div>
+            ))}
+          </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1200px] text-left text-xs">
+            <table className="w-full min-w-[1900px] text-left text-xs">
               <thead className="bg-[#FAFBFC] uppercase tracking-wider text-[#8B93A1]">
-                <tr><th className="px-3 py-2">Time</th><th className="px-3 py-2">Source</th><th className="px-3 py-2">Destination</th><th className="px-3 py-2">Application</th><th className="px-3 py-2">Action</th><th className="px-3 py-2">Severity</th><th className="px-3 py-2">Policy</th><th className="px-3 py-2 text-right">Traffic</th><th className="px-3 py-2">Message</th></tr>
+                <tr><th className="px-3 py-2">Time</th><th className="px-3 py-2">Member / system</th><th className="px-3 py-2">Network identity</th><th className="px-3 py-2">Destination</th><th className="px-3 py-2">Application / service</th><th className="px-3 py-2">Category / risk</th><th className="px-3 py-2">Action / severity</th><th className="px-3 py-2">Policy / interfaces</th><th className="px-3 py-2 text-right">Sent</th><th className="px-3 py-2 text-right">Received</th><th className="px-3 py-2 text-right">Duration</th><th className="px-3 py-2">Message</th></tr>
               </thead>
               <tbody>
                 {visibleRecords.map((record, index) => (
                   <tr key={`${record.timestamp}-${record.source_ip}-${index}`} className="border-t border-[#EDF0F4]">
                     <td className="whitespace-nowrap px-3 py-2">{new Date(record.timestamp).toLocaleString("en-GB")}</td>
-                    <td className="px-3 py-2"><b>{record.source_name || record.source_ip || "—"}</b><p className="font-mono text-[10px] text-[#8B93A1]">{record.source_ip} · {record.source_mac}</p></td>
-                    <td className="px-3 py-2 font-mono">{record.destination_ip || "—"}</td>
-                    <td className="px-3 py-2">{record.application || "—"}</td>
-                    <td className="px-3 py-2">{record.action || "—"}</td>
-                    <td className="px-3 py-2">{record.severity || "—"}</td>
-                    <td className="px-3 py-2">{record.policy || "—"}</td>
-                    <td className="px-3 py-2 text-right font-semibold">{formatBytes(Number(record.sent_bytes || 0) + Number(record.received_bytes || 0))}</td>
+                    <td className="px-3 py-2"><b>{record.asset_user_name || record.source_name || "Unmapped system"}</b><p className="text-[10px] text-[#8B93A1]">{record.employee_code || "No employee code"} · {record.source_device_type || record.source_os_name || "Unknown device"}</p><p className={record.inventory_match ? "text-[10px] text-emerald-700" : "text-[10px] font-semibold text-red-600"}>{record.inventory_match ? `Inventory mapped · AV ${record.av_status || "Unknown"}` : "Inventory mapping not found"}</p></td>
+                    <td className="px-3 py-2 font-mono"><b>{record.source_ip || "—"}</b><p className="text-[10px] text-[#8B93A1]">{record.source_mac || "No MAC"}</p><p className="text-[10px] text-[#8B93A1]">Protocol {record.protocol || "—"}</p></td>
+                    <td className="px-3 py-2 font-mono"><b>{record.destination_ip || "—"}:{record.destination_port || "—"}</b><p className="font-sans text-[10px] text-[#8B93A1]">{record.destination_country || "Unknown country"}</p></td>
+                    <td className="px-3 py-2"><b>{record.application || record.service || "—"}</b><p className="text-[10px] text-[#8B93A1]">{record.application_identified ? "Firewall-identified application" : `Service/protocol · ${record.service || "unclassified"}`}</p></td>
+                    <td className="px-3 py-2"><b>{record.category || "Unclassified"}</b><p className="text-[10px] text-[#8B93A1]">Risk {record.application_risk || "Unknown"}</p></td>
+                    <td className="px-3 py-2"><b>{record.action || "—"}</b><p className="text-[10px] text-[#8B93A1]">{record.severity || "No severity"}</p></td>
+                    <td className="px-3 py-2"><b>{record.policy || "—"}</b><p className="text-[10px] text-[#8B93A1]">{record.source_interface || "—"} → {record.destination_interface || "—"}</p></td>
+                    <td className="px-3 py-2 text-right font-semibold">{formatBytes(record.sent_bytes || 0)}</td>
+                    <td className="px-3 py-2 text-right font-semibold">{formatBytes(record.received_bytes || 0)}</td>
+                    <td className="px-3 py-2 text-right">{Number(record.duration_seconds || 0).toLocaleString()}s</td>
                     <td className="max-w-72 truncate px-3 py-2">{record.message || "—"}</td>
                   </tr>
                 ))}
@@ -3915,7 +4747,7 @@ function FirewallArchivePanel({ firewall, configured }) {
           {recordPages > 1 && (
             <div className="flex items-center justify-between border-t bg-[#FAFBFC] px-5 py-3 text-xs">
               <span>Records page {recordPage} of {recordPages}</span>
-              <div className="flex gap-2"><Button variant="outline" size="sm" disabled={recordPage === 1} onClick={() => openDay(selected.date, recordPage - 1)}>Previous</Button><Button variant="outline" size="sm" disabled={recordPage === recordPages} onClick={() => openDay(selected.date, recordPage + 1)}>Next</Button></div>
+              <div className="flex gap-2"><Button variant="outline" size="sm" disabled={recordPage === 1 || Boolean(openingDate)} onClick={() => openDay(selected.date, recordPage - 1)}>Previous</Button><Button variant="outline" size="sm" disabled={recordPage === recordPages || Boolean(openingDate)} onClick={() => openDay(selected.date, recordPage + 1)}>Next</Button></div>
             </div>
           )}
         </section>
@@ -3973,9 +4805,7 @@ export default function FirewallView() {
         setLiveDetailsLoading(true);
 
         return Promise.allSettled([
-          api(`/firewall/report?today=true&firewall=${targetFirewall}`, {
-            timeout: 120000,
-          }),
+          firewallTrafficReportWithArchiveFallback(targetFirewall),
           api(
             `/firewall/overview?firewall=${targetFirewall}&scope=security`,
             { timeout: 120000 },
@@ -4127,6 +4957,40 @@ export default function FirewallView() {
   const threatSections = Object.fromEntries(
     Object.entries(sections).filter(([name]) => name.startsWith("threat_")),
   );
+  const securityRows = useMemo(() => {
+    const sourceLabels = {
+      threat_antivirus: "Antivirus",
+      threat_ips: "Intrusion prevention",
+      threat_web: "Web filter",
+      threat_dns: "DNS filter",
+    };
+    return [
+      ...listFrom(sections.events).map((row) => ({
+        ...row,
+        security_source: "System event",
+      })),
+      ...Object.entries(sourceLabels).flatMap(([key, label]) =>
+        listFrom(sections[key]).map((row) => ({
+          ...row,
+          security_source: label,
+          eventtype: row.eventtype || label,
+        })),
+      ),
+    ];
+  }, [
+    sections.events,
+    sections.threat_antivirus,
+    sections.threat_ips,
+    sections.threat_web,
+    sections.threat_dns,
+  ]);
+  const securitySourceMeta = {
+    "System event": data?.section_meta?.events || {},
+    Antivirus: data?.section_meta?.threat_antivirus || {},
+    "Intrusion prevention": data?.section_meta?.threat_ips || {},
+    "Web filter": data?.section_meta?.threat_web || {},
+    "DNS filter": data?.section_meta?.threat_dns || {},
+  };
   const deviceCount =
     listFrom(sections.devices).length ||
     numberFrom(sections.statistics, [
@@ -4138,7 +5002,7 @@ export default function FirewallView() {
     listFrom(sections.vpn).length ||
     numberFrom(sections.vpn, ["active", "connected", "active_tunnels"]);
   const eventCount =
-    listFrom(sections.events).length ||
+    securityRows.length ||
     numberFrom(sections.statistics, [
       "security_events",
       "threats",
@@ -4150,11 +5014,17 @@ export default function FirewallView() {
     "bandwidth",
     "current_throughput",
   ]);
-  const { applicationTraffic, unclassifiedTraffic, applicationCount } =
+  const {
+    applicationTraffic,
+    unclassifiedTraffic,
+    applicationCount,
+    networkServiceCount,
+  } =
     useMemo(() => {
       let total = 0;
       let unclassified = 0;
-      const applications = new Set();
+      const identifiedApplications = new Set();
+      const networkServices = new Set();
       for (const row of trafficLogs) {
         const received = numberFrom(row, [
           "rcvdbyte",
@@ -4168,10 +5038,15 @@ export default function FirewallView() {
           ["app", "application", "appname", "service"],
           "Other traffic",
         );
+        const identified =
+          row.application_identified === true ||
+          row.application_source === "fortigate_application_control";
         total += bytes;
-        applications.add(name);
+        if (identified) identifiedApplications.add(name);
+        else if (name && name !== "Other traffic") networkServices.add(name);
         if (
-          /^(unscanned|unknown|other traffic|other|unclassified)$/i.test(name) ||
+          !identified ||
+          /^(unscanned|unknown|unknown application|other traffic|other|unclassified)$/i.test(name) ||
           /^(udp|tcp)[/:]\d+/i.test(name)
         )
           unclassified += bytes;
@@ -4179,7 +5054,8 @@ export default function FirewallView() {
       return {
         applicationTraffic: total,
         unclassifiedTraffic: unclassified,
-        applicationCount: applications.size,
+        applicationCount: identifiedApplications.size,
+        networkServiceCount: networkServices.size,
       };
     }, [trafficLogs]);
   const interfaceResults = sections.interfaces?.results || {};
@@ -4189,6 +5065,15 @@ export default function FirewallView() {
   const interfacesUp = interfaceRows.filter(
     (row) => row.link === true || row.link === "up" || row.status === "up",
   ).length;
+  const policyRows = listFrom(sections.policies);
+  const activeAcceptPolicies = policyRows.filter(
+    (policy) =>
+      policy.status !== "disable" &&
+      String(policy.action || "accept").toLowerCase() === "accept",
+  );
+  const applicationControlPolicies = activeAcceptPolicies.filter((policy) =>
+    String(policy["application-list"] || policy.application_list || "").trim(),
+  );
   const cpuUsage = numberFrom(sections.statistics, [
     "results.cpu.0.current",
     "cpu.current",
@@ -4258,7 +5143,7 @@ export default function FirewallView() {
   };
 
   // ---- redesign-derived signals (computed from the live payload) ----
-  const eventList = listFrom(sections.events);
+  const eventList = securityRows;
   const { severityTally, eventGroups } = useMemo(() => {
     const severityOf = (row) => {
       const level = textFrom(
@@ -4369,7 +5254,7 @@ export default function FirewallView() {
       tone: "amber",
       icon: "▲",
       title: "Application Control not classifying traffic",
-      text: `${unclassifiedPct}% of ${formatBytes(applicationTraffic)} is generic / unscanned. Enable an App Control profile to unlock category and risk data.`,
+      text: `${unclassifiedPct}% of ${formatBytes(applicationTraffic)} is generic / unscanned. ${applicationControlPolicies.length} of ${activeAcceptPolicies.length} active allow policies have an Application Control profile assigned.`,
       badge: "High",
       badgeTone: "amber",
     });
@@ -4478,7 +5363,11 @@ export default function FirewallView() {
       {trafficReport && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-[#DDE2EA] bg-white px-4 py-3 text-xs text-[#5B6178]">
           <Shield className="h-4 w-4 text-[#4A5FE8]" />
-          <b className="text-[#374151]">Verified traffic period</b>
+          <b className="text-[#374151]">
+            {trafficReport.summary?.archive_fallback
+              ? "Verified saved traffic period"
+              : "Verified traffic period"}
+          </b>
           <span>
             {formatUsageRangeTimestamp(trafficPeriod?.start)} →{" "}
             {formatUsageRangeTimestamp(trafficPeriod?.end)} IST
@@ -4492,16 +5381,30 @@ export default function FirewallView() {
           <span>
             {Number(trafficReport.summary?.api_pages_fetched || 1)} firewall page(s)
           </span>
+          {Number(trafficReport.summary?.unverified_archive_rows_excluded || 0) >
+            0 && (
+            <span className="font-semibold text-[#B45309]">
+              {Number(
+                trafficReport.summary.unverified_archive_rows_excluded,
+              ).toLocaleString()} legacy archive rows excluded because appliance
+              identity was not recorded
+            </span>
+          )}
           <FwPill
             tone={trafficReport.summary?.source_complete ? "green" : "amber"}
           >
-            {trafficReport.summary?.source_complete
-              ? "Complete retained source"
-              : "Partial source"}
+            {trafficReport.summary?.archive_fallback
+              ? "Saved archive fallback"
+              : trafficReport.summary?.source_complete
+                ? "Complete retained source"
+                : "Partial source"}
           </FwPill>
           <span className="basis-full text-[11px] text-[#7B8498]">
-            Period totals combine the firewall&apos;s currently retained memory
-            logs with daily records already archived by this platform.
+            {trafficReport.summary?.archive_records_included
+              ? trafficReport.summary?.archive_fallback
+                ? "The live current-period feed was empty or unavailable, so this view uses the latest appliance-verified saved report."
+                : "Period totals combine the firewall's retained memory logs with appliance-verified daily archive records."
+              : "This current-period view uses the selected firewall's retained memory logs directly; daily archives are maintained independently."}
           </span>
         </div>
       )}
@@ -4670,7 +5573,17 @@ export default function FirewallView() {
           >
             {label}
             {key === "devices" && <span className={`rounded-full px-2 py-0.5 text-[10.5px] ${tab === key ? "bg-white/20" : "bg-[#F0F1F7]"}`}>{deviceCount.toLocaleString()}</span>}
-            {key === "applications" && <span className={`rounded-full px-2 py-0.5 text-[10.5px] ${tab === key ? "bg-white/20" : "bg-[#F0F1F7]"}`}>{applicationCount.toLocaleString()}</span>}
+            {key === "applications" && (
+              <span className={`rounded-full px-2 py-0.5 text-[10.5px] ${tab === key ? "bg-white/20" : "bg-[#F0F1F7]"}`}>
+                {liveDetailsLoading && !trafficReport
+                  ? "…"
+                  : applicationCount
+                    ? `${applicationCount.toLocaleString()} apps`
+                    : networkServiceCount
+                      ? `${networkServiceCount.toLocaleString()} services`
+                      : "0"}
+              </span>
+            )}
             {key === "interfaces" && <span className={`rounded-full px-2 py-0.5 text-[10.5px] ${tab === key ? "bg-white/20" : "bg-[#F0F1F7]"}`}>{interfacesUp} up</span>}
             {key === "events" && <span className={`rounded-full px-2 py-0.5 text-[10.5px] ${tab === key ? "bg-white/20" : eventCount ? "bg-[#FCE9ED] text-[#C41E3D]" : "bg-[#F0F1F7]"}`}>{eventCount.toLocaleString()}</span>}
           </button>
@@ -4785,28 +5698,18 @@ export default function FirewallView() {
         )}
         {tab === "applications" && (
           <div className="space-y-4">
-            {applicationTraffic > 0 && unclassifiedPct >= 80 && (
-              <div className="flex flex-wrap items-center gap-3 rounded-[13px] border border-[#F2DEB8] bg-[#FFFBF3] px-4 py-3">
-                <span className="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-[10px] bg-[#FCF1DF] text-[#B45309]">
-                  ▲
-                </span>
-                <div className="min-w-0">
-                  <h4 className="text-[13.5px] font-bold text-[#B45309]">
-                    Application Control is not classifying traffic
-                  </h4>
-                  <p className="mt-0.5 text-[12.5px] text-[#5B6178]">
-                    {unclassifiedPct}% of {formatBytes(applicationTraffic)} is
-                    generic &ldquo;unscanned&rdquo; — app names below are
-                    port-based guesses. Enable an Application Control profile on
-                    LAN→WAN policies to unlock category and risk data.
-                  </p>
-                </div>
-              </div>
-            )}
             <ApplicationUsagePanel
               value={trafficLogs}
               devices={sections.devices}
               firewall={firewall}
+              inspection={trafficReport?.summary?.application_control}
+              loading={liveDetailsLoading && !trafficReport}
+              policyCoverage={{
+                active: activeAcceptPolicies.length,
+                configured: applicationControlPolicies.length,
+              }}
+              reportSummary={trafficReport?.summary}
+              reportPeriod={trafficReport?.period}
             />
           </div>
         )}
@@ -4817,7 +5720,12 @@ export default function FirewallView() {
             lastUpdated={data?.last_updated}
           />
         )}
-        {tab === "events" && <SecurityEventsPanel value={sections.events} />}
+        {tab === "events" && (
+          <SecurityEventsPanel
+            value={securityRows}
+            sourceMeta={securitySourceMeta}
+          />
+        )}
         {tab === "archive" && (
           <FirewallArchivePanel
             firewall={firewall}

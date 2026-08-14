@@ -198,6 +198,37 @@ function relativeNotificationTime(value) {
       });
 }
 
+function notificationTargetView(notification, role) {
+  const message = String(notification.message || "").toLowerCase();
+  const kind = String(notification.kind || "").toLowerCase();
+  if (notification.ticket_id) {
+    if (
+      kind === "approval" ||
+      /approval|approved|rejected|clarification/.test(message)
+    )
+      return ["it", "admin", "super_admin"].includes(role)
+        ? "approvals"
+        : "tickets";
+    if (
+      role === "employee" &&
+      (kind === "resolution" || /resolved|please confirm/.test(message))
+    )
+      return "acknowledgements";
+    return "tickets";
+  }
+  if (/firewall/.test(message)) return "firewall";
+  if (/parking/.test(message))
+    return ["admin", "super_admin"].includes(role) ? "parking" : "dashboard";
+  if (/kra|checklist/.test(message))
+    return role === "super_admin"
+      ? "member-checklists"
+      : ["it", "admin"].includes(role)
+        ? "mychecklist"
+        : "dashboard";
+  if (kind === "approval" || /approval/.test(message)) return "approvals";
+  return "dashboard";
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(true);
@@ -208,11 +239,12 @@ export default function App() {
   const [notifs, setNotifs] = useState([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [soundEnabled, setSoundEnabled] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
   const notificationIdsRef = useRef(new Set());
   const notificationsReadyRef = useRef(false);
   const userInteractedRef = useRef(false);
   const soundEnabledRef = useRef(false);
+  const pendingNotificationSoundRef = useRef(false);
 
   const doRefresh = useCallback(() => setRefresh((n) => n + 1), []);
 
@@ -255,7 +287,8 @@ export default function App() {
   }, [user]);
 
   useEffect(() => {
-    const enabled = window.localStorage.getItem("ticketflow-notification-sound") === "true";
+    const enabled =
+      window.localStorage.getItem("ticketflow-notification-sound") !== "false";
     setSoundEnabled(enabled);
     soundEnabledRef.current = enabled;
   }, []);
@@ -264,24 +297,14 @@ export default function App() {
     soundEnabledRef.current = soundEnabled;
   }, [soundEnabled]);
 
-  useEffect(() => {
-    if (!user) return undefined;
-    const markInteraction = () => {
-      userInteractedRef.current = true;
-    };
-    window.addEventListener("pointerdown", markInteraction, { once: true });
-    window.addEventListener("keydown", markInteraction, { once: true });
-    return () => {
-      window.removeEventListener("pointerdown", markInteraction);
-      window.removeEventListener("keydown", markInteraction);
-    };
-  }, [user]);
-
   const playNotificationSound = useCallback(() => {
-    if (!soundEnabledRef.current || !userInteractedRef.current) return;
+    const browserActivated =
+      userInteractedRef.current ||
+      Boolean(window.navigator.userActivation?.hasBeenActive);
+    if (!soundEnabledRef.current || !browserActivated) return false;
     try {
       const AudioContext = window.AudioContext || window.webkitAudioContext;
-      if (!AudioContext) return;
+      if (!AudioContext) return false;
       const context = new AudioContext();
       const gain = context.createGain();
       const oscillator = context.createOscillator();
@@ -299,16 +322,65 @@ export default function App() {
       oscillator.start();
       oscillator.stop(context.currentTime + 0.25);
       oscillator.addEventListener("ended", () => context.close());
+      return true;
     } catch {
       // Sound is an enhancement; browser audio restrictions must not affect alerts.
+      return false;
     }
   }, []);
+
+  useEffect(() => {
+    if (!user) return undefined;
+    const markInteraction = () => {
+      userInteractedRef.current = true;
+      if (pendingNotificationSoundRef.current) {
+        pendingNotificationSoundRef.current = !playNotificationSound();
+      }
+    };
+    window.addEventListener("pointerdown", markInteraction, { once: true });
+    window.addEventListener("keydown", markInteraction, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", markInteraction);
+      window.removeEventListener("keydown", markInteraction);
+    };
+  }, [user, playNotificationSound]);
+
+  const markNotificationRead = useCallback(async (notification) => {
+    if (notification.read) return;
+    setNotifs((items) =>
+      items.map((item) =>
+        item.id === notification.id ? { ...item, read: true } : item,
+      ),
+    );
+    try {
+      await api(`/notifications/${notification.id}/read`, { method: "POST" });
+    } catch (error) {
+      setNotifs((items) =>
+        items.map((item) =>
+          item.id === notification.id ? { ...item, read: false } : item,
+        ),
+      );
+      toast.error(error.message);
+    }
+  }, []);
+
+  const openNotification = useCallback(
+    (notification) => {
+      void markNotificationRead(notification);
+      navigateView(notificationTargetView(notification, user?.role));
+      if (notification.ticket_id) setOpenTicketId(notification.ticket_id);
+      setNotificationsOpen(false);
+    },
+    [markNotificationRead, navigateView, user?.role],
+  );
 
   const loadNotifications = useCallback(
     async ({ announceNew = true } = {}) => {
       try {
         const items = await api("/notifications");
-        const newlyArrived = notificationsReadyRef.current
+        const firstLoad = !notificationsReadyRef.current;
+        const unreadItems = items.filter((item) => !item.read);
+        const newlyArrived = !firstLoad
           ? items.filter(
               (item) =>
                 !item.read && !notificationIdsRef.current.has(item.id),
@@ -317,8 +389,11 @@ export default function App() {
         notificationIdsRef.current = new Set(items.map((item) => item.id));
         notificationsReadyRef.current = true;
         setNotifs(items);
+        if (firstLoad && unreadItems.length) {
+          pendingNotificationSoundRef.current = !playNotificationSound();
+        }
         if (announceNew && newlyArrived.length) {
-          playNotificationSound();
+          pendingNotificationSoundRef.current = !playNotificationSound();
           const latest = newlyArrived[0];
           toast.info(
             newlyArrived.length === 1
@@ -329,12 +404,10 @@ export default function App() {
                 newlyArrived.length === 1
                   ? latest.ticket_human_id || "TicketFlow notification"
                   : latest.message,
-              action: latest.ticket_id
-                ? {
-                    label: "View",
-                    onClick: () => setOpenTicketId(latest.ticket_id),
-                  }
-                : undefined,
+              action: {
+                label: "View",
+                onClick: () => openNotification(latest),
+              },
             },
           );
         }
@@ -342,7 +415,7 @@ export default function App() {
         // Background polling stays quiet; foreground API errors remain actionable.
       }
     },
-    [playNotificationSound],
+    [openNotification, playNotificationSound],
   );
 
   const loadMeta = useCallback(async () => {
@@ -358,6 +431,7 @@ export default function App() {
   useEffect(() => {
     notificationIdsRef.current = new Set();
     notificationsReadyRef.current = false;
+    pendingNotificationSoundRef.current = false;
     if (!user) {
       setNotifs([]);
       return undefined;
@@ -381,24 +455,6 @@ export default function App() {
       setNotifs((n) => n.map((x) => ({ ...x, read: true })));
     } catch (e) {}
   };
-  const markNotificationRead = async (notification) => {
-    if (notification.read) return;
-    try {
-      await api(`/notifications/${notification.id}/read`, { method: "POST" });
-      setNotifs((items) =>
-        items.map((item) =>
-          item.id === notification.id ? { ...item, read: true } : item,
-        ),
-      );
-    } catch (error) {
-      toast.error(error.message);
-    }
-  };
-  const openNotification = async (notification) => {
-    await markNotificationRead(notification);
-    if (notification.ticket_id) setOpenTicketId(notification.ticket_id);
-    setNotificationsOpen(false);
-  };
   const toggleNotificationSound = () => {
     userInteractedRef.current = true;
     const next = !soundEnabled;
@@ -408,6 +464,8 @@ export default function App() {
       "ticketflow-notification-sound",
       String(next),
     );
+    pendingNotificationSoundRef.current = false;
+    if (next) window.setTimeout(playNotificationSound, 0);
     toast.success(next ? "Notification sound enabled" : "Notification sound muted");
   };
 
@@ -449,7 +507,7 @@ export default function App() {
   };
 
   const Sidebar = () => (
-    <aside className="dashboard-sidebar flex w-[min(16rem,calc(100vw-2rem))] shrink-0 flex-col border-r border-[#E5E9EF] bg-white text-[#4B5563] shadow-[8px_0_28px_rgba(17,24,39,.04)] md:w-64">
+    <aside className="dashboard-sidebar flex h-full w-[min(16rem,calc(100vw-2rem))] shrink-0 flex-col overflow-hidden border-r border-[#E5E9EF] bg-white text-[#4B5563] shadow-[8px_0_28px_rgba(17,24,39,.04)] md:w-64">
       <div className="flex h-16 items-center gap-3 border-b border-[#E5E9EF] px-5 text-lg font-semibold text-[#111827]">
         <span className="brand-emblem-frame flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#DDE8E3] bg-white shadow-sm">
           <Image src="/brand/ethara-emblem.png" alt="" width={36} height={36} priority className="brand-emblem h-9 w-9 object-contain" aria-hidden="true" />
@@ -458,7 +516,7 @@ export default function App() {
           Ethara <span className="text-[#ee00ee]">Service Hub</span>
         </span>
       </div>
-      <nav className="flex-1 p-3 space-y-1">
+      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
         {nav.map((n) => {
           const Icon = n.icon;
           const active = view === n.k;
@@ -486,7 +544,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex bg-[#f7f8fc] dashboard-shell">
-      <div className="hidden md:flex">
+      <div className="fixed inset-y-0 left-0 z-40 hidden h-screen md:flex">
         <Sidebar />
       </div>
       {sidebarOpen && (
@@ -501,7 +559,7 @@ export default function App() {
         </div>
       )}
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="min-w-0 flex-1 flex-col md:ml-64 flex">
         <header className="sticky top-0 z-30 flex min-h-16 items-center justify-between gap-2 border-b border-[#e5e7f0] bg-white/90 px-2 py-2 backdrop-blur-xl sm:px-4 sm:py-3 md:px-7">
           <div className="flex min-w-0 items-center gap-1 sm:gap-3">
             <Button

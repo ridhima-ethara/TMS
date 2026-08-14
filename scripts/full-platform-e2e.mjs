@@ -116,7 +116,9 @@ async function cleanup() {
     database.collection("email_verifications").deleteMany({ user_id: { $in: userIds } }),
   ]);
   for (const id of created.attachments) await database.deleteBlob(id);
-  await database.collection("users").deleteMany({ id: { $in: userIds } });
+  await database.collection("users").deleteMany({
+    $or: [{ id: { $in: userIds } }, { test_run_id: runId }],
+  });
 }
 
 try {
@@ -164,6 +166,15 @@ try {
   equal((await request("/firewall/overview", { cookie: cookies.employee })).response.status, 403, "employee firewall access was allowed");
   equal(
     (
+      await request("/firewall/bandwidth?firewall=hq2&today=true", {
+        cookie: cookies.employee,
+      })
+    ).response.status,
+    403,
+    "employee firewall bandwidth access was allowed",
+  );
+  equal(
+    (
       await request("/firewall/archive/sync?firewall=hq", {
         method: "POST",
         cookie: cookies.employee,
@@ -171,6 +182,109 @@ try {
     ).response.status,
     403,
     "employee firewall archive sync was allowed",
+  );
+  const firewallBandwidthTotals = {};
+  for (const firewallId of ["hq", "hq2"]) {
+    const bandwidthStartedAt = Date.now();
+    const bandwidth = await request(
+      `/firewall/bandwidth?firewall=${firewallId}&today=true`,
+      { cookie: cookies.superAdmin },
+    );
+    equal(
+      bandwidth.response.status,
+      200,
+      `${firewallId.toUpperCase()} bandwidth report failed`,
+    );
+    check(
+      Date.now() - bandwidthStartedAt < 30_000,
+      `${firewallId.toUpperCase()} bandwidth report exceeded 30 seconds`,
+    );
+    equal(
+      bandwidth.payload.firewall?.id,
+      firewallId,
+      `${firewallId.toUpperCase()} bandwidth report used the wrong appliance`,
+    );
+    check(
+      Array.isArray(bandwidth.payload.clients),
+      `${firewallId.toUpperCase()} bandwidth clients are malformed`,
+    );
+    equal(
+      Number(bandwidth.payload.summary?.traffic_bytes || 0),
+      Number(bandwidth.payload.summary?.sent_bytes || 0) +
+        Number(bandwidth.payload.summary?.received_bytes || 0),
+      `${firewallId.toUpperCase()} bandwidth totals are inconsistent`,
+    );
+    check(
+      Date.parse(bandwidth.payload.period?.start) <=
+        Date.parse(bandwidth.payload.period?.end),
+      `${firewallId.toUpperCase()} bandwidth period is invalid`,
+    );
+    firewallBandwidthTotals[firewallId] = Number(
+      bandwidth.payload.summary?.traffic_bytes || 0,
+    );
+
+    const archiveList = await request(
+      `/firewall/archive?firewall=${firewallId}&limit=1`,
+      { cookie: cookies.superAdmin },
+    );
+    equal(
+      archiveList.response.status,
+      200,
+      `${firewallId.toUpperCase()} daily archive list failed`,
+    );
+    check(
+      Array.isArray(archiveList.payload.archives),
+      `${firewallId.toUpperCase()} daily archive list is malformed`,
+    );
+    const archivedDay = archiveList.payload.archives[0];
+    if (archivedDay) {
+      const archiveDetails = await request(
+        `/firewall/archive?firewall=${firewallId}&date=${archivedDay.date}&record_page=1&record_limit=5`,
+        { cookie: cookies.superAdmin },
+      );
+      equal(
+        archiveDetails.response.status,
+        200,
+        `${firewallId.toUpperCase()} archive detail page failed`,
+      );
+      check(
+        archiveDetails.payload.records.length <= 5 &&
+          archiveDetails.payload.record_pagination.total_records >=
+            archiveDetails.payload.records.length,
+        `${firewallId.toUpperCase()} archive detail pagination is invalid`,
+      );
+      const summaryExport = await request(
+        `/firewall/archive/export?firewall=${firewallId}&type=summary&date=${archivedDay.date}`,
+        { cookie: cookies.superAdmin },
+      );
+      equal(
+        summaryExport.response.status,
+        200,
+        `${firewallId.toUpperCase()} archive summary export failed`,
+      );
+      check(
+        summaryExport.response.headers
+          .get("content-type")
+          ?.includes("text/csv"),
+        `${firewallId.toUpperCase()} archive summary export is not CSV`,
+      );
+    }
+  }
+  if (firewallBandwidthTotals.hq > 0 && firewallBandwidthTotals.hq2 > 0)
+    check(
+      firewallBandwidthTotals.hq !== firewallBandwidthTotals.hq2,
+      "HQ and HQ2 bandwidth reports unexpectedly contain identical totals",
+    );
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  equal(
+    (
+      await request(
+        `/firewall/bandwidth?firewall=hq2&date=${tomorrow}`,
+        { cookie: cookies.superAdmin },
+      )
+    ).response.status,
+    400,
+    "future firewall bandwidth dates were accepted",
   );
   const userDirectory = await request("/users", { cookie: cookies.superAdmin });
   equal(userDirectory.response.status, 200, "Super Admin user directory failed");

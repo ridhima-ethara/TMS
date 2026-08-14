@@ -27,14 +27,18 @@ import {
 } from "lucide-react";
 
 const ROLE_OPTIONS = [
-  { value: "employee", label: "Employee", hint: "Raise tickets", icon: User },
-  { value: "it", label: "IT team", hint: "Direct access", icon: Wrench },
+  { value: "employee", label: "Employee", icon: User },
+  { value: "it", label: "IT team", icon: Wrench },
   {
     value: "admin",
     label: "Admin team",
-    hint: "Direct access",
     icon: Building2,
   },
+];
+
+const WORK_LOCATIONS = [
+  { value: "Tulip", site: "HQ2" },
+  { value: "Lotus", site: "HQ" },
 ];
 
 const INPUT_CLASS =
@@ -665,9 +669,6 @@ export default function Login({ onLogin }) {
                             <b className="mt-2 block text-[11px] text-[var(--login-text-soft)]">
                               {option.label}
                             </b>
-                            <span className="text-[9px] text-[var(--login-faint)]">
-                              {option.hint}
-                            </span>
                           </button>
                         );
                       })}
@@ -684,23 +685,29 @@ export default function Login({ onLogin }) {
                       role="group"
                       aria-label="Work location"
                     >
-                      {["Tulip", "Lotus"].map((location) => (
+                      {WORK_LOCATIONS.map((location) => (
                         <button
-                          key={location}
+                          key={location.value}
                           type="button"
-                          aria-pressed={reg.location === location}
+                          aria-pressed={reg.location === location.value}
                           disabled={loading}
                           onClick={() =>
-                            setReg((current) => ({ ...current, location }))
+                            setReg((current) => ({
+                              ...current,
+                              location: location.value,
+                            }))
                           }
-                          className={`flex h-11 items-center justify-center gap-2 rounded-lg border text-sm font-semibold transition ${
-                            reg.location === location
+                          className={`flex min-h-12 items-center justify-center gap-2 rounded-lg border px-3 text-sm font-semibold transition ${
+                            reg.location === location.value
                               ? "border-[#ED00ED]/70 bg-[#ED00ED]/10 text-[#ED00ED] ring-1 ring-[#ED00ED]/20"
                               : "border-[var(--login-border)] bg-[var(--login-option)] text-[var(--login-muted)] hover:border-[#ED00ED]/40"
                           }`}
                         >
                           <Building2 className="h-4 w-4" />
-                          {location}
+                          <span>{location.value}</span>
+                          <span className="rounded-full border border-current/20 bg-white/50 px-2 py-0.5 text-[10px] font-bold tracking-wide">
+                            {location.site}
+                          </span>
                         </button>
                       ))}
                     </div>

@@ -224,7 +224,38 @@ function demoLoginAllowed(request) {
   }
 }
 
-let localFirewallProfiles;
+function localFirewallProfileBlocks() {
+  // The original local setup contains two legacy FIREWALL_* blocks. Do not
+  // cache a failed read: the standalone process can start before its working
+  // directory/environment file is available, and caching [] would silently
+  // make both location tabs fall back to the same generic process variables.
+  const candidates = [
+    process.env.FIREWALL_ENV_PATH,
+    `${process.cwd()}/.env.local`,
+    `${process.cwd()}/../../.env.local`,
+  ].filter(Boolean);
+  for (const path of [...new Set(candidates)]) {
+    try {
+      const profiles = [];
+      let current = null;
+      const lines = readFileSync(path, "utf8").split(/\r?\n/);
+      for (const line of lines) {
+        const match = line.match(/^(FIREWALL_[A-Z0-9_]+)=(.*)$/);
+        if (!match) continue;
+        if (match[1] === "FIREWALL_API_URL") {
+          current = {};
+          profiles.push(current);
+        }
+        if (current) current[match[1].replace(/^FIREWALL_/, "")] = match[2];
+      }
+      if (profiles.length) return profiles;
+    } catch {
+      // Try the next deployment-safe location.
+    }
+  }
+  return [];
+}
+
 function firewallProfile(request) {
   const requested =
     (typeof request === "string"
@@ -232,33 +263,39 @@ function firewallProfile(request) {
       : new URL(request.url).searchParams.get("firewall")) === "hq"
       ? "hq"
       : "hq2";
-  if (!localFirewallProfiles) {
-    localFirewallProfiles = [];
-    try {
-      const lines = readFileSync(".env.local", "utf8").split(/\r?\n/);
-      let current = null;
-      for (const line of lines) {
-        const match = line.match(/^(FIREWALL_[A-Z0-9_]+)=(.*)$/);
-        if (!match) continue;
-        if (match[1] === "FIREWALL_API_URL") {
-          current = {};
-          localFirewallProfiles.push(current);
-        }
-        if (current) current[match[1].replace(/^FIREWALL_/, "")] = match[2];
-      }
-    } catch {
-      localFirewallProfiles = [];
-    }
-  }
+  const localFirewallProfiles = localFirewallProfileBlocks();
   const localIndex = requested === "hq" ? 1 : 0;
   const local = localFirewallProfiles[localIndex] || {};
+  const sharedLegacyDefaults = localFirewallProfiles[0] || {};
   const prefix = requested === "hq" ? "FIREWALL_HQ_" : "FIREWALL_HQ2_";
-  const value = (key, fallback = "") =>
-    process.env[`${prefix}${key}`] ||
-    local[key] ||
-    process.env[`FIREWALL_${key}`] ||
-    fallback;
+  const locationCredentialKeys = new Set([
+    "API_URL",
+    "API_KEY",
+    "CA_CERT_PATH",
+    "CERT_SHA256",
+  ]);
+  const value = (key, fallback = "") => {
+    const explicit = process.env[`${prefix}${key}`];
+    if (explicit) return explicit;
+    if (local[key]) return local[key];
+    // Credentials and appliance identity must never fall through to the other
+    // location. A missing profile is safer as "unconfigured" than mislabeled
+    // live data from HQ or HQ2.
+    if (locationCredentialKeys.has(key)) return fallback;
+    return (
+      sharedLegacyDefaults[key] ||
+      process.env[`FIREWALL_${key}`] ||
+      fallback
+    );
+  };
   return { id: requested, label: requested === "hq" ? "HQ" : "HQ2", value };
+}
+
+function firewallDisplayName(profile) {
+  const configured = String(profile.value("NAME", "")).trim();
+  return !configured || /^(?:primary\s+)?firewall(?:\s+name)?$/i.test(configured)
+    ? `${profile.label} Firewall`
+    : configured;
 }
 
 function normalizeCertificateFingerprint(value) {
@@ -321,12 +358,20 @@ function pinnedFirewallAgent(expectedFingerprint) {
 
 async function firewallRequest(url, headers, tls = {}) {
   const target = new URL(url);
+  if (!["http:", "https:"].includes(target.protocol))
+    throw new Error("Unsupported firewall API protocol");
   const isHttps = target.protocol === "https:";
   const allowSelfSigned = tls.allowSelfSigned === true;
   const caPath = tls.caPath;
   const certSha256 = tls.certSha256;
   if (allowSelfSigned && process.env.NODE_ENV === "production")
     throw new Error("Self-signed firewall certificate bypass is disabled in production");
+  const configuredMaxBytes = Number(
+    process.env.FIREWALL_MAX_RESPONSE_BYTES || 25 * 1024 * 1024,
+  );
+  const maxResponseBytes = Number.isFinite(configuredMaxBytes)
+    ? Math.min(100 * 1024 * 1024, Math.max(1024 * 1024, configuredMaxBytes))
+    : 25 * 1024 * 1024;
   const options = { method: "GET", headers, timeout: 10000 };
   if (isHttps) {
     if (certSha256) options.agent = pinnedFirewallAgent(certSha256);
@@ -341,8 +386,16 @@ async function firewallRequest(url, headers, tls = {}) {
       options,
       (response) => {
         let body = "";
+        let responseBytes = 0;
         response.setEncoding("utf8");
         response.on("data", (chunk) => {
+          responseBytes += Buffer.byteLength(chunk);
+          if (responseBytes > maxResponseBytes) {
+            request.destroy(
+              new Error("Firewall response exceeded the configured size limit"),
+            );
+            return;
+          }
           body += chunk;
         });
         response.on("end", () => {
@@ -507,6 +560,12 @@ const FIREWALL_ARCHIVE_SYNCS_KEY = Symbol.for(
 const FIREWALL_ARCHIVE_WRITES_KEY = Symbol.for(
   "ticketflow.firewallArchiveWrites",
 );
+const FIREWALL_BANDWIDTH_CACHE_KEY = Symbol.for(
+  "ticketflow.firewallBandwidthCache",
+);
+const FIREWALL_OVERVIEW_CACHE_KEY = Symbol.for(
+  "ticketflow.firewallOverviewCache",
+);
 
 async function probeFirewallAvailability(db, firewallId) {
   const profile = firewallProfile(firewallId);
@@ -637,12 +696,17 @@ async function syncFirewallArchiveSnapshot(
       { pageSize, maxRows },
     );
     const rawRows = firewallRows(payload);
-    const inventory = await mapFirewallInventory(rawRows);
+    const inventory = await mapFirewallInventory(
+      rawRows.map((row) => ({
+        ...row,
+        appliance_serial: payload?.serial || "",
+      })),
+    );
     const capturedAt = new Date();
     const archive = await archiveFirewallRecords(
       db,
       profile,
-      fw("NAME", profile.label),
+      firewallDisplayName(profile),
       inventory.devices,
       capturedAt,
       {
@@ -651,6 +715,7 @@ async function syncFirewallArchiveSnapshot(
         sourceRowsFetched: Number(payload?.raw_rows_fetched || rawRows.length),
         sourceRowsAvailable: Number(payload?.total_lines || rawRows.length),
         sourcePagesFetched: Number(payload?.pages_fetched || 1),
+        applianceSerial: payload?.serial || "",
       },
     );
     await db.collection("firewall_health").updateOne(
@@ -702,11 +767,11 @@ function startFirewallArchiveMonitor(db) {
     ? Math.min(24 * 60 * 60_000, Math.max(5 * 60_000, configuredInterval))
     : 15 * 60_000;
   const configuredInitialDelay = Number(
-    process.env.FIREWALL_ARCHIVE_INITIAL_DELAY_MS || 5 * 60_000,
+    process.env.FIREWALL_ARCHIVE_INITIAL_DELAY_MS || 30_000,
   );
   const initialDelayMs = Number.isFinite(configuredInitialDelay)
     ? Math.min(intervalMs, Math.max(5_000, configuredInitialDelay))
-    : 5 * 60_000;
+    : 30_000;
   let running = false;
   const run = async () => {
     if (running) return;
@@ -947,7 +1012,7 @@ function activeDhcpLeases(payload) {
           : now + remainingSeconds * 1000
         : null;
       return (
-        !/(expired|inactive|released|offline)/.test(state) &&
+        !/(expired|inactive|released|offline|conflict|declined)/.test(state) &&
         (!fortiExpiryTime || fortiExpiryTime > now) &&
         (!expiryTime || Number.isNaN(expiryTime) || expiryTime > now)
       );
@@ -979,8 +1044,37 @@ function activeDhcpLeases(payload) {
     }));
   const unique = new Map();
   for (const lease of active) {
-    const key = `${normalizeMac(lease.mac)}|${String(lease.ipv4_address || "").trim()}`;
-    if (!unique.has(key)) unique.set(key, lease);
+    const mac = normalizeMac(lease.mac);
+    const ip = String(lease.ipv4_address || "").trim();
+    const detectedInterface = String(lease.detected_interface || "").trim();
+    const key = mac || (ip ? `ip:${ip}` : "");
+    if (!key) continue;
+    const current = unique.get(key);
+    if (!current) {
+      unique.set(key, {
+        ...lease,
+        ip_addresses: ip ? [ip] : [],
+        online_interfaces: detectedInterface ? [detectedInterface] : [],
+      });
+      continue;
+    }
+    const ipAddresses = [
+      ...new Set([...(current.ip_addresses || []), ip].filter(Boolean)),
+    ];
+    const onlineInterfaces = [
+      ...new Set(
+        [...(current.online_interfaces || []), detectedInterface].filter(
+          Boolean,
+        ),
+      ),
+    ];
+    const currentExpiry = Date.parse(current.lease_expires_at || "") || 0;
+    const leaseExpiry = Date.parse(lease.lease_expires_at || "") || 0;
+    unique.set(key, {
+      ...(leaseExpiry > currentExpiry ? lease : current),
+      ip_addresses: ipAddresses,
+      online_interfaces: onlineInterfaces,
+    });
   }
   return [...unique.values()];
 }
@@ -1017,14 +1111,211 @@ function firewallArchiveDate(value) {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
+function firewallApplicationName(row) {
+  return String(row?.app || row?.appname || row?.application || "").trim();
+}
+
+function firewallApplicationMatchKeys(row) {
+  const sessionId = String(row?.sessionid || row?.session_id || "").trim();
+  const sourceIp = String(row?.srcip || row?.source_ip || "").trim();
+  const destinationIp = String(row?.dstip || row?.destination_ip || "").trim();
+  const sourcePort = String(row?.srcport || row?.source_port || "").trim();
+  const destinationPort = String(
+    row?.dstport || row?.destination_port || "",
+  ).trim();
+  const protocol = String(row?.proto || row?.protocol || "").trim();
+  return [
+    sessionId && sourceIp && destinationIp
+      ? `session:${sessionId}|${sourceIp}|${destinationIp}`
+      : "",
+    sessionId ? `session:${sessionId}` : "",
+    sourceIp && destinationIp && destinationPort
+      ? `flow:${sourceIp}|${destinationIp}|${sourcePort}|${destinationPort}|${protocol}`
+      : "",
+  ].filter(Boolean);
+}
+
+function firewallApplicationCandidateScore(row) {
+  const name = firewallApplicationName(row);
+  const category = String(row?.appcat || row?.category || "").trim();
+  const risk = String(row?.apprisk || row?.application_risk || "").trim();
+  let score = /unknown application/i.test(name) ? 0 : 10;
+  if (category && !/^(unknown|unscanned|unclassified)$/i.test(category))
+    score += 4;
+  if (risk && !/^unknown$/i.test(risk)) score += 2;
+  if (!/^(ssl|http|https)$/i.test(name)) score += 1;
+  return score;
+}
+
+function enrichFirewallTrafficApplications(trafficRows, applicationRows) {
+  const applicationIndex = new Map();
+  for (const row of applicationRows) {
+    if (!firewallApplicationName(row)) continue;
+    for (const key of firewallApplicationMatchKeys(row)) {
+      if (!applicationIndex.has(key)) applicationIndex.set(key, []);
+      applicationIndex.get(key).push(row);
+    }
+  }
+  let matchedTrafficRecords = 0;
+  const matchedApplicationEvents = new Set();
+  const records = trafficRows.map((trafficRow) => {
+    const candidates = [];
+    const seen = new Set();
+    for (const key of firewallApplicationMatchKeys(trafficRow)) {
+      for (const candidate of applicationIndex.get(key) || []) {
+        const fingerprint = [
+          candidate.eventtime,
+          candidate.logid,
+          candidate.sessionid,
+          candidate.app,
+          candidate.srcip,
+          candidate.dstip,
+        ].join("|");
+        if (!seen.has(fingerprint)) {
+          seen.add(fingerprint);
+          candidates.push({ candidate, fingerprint });
+        }
+      }
+      if (candidates.length) break;
+    }
+    if (!candidates.length) return trafficRow;
+    candidates.sort(
+      (left, right) =>
+        firewallApplicationCandidateScore(right.candidate) -
+          firewallApplicationCandidateScore(left.candidate) ||
+        Number(right.candidate.eventtime || 0) -
+          Number(left.candidate.eventtime || 0),
+    );
+    const selected = candidates[0].candidate;
+    candidates.forEach(({ fingerprint }) =>
+      matchedApplicationEvents.add(fingerprint),
+    );
+    matchedTrafficRecords += 1;
+    const application = firewallApplicationName(selected);
+    const identified = !/^unknown application$/i.test(application);
+    return {
+      ...trafficRow,
+      ...(identified ? { app: application, appname: application } : {}),
+      appcat:
+        selected.appcat || selected.category || trafficRow.appcat || "",
+      apprisk: selected.apprisk || selected.application_risk || "",
+      application_action: selected.action || "",
+      application_identified: identified,
+      application_source: "fortigate_application_control",
+      application_event_count: candidates.length,
+      application_log_time:
+        firewallRecordTime(selected)?.toISOString() || null,
+    };
+  });
+  const identifiedRows = applicationRows.filter(
+    (row) =>
+      firewallApplicationName(row) &&
+      !/^unknown application$/i.test(firewallApplicationName(row)),
+  );
+  return {
+    records,
+    summary: {
+      source: "fortigate_application_control_log",
+      events: applicationRows.length,
+      identified_events: identifiedRows.length,
+      matched_traffic_records: matchedTrafficRecords,
+      matched_application_events: matchedApplicationEvents.size,
+      unmatched_application_events: Math.max(
+        0,
+        applicationRows.length - matchedApplicationEvents.size,
+      ),
+      unique_applications: new Set(
+        identifiedRows.map(firewallApplicationName).filter(Boolean),
+      ).size,
+      categories: [
+        ...new Set(
+          identifiedRows
+            .map((row) => row.appcat || row.category)
+            .filter(Boolean),
+        ),
+      ].sort(),
+      risks: [
+        ...new Set(
+          identifiedRows
+            .map((row) => row.apprisk || row.application_risk)
+            .filter(Boolean),
+        ),
+      ].sort(),
+    },
+  };
+}
+
+function firewallApplicationRetentionSummary(rows) {
+  const applications = new Map();
+  const timestamps = [];
+  for (const row of rows) {
+    const name = firewallApplicationName(row);
+    if (!name || /^unknown application$/i.test(name)) continue;
+    const timestamp = firewallRecordTime(row);
+    if (timestamp) timestamps.push(timestamp);
+    const current = applications.get(name) || {
+      name,
+      category: String(row.appcat || row.category || "Unknown"),
+      risk: String(row.apprisk || row.application_risk || "Unknown"),
+      events: 0,
+      sourceSystems: new Set(),
+      destinations: new Set(),
+      lastSeen: null,
+    };
+    current.events += 1;
+    if (row.srcip) current.sourceSystems.add(String(row.srcip));
+    if (row.dstip) current.destinations.add(String(row.dstip));
+    if (timestamp && (!current.lastSeen || timestamp > current.lastSeen))
+      current.lastSeen = timestamp;
+    applications.set(name, current);
+  }
+  timestamps.sort((left, right) => left - right);
+  return {
+    retained_events: rows.length,
+    retained_identified_applications: applications.size,
+    retained_period: timestamps.length
+      ? {
+          start: timestamps[0].toISOString(),
+          end: timestamps.at(-1).toISOString(),
+        }
+      : null,
+    retained_applications: [...applications.values()]
+      .sort(
+        (left, right) =>
+          right.events - left.events || left.name.localeCompare(right.name),
+      )
+      .slice(0, 40)
+      .map((application) => ({
+        name: application.name,
+        category: application.category,
+        risk: application.risk,
+        events: application.events,
+        source_systems: application.sourceSystems.size,
+        destinations: application.destinations.size,
+        last_seen: application.lastSeen?.toISOString() || null,
+      })),
+  };
+}
+
 function normalizedFirewallRecord(row) {
   const timestamp = firewallRecordTime(row);
   if (!timestamp) return null;
+  const explicitApplication = firewallApplicationName(row);
+  const service = String(row.service || "").trim();
+  const applicationIdentified =
+    row.application_identified !== undefined
+      ? Boolean(row.application_identified)
+      : Boolean(
+          row.app ||
+            row.appname ||
+            (row.application && row.application !== row.service),
+        );
   return {
     record_id:
       row.record_id ||
       [row.logid, row.sessionid, row.eventtime].filter(Boolean).join(":") ||
       "",
+    appliance_serial: row.appliance_serial || row.serial || "",
     timestamp: timestamp.toISOString(),
     source_ip: row.srcip || row.source_ip || row.ip || "",
     source_mac:
@@ -1032,8 +1323,13 @@ function normalizedFirewallRecord(row) {
     source_name:
       row.srcname || row.source_name || row.hostname || row.asset_user_name || "",
     source_device_type:
-      row.srcdevtype || row.source_device_type || row.device_type || "",
-    source_os_name: row.srcosname || row.source_os_name || row.os_name || "",
+      row.srcdevtype ||
+      row.devtype ||
+      row.source_device_type ||
+      row.device_type ||
+      "",
+    source_os_name:
+      row.srcosname || row.osname || row.source_os_name || row.os_name || "",
     source_vendor:
       row.srchwvendor || row.source_vendor || row.hardware_vendor || row.vendor || "",
     asset_user_name: row.asset_user_name || "",
@@ -1052,10 +1348,19 @@ function normalizedFirewallRecord(row) {
     destination_interface: Array.isArray(row.dstintf)
       ? row.dstintf.join(", ")
       : String(row.dstintf || row.destination_interface || ""),
-    application:
-      row.app || row.appname || row.application || row.service || "",
-    service: row.service || row.application || "",
+    session_id: row.sessionid || row.session_id || "",
+    protocol: row.proto || row.protocol || "",
+    application: explicitApplication || service,
+    service: service || row.application || "",
     category: row.appcat || row.category || "",
+    application_risk: row.apprisk || row.application_risk || "",
+    application_action: row.application_action || "",
+    application_identified: applicationIdentified,
+    application_source:
+      row.application_source ||
+      (applicationIdentified ? "firewall_traffic_log" : "service_protocol"),
+    application_event_count: Number(row.application_event_count || 0),
+    application_log_time: row.application_log_time || "",
     action: row.action || row.status || "",
     severity: row.level || row.severity || row.crlevel || "",
     policy: row.policyname || row.policy || row.policyid || "",
@@ -1087,11 +1392,39 @@ function firewallArchiveSummary(records) {
       (sum, row) => sum + row.sent_bytes + row.received_bytes,
       0,
     ),
+    sent_bytes: records.reduce((sum, row) => sum + row.sent_bytes, 0),
+    received_bytes: records.reduce((sum, row) => sum + row.received_bytes, 0),
+    duration_seconds: records.reduce(
+      (sum, row) => sum + row.duration_seconds,
+      0,
+    ),
     unique_sources: new Set(
       records.map((row) => row.source_mac || row.source_ip).filter(Boolean),
     ).size,
-    applications: new Set(records.map((row) => row.application).filter(Boolean))
-      .size,
+    unique_destinations: new Set(
+      records.map((row) => row.destination_ip).filter(Boolean),
+    ).size,
+    unique_policies: new Set(
+      records.map((row) => row.policy).filter(Boolean),
+    ).size,
+    inventory_mapped_sources: new Set(
+      records
+        .filter((row) => row.inventory_match)
+        .map((row) => row.source_mac || row.source_ip)
+        .filter(Boolean),
+    ).size,
+    applications: new Set(
+      records
+        .filter((row) => row.application_identified === true)
+        .map((row) => row.application)
+        .filter(Boolean),
+    ).size,
+    protocol_services: new Set(
+      records
+        .filter((row) => row.application_identified !== true)
+        .map((row) => row.service || row.application)
+        .filter(Boolean),
+    ).size,
   };
   const escalations = [];
   if (critical)
@@ -1132,8 +1465,237 @@ function firewallRecordFingerprint(row) {
   ].join("|");
 }
 
+function firewallTrafficRecordKey(row) {
+  return createHash("md5").update(firewallRecordFingerprint(row)).digest("hex");
+}
+
+function firewallTrafficClientKey(row) {
+  const mac = normalizeMac(row.source_mac);
+  if (mac) return `mac:${mac}`;
+  const ip = String(row.source_ip || "").trim();
+  return ip ? `ip:${ip}` : "";
+}
+
+async function indexFirewallTrafficRecords(db, firewallId, date, records) {
+  const candidates = records
+    .map((row) => ({
+      record_key: firewallTrafficRecordKey(row),
+      observed_at: row.timestamp,
+      client_key: firewallTrafficClientKey(row),
+      source_ip: row.source_ip || "",
+      source_mac: row.source_mac || "",
+      source_name: row.source_name || "",
+      source_device_type: row.source_device_type || "",
+      source_os_name: row.source_os_name || "",
+      source_vendor: row.source_vendor || "",
+      asset_user_name: row.asset_user_name || "",
+      employee_code: row.employee_code || "",
+      asset_email: row.asset_email || "",
+      av_status: row.av_status || "Unknown",
+      inventory_match: Boolean(row.inventory_match),
+      sent_bytes: Math.max(0, Math.round(Number(row.sent_bytes || 0))),
+      received_bytes: Math.max(0, Math.round(Number(row.received_bytes || 0))),
+      appliance_serial: row.appliance_serial || "",
+    }))
+    .filter(
+      (row) =>
+        row.client_key &&
+        row.observed_at &&
+        !Number.isNaN(Date.parse(row.observed_at)),
+    );
+  const indexed = [
+    ...new Map(candidates.map((row) => [row.record_key, row])).values(),
+  ];
+  const batchSize = 10_000;
+  for (let offset = 0; offset < indexed.length; offset += batchSize) {
+    const batch = indexed.slice(offset, offset + batchSize);
+    await db.pool.query(
+      `INSERT INTO tms_firewall_traffic_records (
+         firewall_id, archive_date, record_key, observed_at, client_key,
+         source_ip, source_mac, source_name, source_device_type,
+         source_os_name, source_vendor, asset_user_name, employee_code,
+         asset_email, av_status, inventory_match, sent_bytes, received_bytes,
+         appliance_serial, updated_at
+       )
+       SELECT $1,
+              $2::date,
+              entry.record_key,
+              entry.observed_at,
+              entry.client_key,
+              entry.source_ip,
+              entry.source_mac,
+              entry.source_name,
+              entry.source_device_type,
+              entry.source_os_name,
+              entry.source_vendor,
+              entry.asset_user_name,
+              entry.employee_code,
+              entry.asset_email,
+              entry.av_status,
+              entry.inventory_match,
+              entry.sent_bytes,
+              entry.received_bytes,
+              entry.appliance_serial,
+              now()
+         FROM jsonb_to_recordset($3::jsonb) AS entry(
+           record_key text,
+           observed_at timestamptz,
+           client_key text,
+           source_ip text,
+           source_mac text,
+           source_name text,
+           source_device_type text,
+           source_os_name text,
+           source_vendor text,
+           asset_user_name text,
+           employee_code text,
+           asset_email text,
+           av_status text,
+           inventory_match boolean,
+           sent_bytes bigint,
+           received_bytes bigint,
+           appliance_serial text
+         )
+       ON CONFLICT (firewall_id, archive_date, record_key) DO UPDATE SET
+         observed_at = EXCLUDED.observed_at,
+         client_key = EXCLUDED.client_key,
+         source_ip = EXCLUDED.source_ip,
+         source_mac = EXCLUDED.source_mac,
+         source_name = EXCLUDED.source_name,
+         source_device_type = EXCLUDED.source_device_type,
+         source_os_name = EXCLUDED.source_os_name,
+         source_vendor = EXCLUDED.source_vendor,
+         asset_user_name = EXCLUDED.asset_user_name,
+         employee_code = EXCLUDED.employee_code,
+         asset_email = EXCLUDED.asset_email,
+         av_status = EXCLUDED.av_status,
+         inventory_match = EXCLUDED.inventory_match,
+         sent_bytes = EXCLUDED.sent_bytes,
+         received_bytes = EXCLUDED.received_bytes,
+         appliance_serial = EXCLUDED.appliance_serial,
+         updated_at = now()`,
+      [firewallId, date, JSON.stringify(batch)],
+    );
+  }
+  return indexed.length;
+}
+
+function firewallBandwidthHourlyRows(records) {
+  const summaries = new Map();
+  for (const row of records) {
+    const clientKey = firewallTrafficClientKey(row);
+    const observedAt = new Date(row.timestamp);
+    if (!clientKey || Number.isNaN(observedAt.getTime())) continue;
+    observedAt.setUTCMinutes(0, 0, 0);
+    const bucketStart = observedAt.toISOString();
+    const key = `${bucketStart}|${clientKey}`;
+    const existing = summaries.get(key) || {
+      bucket_start: bucketStart,
+      client_key: clientKey,
+      source_ip: "",
+      source_mac: "",
+      source_name: "",
+      source_device_type: "",
+      source_os_name: "",
+      source_vendor: "",
+      asset_user_name: "",
+      employee_code: "",
+      asset_email: "",
+      av_status: "Unknown",
+      inventory_match: false,
+      traffic_records: 0,
+      sent_bytes: 0,
+      received_bytes: 0,
+      first_activity: row.timestamp,
+      last_activity: row.timestamp,
+      appliance_serial: "",
+    };
+    for (const field of [
+      "source_ip",
+      "source_mac",
+      "source_name",
+      "source_device_type",
+      "source_os_name",
+      "source_vendor",
+      "asset_user_name",
+      "employee_code",
+      "asset_email",
+      "av_status",
+      "appliance_serial",
+    ])
+      if (row[field]) existing[field] = row[field];
+    existing.inventory_match ||= Boolean(row.inventory_match);
+    existing.traffic_records += 1;
+    existing.sent_bytes += Math.max(0, Number(row.sent_bytes || 0));
+    existing.received_bytes += Math.max(0, Number(row.received_bytes || 0));
+    if (Date.parse(row.timestamp) < Date.parse(existing.first_activity))
+      existing.first_activity = row.timestamp;
+    if (Date.parse(row.timestamp) > Date.parse(existing.last_activity))
+      existing.last_activity = row.timestamp;
+    summaries.set(key, existing);
+  }
+  return [...summaries.values()];
+}
+
+async function replaceFirewallBandwidthHourly(db, firewallId, date, records) {
+  const summaries = firewallBandwidthHourlyRows(records);
+  const client = await db.pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `DELETE FROM tms_firewall_bandwidth_hourly
+        WHERE firewall_id = $1 AND archive_date = $2::date`,
+      [firewallId, date],
+    );
+    for (let offset = 0; offset < summaries.length; offset += 5000) {
+      await client.query(
+        `INSERT INTO tms_firewall_bandwidth_hourly (
+           firewall_id, archive_date, bucket_start, client_key, source_ip,
+           source_mac, source_name, source_device_type, source_os_name,
+           source_vendor, asset_user_name, employee_code, asset_email,
+           av_status, inventory_match, traffic_records, sent_bytes,
+           received_bytes, first_activity, last_activity, appliance_serial,
+           updated_at
+         )
+         SELECT $1, $2::date, entry.bucket_start, entry.client_key,
+                entry.source_ip, entry.source_mac, entry.source_name,
+                entry.source_device_type, entry.source_os_name,
+                entry.source_vendor, entry.asset_user_name,
+                entry.employee_code, entry.asset_email, entry.av_status,
+                entry.inventory_match, entry.traffic_records,
+                entry.sent_bytes, entry.received_bytes,
+                entry.first_activity, entry.last_activity,
+                entry.appliance_serial, now()
+           FROM jsonb_to_recordset($3::jsonb) AS entry(
+             bucket_start timestamptz, client_key text, source_ip text,
+             source_mac text, source_name text, source_device_type text,
+             source_os_name text, source_vendor text, asset_user_name text,
+             employee_code text, asset_email text, av_status text,
+             inventory_match boolean, traffic_records bigint,
+             sent_bytes bigint, received_bytes bigint,
+             first_activity timestamptz, last_activity timestamptz,
+             appliance_serial text
+           )`,
+        [firewallId, date, JSON.stringify(summaries.slice(offset, offset + 5000))],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+  return summaries.length;
+}
+
 const FIREWALL_ARCHIVE_COLUMNS = [
   "archive_date",
+  "firewall_id",
+  "firewall_label",
+  "firewall_name",
+  "record_id",
+  "appliance_serial",
   "timestamp",
   "source_ip",
   "source_mac",
@@ -1146,14 +1708,24 @@ const FIREWALL_ARCHIVE_COLUMNS = [
   "asset_email",
   "av_status",
   "inventory_status",
+  "inventory_match",
+  "inventory_conflict",
   "destination_ip",
   "destination_port",
   "destination_country",
   "source_interface",
   "destination_interface",
+  "session_id",
+  "protocol",
   "application",
   "service",
   "category",
+  "application_risk",
+  "application_identified",
+  "application_source",
+  "application_action",
+  "application_event_count",
+  "application_log_time",
   "action",
   "severity",
   "policy",
@@ -1163,32 +1735,425 @@ const FIREWALL_ARCHIVE_COLUMNS = [
   "message",
 ];
 
+const FIREWALL_ARCHIVE_SUMMARY_COLUMNS = [
+  "firewall_id",
+  "firewall_label",
+  "firewall_name",
+  "date",
+  "timezone",
+  "stored_records",
+  "unique_sources",
+  "inventory_mapped_sources",
+  "unique_destinations",
+  "identified_applications",
+  "protocol_services",
+  "unique_policies",
+  "traffic_bytes",
+  "sent_bytes",
+  "received_bytes",
+  "duration_seconds",
+  "blocked",
+  "threats",
+  "critical",
+  "escalations",
+  "capture_count",
+  "first_record_at",
+  "latest_record_at",
+  "first_captured_at",
+  "captured_at",
+  "last_capture_reason",
+  "source_complete",
+  "archive_complete",
+  "capture_gap_detected",
+  "record_limit_reached",
+  "source_identity_verified",
+  "appliance_serial",
+];
+
 function firewallArchiveCsvCell(value) {
   const text = String(value ?? "");
   const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
   return `"${safe.replace(/"/g, '""')}"`;
 }
 
-function firewallArchiveCsvStream(records) {
+function firewallArchiveSummaryRow(archive) {
+  const summary = archive.summary || {};
+  return {
+    firewall_id: archive.firewall_id,
+    firewall_label: archive.firewall_label,
+    firewall_name: archive.firewall_name,
+    date: archive.date,
+    timezone: archive.timezone,
+    stored_records: Number(summary.stored_records || 0),
+    unique_sources: Number(summary.unique_sources || 0),
+    inventory_mapped_sources: Number(summary.inventory_mapped_sources || 0),
+    unique_destinations: Number(summary.unique_destinations || 0),
+    identified_applications: Number(summary.applications || 0),
+    protocol_services: Number(summary.protocol_services || 0),
+    unique_policies: Number(summary.unique_policies || 0),
+    traffic_bytes: Number(summary.traffic_bytes || 0),
+    sent_bytes: Number(summary.sent_bytes || 0),
+    received_bytes: Number(summary.received_bytes || 0),
+    duration_seconds: Number(summary.duration_seconds || 0),
+    blocked: Number(summary.blocked || 0),
+    threats: Number(summary.threats || 0),
+    critical: Number(summary.critical || 0),
+    escalations: Number(archive.escalation_count || 0),
+    capture_count: Number(archive.capture_count || 0),
+    first_record_at: archive.first_record_at || "",
+    latest_record_at: archive.latest_record_at || "",
+    first_captured_at: archive.first_captured_at || "",
+    captured_at: archive.captured_at || "",
+    last_capture_reason: archive.last_capture_reason || "",
+    source_complete: Boolean(archive.source_complete),
+    archive_complete: Boolean(archive.archive_complete),
+    capture_gap_detected: Boolean(archive.capture_gap_detected),
+    record_limit_reached: Boolean(archive.record_limit_reached),
+    source_identity_verified: Boolean(archive.source_identity_verified),
+    appliance_serial: archive.appliance_serial || "",
+  };
+}
+
+function firewallArchiveSummaryCsv(archives) {
+  const header = FIREWALL_ARCHIVE_SUMMARY_COLUMNS.map(
+    firewallArchiveCsvCell,
+  ).join(",");
+  const rows = archives.map((archive) => {
+    const record = firewallArchiveSummaryRow(archive);
+    return FIREWALL_ARCHIVE_SUMMARY_COLUMNS.map((column) =>
+      firewallArchiveCsvCell(record[column]),
+    ).join(",");
+  });
+  return `\uFEFF${[header, ...rows].join("\r\n")}\r\n`;
+}
+
+async function firewallArchiveIndex(
+  db,
+  firewallId,
+  { date = null, from = null, to = null, limit = 365 } = {},
+) {
+  const result = await db.pool.query(
+    `SELECT document_key,
+            data - 'records' AS archive,
+            CASE
+              WHEN jsonb_typeof(data->'records') = 'array'
+                THEN jsonb_array_length(data->'records')
+              ELSE 0
+            END AS record_count
+       FROM tms_documents
+      WHERE collection_name = $1
+        AND data->>'firewall_id' = $2
+        AND ($3::text IS NULL OR data->>'date' = $3)
+        AND ($4::text IS NULL OR data->>'date' >= $4)
+        AND ($5::text IS NULL OR data->>'date' <= $5)
+      ORDER BY data->>'date' DESC
+      LIMIT $6`,
+    [
+      "firewall_daily_archives",
+      firewallId,
+      date,
+      from,
+      to,
+      limit,
+    ],
+  );
+  return result.rows.map((row) => ({
+    document_key: row.document_key,
+    archive: {
+      ...row.archive,
+      summary: {
+        ...(row.archive?.summary || {}),
+        stored_records: Number(
+          row.archive?.summary?.stored_records ?? row.record_count ?? 0,
+        ),
+      },
+    },
+    record_count: Number(row.record_count || 0),
+  }));
+}
+
+async function firewallBandwidthFromArchive(db, profile, start, end) {
+  const fromDate = firewallArchiveDate(start);
+  const toDate = firewallArchiveDate(end);
+  const hourMs = 60 * 60_000;
+  const completeStart = new Date(Math.ceil(start.getTime() / hourMs) * hourMs);
+  const completeEnd = new Date(Math.floor(end.getTime() / hourMs) * hourMs);
+  const [clientResult, metadataResult] = await Promise.all([
+    db.pool.query(
+      `WITH archive_identities AS (
+         SELECT (data->>'date')::date AS archive_date,
+                COALESCE(data->>'appliance_serial', '') AS appliance_serial
+           FROM tms_documents
+          WHERE collection_name = 'firewall_daily_archives'
+            AND data->>'firewall_id' = $1
+            AND data->>'date' >= $6
+            AND data->>'date' <= $7
+       ), combined_records AS (
+         SELECT hourly.client_key,
+                hourly.source_ip,
+                hourly.source_mac,
+                hourly.source_name,
+                hourly.source_device_type,
+                hourly.source_os_name,
+                hourly.source_vendor,
+                hourly.asset_user_name,
+                hourly.employee_code,
+                hourly.asset_email,
+                hourly.av_status,
+                hourly.inventory_match,
+                hourly.traffic_records,
+                hourly.sent_bytes,
+                hourly.received_bytes,
+                hourly.first_activity,
+                hourly.last_activity
+           FROM tms_firewall_bandwidth_hourly hourly
+           JOIN archive_identities archive USING (archive_date)
+          WHERE hourly.firewall_id = $1
+            AND hourly.bucket_start >= $4::timestamptz
+            AND hourly.bucket_start < $5::timestamptz
+            AND (
+              archive.appliance_serial = ''
+              OR hourly.appliance_serial = archive.appliance_serial
+            )
+         UNION ALL
+         SELECT traffic.client_key,
+                traffic.source_ip,
+                traffic.source_mac,
+                traffic.source_name,
+                traffic.source_device_type,
+                traffic.source_os_name,
+                traffic.source_vendor,
+                traffic.asset_user_name,
+                traffic.employee_code,
+                traffic.asset_email,
+                traffic.av_status,
+                traffic.inventory_match,
+                1::bigint AS traffic_records,
+                traffic.sent_bytes,
+                traffic.received_bytes,
+                traffic.observed_at AS first_activity,
+                traffic.observed_at AS last_activity
+           FROM tms_firewall_traffic_records traffic
+           JOIN archive_identities archive USING (archive_date)
+          WHERE traffic.firewall_id = $1
+            AND traffic.observed_at >= $2::timestamptz
+            AND traffic.observed_at <= $3::timestamptz
+            AND NOT (
+              $4::timestamptz < $5::timestamptz
+              AND traffic.observed_at >= $4::timestamptz
+              AND traffic.observed_at < $5::timestamptz
+            )
+            AND (
+              archive.appliance_serial = ''
+              OR traffic.appliance_serial = archive.appliance_serial
+            )
+       ), clients AS (
+         SELECT client_key,
+                MAX(NULLIF(source_ip, '')) AS source_ip,
+                MAX(NULLIF(source_mac, '')) AS source_mac,
+                MAX(NULLIF(source_name, '')) AS source_name,
+                MAX(NULLIF(source_device_type, '')) AS source_device_type,
+                MAX(NULLIF(source_os_name, '')) AS source_os_name,
+                MAX(NULLIF(source_vendor, '')) AS source_vendor,
+                MAX(NULLIF(asset_user_name, '')) AS asset_user_name,
+                MAX(NULLIF(employee_code, '')) AS employee_code,
+                MAX(NULLIF(asset_email, '')) AS asset_email,
+                MAX(NULLIF(av_status, '')) AS av_status,
+                BOOL_OR(inventory_match) AS inventory_match,
+                SUM(traffic_records)::bigint AS traffic_records,
+                SUM(sent_bytes)::numeric AS sent_bytes,
+                SUM(received_bytes)::numeric AS received_bytes,
+                MIN(first_activity) AS first_activity,
+                MAX(last_activity) AS last_activity
+           FROM combined_records
+          GROUP BY client_key
+       )
+       SELECT *,
+              COUNT(*) OVER() AS total_clients,
+              SUM(traffic_records) OVER() AS total_records,
+              SUM(sent_bytes) OVER() AS total_sent_bytes,
+              SUM(received_bytes) OVER() AS total_received_bytes,
+              MIN(first_activity) OVER() AS data_start,
+              MAX(last_activity) OVER() AS data_end
+         FROM clients
+        ORDER BY (sent_bytes + received_bytes) DESC
+        LIMIT 2000`,
+      [
+        profile.id,
+        start.toISOString(),
+        end.toISOString(),
+        completeStart.toISOString(),
+        completeEnd.toISOString(),
+        fromDate,
+        toDate,
+      ],
+    ),
+    db.pool.query(
+      `SELECT COUNT(*)::integer AS archive_days,
+              MAX(NULLIF(data->>'captured_at', '')::timestamptz) AS captured_at,
+              BOOL_OR(COALESCE(NULLIF(data->>'record_limit_reached', '')::boolean, false)) AS record_limit_reached,
+              BOOL_AND(COALESCE(NULLIF(data->>'source_complete', '')::boolean, false)) AS source_complete,
+              BOOL_AND(COALESCE(NULLIF(data->>'source_identity_verified', '')::boolean, false)) AS source_identity_verified,
+              BOOL_AND(COALESCE(NULLIF(data->>'archive_complete', '')::boolean, false)) AS archive_complete,
+              SUM(COALESCE(NULLIF(data#>>'{summary,stored_records}', '')::bigint, 0))::bigint AS stored_records
+         FROM tms_documents
+        WHERE collection_name = $1
+          AND data->>'firewall_id' = $2
+          AND data->>'date' >= $3
+          AND data->>'date' <= $4`,
+      ["firewall_daily_archives", profile.id, fromDate, toDate],
+    ),
+  ]);
+  const totals = clientResult.rows[0] || {};
+  const metadata = metadataResult.rows[0] || {};
+  return {
+    clients: clientResult.rows.map((row) => ({
+      source_ip: row.source_ip || "",
+      source_mac: row.source_mac || "",
+      source_name: row.source_name || "",
+      source_device_type: row.source_device_type || "",
+      source_os_name: row.source_os_name || "",
+      source_vendor: row.source_vendor || "",
+      asset_user_name: row.asset_user_name || "",
+      employee_code: row.employee_code || "",
+      asset_email: row.asset_email || "",
+      av_status: row.av_status || "Unknown",
+      inventory_match: Boolean(row.inventory_match),
+      traffic_records: Number(row.traffic_records || 0),
+      sent_bytes: Number(row.sent_bytes || 0),
+      received_bytes: Number(row.received_bytes || 0),
+      first_activity: row.first_activity || null,
+      last_activity: row.last_activity || null,
+    })),
+    summary: {
+      records: Number(totals.total_records || 0),
+      clients: Number(totals.total_clients || 0),
+      sent_bytes: Number(totals.total_sent_bytes || 0),
+      received_bytes: Number(totals.total_received_bytes || 0),
+      traffic_bytes:
+        Number(totals.total_sent_bytes || 0) +
+        Number(totals.total_received_bytes || 0),
+      data_start: totals.data_start || null,
+      data_end: totals.data_end || null,
+      archive_days: Number(metadata.archive_days || 0),
+      stored_records: Number(metadata.stored_records || 0),
+      captured_at: metadata.captured_at || null,
+      record_limit_reached: Boolean(metadata.record_limit_reached),
+      source_complete: Boolean(metadata.source_complete),
+      source_identity_verified: Boolean(metadata.source_identity_verified),
+      archive_complete: Boolean(metadata.archive_complete),
+      source: "verified_daily_archive",
+    },
+  };
+}
+
+async function firewallArchiveDayPage(
+  db,
+  firewallId,
+  date,
+  page,
+  pageSize,
+) {
+  const offset = (page - 1) * pageSize;
+  const result = await db.pool.query(
+    `WITH selected AS (
+       SELECT data - 'records' AS archive,
+              CASE
+                WHEN jsonb_typeof(data->'records') = 'array'
+                  THEN data->'records'
+                ELSE '[]'::jsonb
+              END AS records
+         FROM tms_documents
+        WHERE collection_name = $1
+          AND data->>'firewall_id' = $2
+          AND data->>'date' = $3
+        LIMIT 1
+     ), hydrated AS (
+       SELECT archive, records, jsonb_array_length(records) AS total_records
+         FROM selected
+     )
+     SELECT archive,
+            total_records,
+            COALESCE(
+              (
+                SELECT jsonb_agg(records -> item_index ORDER BY item_index)
+                  FROM generate_series(
+                    $4::integer,
+                    LEAST($5::integer, total_records - 1)
+                  ) AS item_index
+              ),
+              '[]'::jsonb
+            ) AS page_records
+       FROM hydrated`,
+    [
+      "firewall_daily_archives",
+      firewallId,
+      date,
+      offset,
+      offset + pageSize - 1,
+    ],
+  );
+  if (!result.rows[0]) return null;
+  return {
+    archive: result.rows[0].archive,
+    records: result.rows[0].page_records || [],
+    totalRecords: Number(result.rows[0].total_records || 0),
+  };
+}
+
+function firewallArchiveDatabaseCsvStream(db, archives) {
   const encoder = new TextEncoder();
-  let index = 0;
+  let archiveIndex = 0;
+  let recordOffset = 0;
   let headerSent = false;
+  const pageSize = 1000;
   return new ReadableStream({
-    pull(controller) {
-      let chunk = "";
-      if (!headerSent) {
-        chunk = `\uFEFF${FIREWALL_ARCHIVE_COLUMNS.map(firewallArchiveCsvCell).join(",")}\r\n`;
-        headerSent = true;
+    async pull(controller) {
+      try {
+        let chunk = "";
+        if (!headerSent) {
+          chunk = `\uFEFF${FIREWALL_ARCHIVE_COLUMNS.map(firewallArchiveCsvCell).join(",")}\r\n`;
+          headerSent = true;
+        }
+        while (archiveIndex < archives.length && chunk.length < 512 * 1024) {
+          const archive = archives[archiveIndex];
+          if (recordOffset >= archive.record_count) {
+            archiveIndex += 1;
+            recordOffset = 0;
+            continue;
+          }
+          const page = await firewallArchiveDayPage(
+            db,
+            archive.archive.firewall_id,
+            archive.archive.date,
+            Math.floor(recordOffset / pageSize) + 1,
+            pageSize,
+          );
+          const records = page?.records || [];
+          if (!records.length) {
+            archiveIndex += 1;
+            recordOffset = 0;
+            continue;
+          }
+          for (const record of records) {
+            const exported = {
+              archive_date: archive.archive.date,
+              firewall_id: archive.archive.firewall_id,
+              firewall_label: archive.archive.firewall_label,
+              firewall_name: archive.archive.firewall_name,
+              ...record,
+            };
+            chunk += `${FIREWALL_ARCHIVE_COLUMNS.map((column) =>
+              firewallArchiveCsvCell(exported[column]),
+            ).join(",")}\r\n`;
+          }
+          recordOffset += records.length;
+        }
+        if (chunk) controller.enqueue(encoder.encode(chunk));
+        if (archiveIndex >= archives.length) controller.close();
+      } catch (error) {
+        controller.error(error);
       }
-      const end = Math.min(records.length, index + 250);
-      for (; index < end; index++) {
-        const record = records[index];
-        chunk += `${FIREWALL_ARCHIVE_COLUMNS.map((column) =>
-          firewallArchiveCsvCell(record[column]),
-        ).join(",")}\r\n`;
-      }
-      if (chunk) controller.enqueue(encoder.encode(chunk));
-      if (index >= records.length) controller.close();
     },
   });
 }
@@ -1509,7 +2474,35 @@ async function archiveFirewallRecordsUnlocked(
           new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
       )
       .slice(0, archiveRowLimit);
-    const { summary, escalations } = firewallArchiveSummary(stored);
+    const expectedApplianceSerial = String(capture.applianceSerial || "").trim();
+    const verifiedRecords = expectedApplianceSerial
+      ? stored.filter(
+          (record) => record.appliance_serial === expectedApplianceSerial,
+        ).length
+      : 0;
+    const foreignApplianceRecords = expectedApplianceSerial
+      ? stored.filter(
+          (record) =>
+            record.appliance_serial &&
+            record.appliance_serial !== expectedApplianceSerial,
+        ).length
+      : 0;
+    const unverifiedApplianceRecords = stored.filter(
+      (record) => !record.appliance_serial,
+    ).length;
+    const sourceIdentityVerified = Boolean(
+      expectedApplianceSerial &&
+        foreignApplianceRecords === 0 &&
+        unverifiedApplianceRecords === 0,
+    );
+    const archiveAnalysis = firewallArchiveSummary(stored);
+    const summary = {
+      ...archiveAnalysis.summary,
+      verified_appliance_records: verifiedRecords,
+      unverified_appliance_records: unverifiedApplianceRecords,
+      foreign_appliance_records: foreignApplianceRecords,
+    };
+    const escalations = archiveAnalysis.escalations;
     const capturedAtDate = new Date(capturedAt);
     const captureReason = capture.captureReason || "live_api";
     const previousCapturedAt = existing?.captured_at
@@ -1536,6 +2529,7 @@ async function archiveFirewallRecordsUnlocked(
     const currentRecordLimitReached = merged.size > archiveRowLimit;
     const archiveComplete = Boolean(
       capture.sourceComplete &&
+        sourceIdentityVerified &&
         !currentRecordLimitReached &&
         !captureGapDetected,
     );
@@ -1552,6 +2546,11 @@ async function archiveFirewallRecordsUnlocked(
       source_pages_fetched: Number(capture.sourcePagesFetched || 1),
       record_limit_reached: currentRecordLimitReached,
       archive_complete: archiveComplete,
+      appliance_serial: expectedApplianceSerial || null,
+      source_identity_verified: sourceIdentityVerified,
+      verified_appliance_records: verifiedRecords,
+      unverified_appliance_records: unverifiedApplianceRecords,
+      foreign_appliance_records: foreignApplianceRecords,
       capture_gap_ms: captureGapMs,
     };
     const escalationSignature = escalations.map((item) => item.title).join("|");
@@ -1570,6 +2569,8 @@ async function archiveFirewallRecordsUnlocked(
           date,
           timezone: "Asia/Kolkata",
           summary,
+          appliance_serial: expectedApplianceSerial || null,
+          source_identity_verified: sourceIdentityVerified,
           source_complete: Boolean(capture.sourceComplete),
           archive_complete: archiveComplete,
           capture_gap_detected: captureGapDetected,
@@ -1599,6 +2600,29 @@ async function archiveFirewallRecordsUnlocked(
       },
       { upsert: true },
     );
+    try {
+      const indexedState = await db.pool.query(
+        `SELECT EXISTS (
+           SELECT 1
+             FROM tms_firewall_traffic_records
+            WHERE firewall_id = $1 AND archive_date = $2::date
+         ) AS has_records`,
+        [profile.id, date],
+      );
+      await indexFirewallTrafficRecords(
+        db,
+        profile.id,
+        date,
+        indexedState.rows[0]?.has_records ? dayRecords : stored,
+      );
+    } catch (error) {
+      console.error("Firewall traffic indexing failed:", error);
+    }
+    try {
+      await replaceFirewallBandwidthHourly(db, profile.id, date, stored);
+    } catch (error) {
+      console.error("Firewall bandwidth summary failed:", error);
+    }
     if (shouldNotify) {
       const recipients = await db
         .collection("users")
@@ -3309,11 +4333,17 @@ async function ensureTicketRoutingData(database) {
       { $set: { routing_site: "Tulip" } },
     ),
     tickets.updateMany(
-      { assignee_id: null },
+      {
+        $or: [
+          { assignee_id: null },
+          { assignee_id: "" },
+          { assignee_id: { $exists: false } },
+        ],
+      },
       { $set: { allocation_status: "unallocated", queue_state: "pending" } },
     ),
     tickets.updateMany(
-      { assignee_id: { $ne: null } },
+      { assignee_id: { $exists: true, $nin: [null, ""] } },
       { $set: { allocation_status: "allocated", queue_state: "assigned" } },
     ),
   ]);
@@ -3633,7 +4663,7 @@ const IT_SEED = [
     "Printers",
     "High",
     "Printer not printing",
-    "Sunil Rathore",
+    "Ajeet Kumar",
     "Resolve",
   ],
   [
@@ -3641,7 +4671,7 @@ const IT_SEED = [
     "Biometric",
     "Low",
     "Biometric IP assign",
-    "Sunil Rathore",
+    "Ajeet Kumar",
     "Resolve",
   ],
   [
@@ -3665,7 +4695,7 @@ const IT_SEED = [
     "Password Reset",
     "High",
     "Email password reset",
-    "Sunil Rathore",
+    "Ajeet Kumar",
     "In Progress",
   ],
   [
@@ -3689,7 +4719,7 @@ const IT_SEED = [
     "Printers",
     "Low",
     "PDF printout support",
-    "Sunil Rathore",
+    "Ajeet Kumar",
     "Resolve",
   ],
   [
@@ -4064,28 +5094,12 @@ async function seedDb(db) {
       location: "Tulip - First Floor",
     },
     {
-      name: "Sunil Rathore",
-      email: "it2@ethara.ai",
-      role: "it",
-      department: "IT",
-      employee_id: "IT-2002",
-      location: "Tulip - Second Floor",
-    },
-    {
       name: "Rajeev Goyal",
       email: "admin@ethara.ai",
       role: "admin",
       department: "Admin",
       employee_id: "ADM-3001",
       location: "Lotus - Bullpen",
-    },
-    {
-      name: "Neha Sharma",
-      email: "admin2@ethara.ai",
-      role: "admin",
-      department: "Admin",
-      employee_id: "ADM-3002",
-      location: "Lotus - Labs",
     },
     {
       name: "Sara Superadmin",
@@ -4433,16 +5447,6 @@ async function seedDb(db) {
       ],
     },
     {
-      member: byName("Sunil Rathore"),
-      title: "IT Support KRA",
-      items: [
-        "Check printer & peripheral status",
-        "Process new laptop allocations",
-        "Verify biometric devices online",
-        "Clear helpdesk queue",
-      ],
-    },
-    {
       member: byName("Rajeev Goyal"),
       title: "Admin Ops KRA",
       items: [
@@ -4451,16 +5455,6 @@ async function seedDb(db) {
         "Verify housekeeping done",
         "Reconcile petty cash",
         "Review vendor payments",
-      ],
-    },
-    {
-      member: byName("Neha Sharma"),
-      title: "Admin Facilities KRA",
-      items: [
-        "Inspect washrooms & pantry",
-        "Verify visitor register",
-        "Check AC & electricity",
-        "Follow up vendor agreements",
       ],
     },
   ];
@@ -5471,6 +6465,13 @@ async function handleRoute(request, { params }) {
       const scope = ["summary", "security"].includes(requestedScope)
         ? requestedScope
         : "full";
+      if (!globalThis[FIREWALL_OVERVIEW_CACHE_KEY])
+        globalThis[FIREWALL_OVERVIEW_CACHE_KEY] = new Map();
+      const overviewCache = globalThis[FIREWALL_OVERVIEW_CACHE_KEY];
+      const overviewCacheKey = `${profile.id}:${scope}`;
+      const cachedOverview = overviewCache.get(overviewCacheKey);
+      if (cachedOverview && Date.now() - cachedOverview.createdAt < 30_000)
+        return json(cachedOverview.payload);
       const fw = profile.value;
       const baseUrl = String(fw("API_URL")).replace(/\/$/, "");
       const apiKey = fw("API_KEY");
@@ -5521,18 +6522,23 @@ async function handleRoute(request, { params }) {
         } catch (error) {
           console.error("Firewall health tracking failed:", error);
         }
-        return json({
+        const payload = {
           configured: false,
           connected: false,
           operational_state: "unconfigured",
           id: profile.id,
           label: profile.label,
-          name: fw("NAME", profile.label),
+          name: firewallDisplayName(profile),
           scope,
           sections: {},
           errors: {},
           last_updated: null,
+        };
+        overviewCache.set(overviewCacheKey, {
+          createdAt: Date.now(),
+          payload,
         });
+        return json(payload);
       }
       const headerName = fw("API_HEADER", "Authorization");
       const prefix = fw("API_PREFIX", "Bearer");
@@ -5658,7 +6664,12 @@ async function handleRoute(request, { params }) {
       }
       if (sections.logs) {
         const logRows = firewallRows(sections.logs);
-        const logMapping = await mapFirewallInventory(logRows);
+        const logMapping = await mapFirewallInventory(
+          logRows.map((row) => ({
+            ...row,
+            appliance_serial: section_meta.logs?.appliance_serial || "",
+          })),
+        );
         if (Array.isArray(sections.logs)) sections.logs = logMapping.devices;
         else if (Array.isArray(sections.logs.results))
           sections.logs = { ...sections.logs, results: logMapping.devices };
@@ -5671,7 +6682,7 @@ async function handleRoute(request, { params }) {
           await archiveFirewallRecords(
             db,
             profile,
-            fw("NAME", profile.label),
+            firewallDisplayName(profile),
             logMapping.devices,
             new Date(),
             {
@@ -5686,19 +6697,20 @@ async function handleRoute(request, { params }) {
               sourcePagesFetched: Number(
                 section_meta.logs?.pages_fetched || 1,
               ),
+              applianceSerial: section_meta.logs?.appliance_serial || "",
             },
           );
         } catch (error) {
           console.error("Firewall daily archive failed:", error);
         }
       }
-      return json({
+      const payload = {
         configured: true,
         connected: successfulSectionCount > 0,
         operational_state: operationalState,
         id: profile.id,
         label: profile.label,
-        name: fw("NAME", profile.label),
+        name: firewallDisplayName(profile),
         scope,
         appliance_identity: {
           serial:
@@ -5721,7 +6733,14 @@ async function handleRoute(request, { params }) {
         errors,
         threat_errors,
         last_updated: fetchedAt.toISOString(),
+      };
+      overviewCache.set(overviewCacheKey, {
+        createdAt: Date.now(),
+        payload,
       });
+      if (overviewCache.size > 12)
+        overviewCache.delete(overviewCache.keys().next().value);
+      return json(payload);
     }
 
     if (route === "/firewall/downtime" && method === "GET") {
@@ -5735,6 +6754,92 @@ async function handleRoute(request, { params }) {
         return json({ error: "Invalid downtime period" }, 400);
       const days = Math.min(90, Math.max(1, Math.round(requestedDays)));
       return json(clean(await firewallDowntimeSummary(db, profile, days)));
+    }
+
+    if (route === "/firewall/bandwidth" && method === "GET") {
+      if (!["it", "admin", "super_admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      const profile = firewallProfile(request);
+      const url = new URL(request.url);
+      const days = Math.min(
+        7,
+        Math.max(1, Number(url.searchParams.get("days") || 7)),
+      );
+      const requestedHours = Number(url.searchParams.get("hours") || 0);
+      const selectedDate = url.searchParams.get("date");
+      const todayRequested = url.searchParams.get("today") === "true";
+      if (selectedDate && !/^\d{4}-\d{2}-\d{2}$/.test(selectedDate))
+        return json({ error: "Invalid firewall bandwidth date" }, 400);
+      const now = new Date();
+      let end = new Date(now);
+      let start = new Date(end.getTime() - days * 86400000);
+      let periodHours = days * 24;
+      if (requestedHours > 0) {
+        periodHours = Math.min(168, Math.max(1, requestedHours));
+        start = new Date(end.getTime() - periodHours * 3600000);
+      } else if (todayRequested) {
+        const today = firewallArchiveDate(end);
+        start = new Date(`${today}T00:00:00.000+05:30`);
+        periodHours = Math.max(
+          0,
+          (end.getTime() - start.getTime()) / 3600000,
+        );
+      } else if (/^\d{4}-\d{2}-\d{2}$/.test(selectedDate || "")) {
+        start = new Date(`${selectedDate}T00:00:00.000+05:30`);
+        if (start > now)
+          return json({ error: "Firewall bandwidth date cannot be in the future" }, 400);
+        const selectedDayEnd = new Date(
+          `${selectedDate}T23:59:59.999+05:30`,
+        );
+        end = new Date(Math.min(now.getTime(), selectedDayEnd.getTime()));
+        periodHours = Math.max(
+          0,
+          (end.getTime() - start.getTime()) / 3600000,
+        );
+      }
+      if (!globalThis[FIREWALL_BANDWIDTH_CACHE_KEY])
+        globalThis[FIREWALL_BANDWIDTH_CACHE_KEY] = new Map();
+      const cache = globalThis[FIREWALL_BANDWIDTH_CACHE_KEY];
+      const rangeKey = todayRequested
+        ? "today"
+        : selectedDate
+          ? `date:${selectedDate}`
+          : requestedHours > 0
+            ? `hours:${periodHours}`
+            : `days:${days}`;
+      const cacheKey = `${profile.id}:${rangeKey}`;
+      const cached = cache.get(cacheKey);
+      let bandwidth;
+      if (cached && Date.now() - cached.createdAt < 30_000) {
+        bandwidth = cached.bandwidth;
+      } else {
+        bandwidth = await firewallBandwidthFromArchive(
+          db,
+          profile,
+          start,
+          end,
+        );
+        cache.set(cacheKey, { createdAt: Date.now(), bandwidth });
+        if (cache.size > 20) cache.delete(cache.keys().next().value);
+      }
+      return json(
+        clean({
+          firewall: {
+            id: profile.id,
+            label: profile.label,
+            name: firewallDisplayName(profile),
+          },
+          generated_at: now,
+          period: {
+            start,
+            end,
+            days: periodHours / 24,
+            hours: periodHours,
+          },
+          summary: bandwidth.summary,
+          clients: bandwidth.clients,
+        }),
+      );
     }
 
     if (route === "/firewall/report" && method === "GET") {
@@ -5797,63 +6902,118 @@ async function handleRoute(request, { params }) {
         : 100000;
       const headerName = fw("API_HEADER", "Authorization");
       const prefix = fw("API_PREFIX", "Bearer");
-      const payload = await firewallPaginatedRequest(
-        reportUrl.toString(),
-        {
-          Accept: "application/json",
-          [headerName]: prefix ? `${prefix} ${apiKey}` : apiKey,
-        },
-        {
-          allowSelfSigned: fw("ALLOW_SELF_SIGNED", "false") === "true",
-          caPath: fw("CA_CERT_PATH", ""),
-          certSha256: fw("CERT_SHA256", ""),
-        },
-        { pageSize: reportPageRows, maxRows: reportRowLimit },
+      const requestHeaders = {
+        Accept: "application/json",
+        [headerName]: prefix ? `${prefix} ${apiKey}` : apiKey,
+      };
+      const requestTls = {
+        allowSelfSigned: fw("ALLOW_SELF_SIGNED", "false") === "true",
+        caPath: fw("CA_CERT_PATH", ""),
+        certSha256: fw("CERT_SHA256", ""),
+      };
+      const applicationPath = fw(
+        "APPLICATION_PATH",
+        "/api/v2/log/memory/app-ctrl",
       );
+      const applicationUrl = new URL(
+        `${baseUrl}${applicationPath.startsWith("/") ? applicationPath : `/${applicationPath}`}`,
+      );
+      const applicationPageRows = Math.min(
+        5000,
+        Math.max(100, Number(fw("APPLICATION_PAGE_ROWS", "5000")) || 5000),
+      );
+      const applicationMaxRows = Math.min(
+        50000,
+        Math.max(
+          applicationPageRows,
+          Number(fw("APPLICATION_MAX_ROWS", "20000")) || 20000,
+        ),
+      );
+      const [payload, applicationResult] = await Promise.all([
+        firewallPaginatedRequest(
+          reportUrl.toString(),
+          requestHeaders,
+          requestTls,
+          { pageSize: reportPageRows, maxRows: reportRowLimit },
+        ),
+        firewallPaginatedRequest(
+          applicationUrl.toString(),
+          requestHeaders,
+          requestTls,
+          { pageSize: applicationPageRows, maxRows: applicationMaxRows },
+        )
+          .then((applicationPayload) => ({ payload: applicationPayload }))
+          .catch((error) => ({
+            error: error.message || "Application Control logs unavailable",
+          })),
+      ]);
       const allRows = firewallRows(payload);
       const datedRows = allRows.filter((row) => {
         const time = firewallRecordTime(row);
         return time && time >= start && time <= end;
       });
-      const reportInventory = await mapFirewallInventory(datedRows);
-      const enrichedDatedRows = reportInventory.devices;
+      const allApplicationRows = applicationResult.payload
+        ? firewallRows(applicationResult.payload)
+        : [];
+      const applicationRetention = firewallApplicationRetentionSummary(
+        allApplicationRows,
+      );
+      const datedApplicationRows = allApplicationRows.filter((row) => {
+        const time = firewallRecordTime(row);
+        return time && time >= start && time <= end;
+      });
+      const applicationMerge = enrichFirewallTrafficApplications(
+        datedRows,
+        datedApplicationRows,
+      );
+      const reportInventory = await mapFirewallInventory(
+        applicationMerge.records,
+      );
+      const enrichedDatedRows = reportInventory.devices.map((row) => ({
+        ...row,
+        appliance_serial: payload?.serial || "",
+      }));
       const apiRecords = enrichedDatedRows
         .map(normalizedFirewallRecord)
         .filter(Boolean);
-      const archive = await archiveFirewallRecords(
-        db,
-        profile,
-        fw("NAME", profile.label),
-        enrichedDatedRows,
-        end,
-        {
-          captureReason: todayRequested
-            ? "today_report"
-            : selectedDate
-              ? "dated_report"
-              : requestedHours > 0
-                ? "hourly_report"
-                : "multi_day_report",
-          sourceComplete: Boolean(payload?.pagination_complete),
-          sourceRowsFetched: Number(payload?.raw_rows_fetched || allRows.length),
-          sourceRowsAvailable: Number(payload?.total_lines || allRows.length),
-          sourcePagesFetched: Number(payload?.pages_fetched || 1),
-        },
+      // Reports are read paths. Detailed persistence is handled by the
+      // scheduled/manual archive sync, avoiding a large archive rewrite every
+      // time a user changes a bandwidth or date filter.
+      const archive = {
+        managed_by: "automatic_archive_monitor",
+        write_performed: false,
+      };
+      const includeArchivedRecords =
+        !todayRequested && !(requestedHours > 0 && requestedHours <= 1);
+      const archivedDays = includeArchivedRecords
+        ? await db
+            .collection("firewall_daily_archives")
+            .find(
+              {
+                firewall_id: profile.id,
+                date: {
+                  $gte: firewallArchiveDate(start),
+                  $lte: firewallArchiveDate(end),
+                },
+              },
+              { projection: { records: 1 } },
+            )
+            .toArray()
+        : [];
+      const archivedRecordsAvailable = archivedDays.flatMap(
+        (day) => day.records || [],
       );
-      const archivedDays = await db
-        .collection("firewall_daily_archives")
-        .find(
-          {
-            firewall_id: profile.id,
-            date: {
-              $gte: firewallArchiveDate(start),
-              $lte: firewallArchiveDate(end),
-            },
-          },
-          { projection: { records: 1 } },
-        )
-        .toArray();
-      const archivedRecords = archivedDays.flatMap((day) => day.records || []);
+      const expectedApplianceSerial = String(payload?.serial || "").trim();
+      const archivedRecords = expectedApplianceSerial
+        ? archivedRecordsAvailable.filter(
+            (record) =>
+              record.appliance_serial === expectedApplianceSerial,
+          )
+        : [];
+      const unverifiedArchiveRecordsExcluded = Math.max(
+        0,
+        archivedRecordsAvailable.length - archivedRecords.length,
+      );
       const mergedRecords = new Map();
       for (const row of [...archivedRecords, ...apiRecords]) {
         const normalized = normalizedFirewallRecord(row);
@@ -5874,7 +7034,7 @@ async function handleRoute(request, { params }) {
         firewall: {
           id: profile.id,
           label: profile.label,
-          name: fw("NAME", profile.label),
+          name: firewallDisplayName(profile),
         },
         generated_at: now.toISOString(),
         period: {
@@ -5891,12 +7051,46 @@ async function handleRoute(request, { params }) {
           duplicate_api_rows_removed: Number(payload?.duplicate_rows_removed || 0),
           api_pages_fetched: Number(payload?.pages_fetched || 1),
           pagination_stop_reason: payload?.pagination_stop_reason || null,
+          archived_rows_available: archivedRecordsAvailable.length,
           archived_rows_considered: archivedRecords.length,
+          unverified_archive_rows_excluded:
+            unverifiedArchiveRecordsExcluded,
+          appliance_serial: expectedApplianceSerial || null,
+          source_identity_verified: Boolean(expectedApplianceSerial),
           api_row_limit: reportRowLimit,
           record_limit_reached: Boolean(payload?.row_limit_reached),
-          source_complete: Boolean(payload?.pagination_complete),
-          source: "firewall_memory_logs_and_daily_archive",
+          source_complete: Boolean(
+            payload?.pagination_complete &&
+              unverifiedArchiveRecordsExcluded === 0,
+          ),
+          source: includeArchivedRecords
+            ? "firewall_memory_logs_and_verified_daily_archive"
+            : "firewall_memory_logs",
+          archive_records_included: includeArchivedRecords,
           inventory: reportInventory.summary,
+          application_control: {
+            ...applicationMerge.summary,
+            ...applicationRetention,
+            state: applicationResult.error
+              ? "unavailable"
+              : datedApplicationRows.length
+                ? "identified"
+                : "no_retained_logs",
+            error: applicationResult.error || null,
+            path: applicationPath.split("?")[0],
+            rows_fetched: Number(
+              applicationResult.payload?.raw_rows_fetched ||
+                allApplicationRows.length,
+            ),
+            rows_available: Number(
+              applicationResult.payload?.total_lines ||
+                allApplicationRows.length,
+            ),
+            rows_in_period: datedApplicationRows.length,
+            source_complete: applicationResult.payload
+              ? Boolean(applicationResult.payload.pagination_complete)
+              : false,
+          },
           blocked: records.filter((row) => /block|deny|drop/i.test(row.action))
             .length,
           threats: records.filter((row) =>
@@ -5914,6 +7108,157 @@ async function handleRoute(request, { params }) {
       });
     }
 
+    if (route === "/firewall/archive/fallback" && method === "GET") {
+      if (!["it", "admin", "super_admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      const profile = firewallProfile(request);
+      const archiveRows = await db.pool.query(
+        `SELECT data - 'records' AS data
+           FROM tms_documents
+          WHERE collection_name = $1
+            AND data->>'firewall_id' = $2
+            AND COALESCE(data->>'appliance_serial', '') <> ''
+            AND COALESCE((data#>>'{summary,verified_appliance_records}')::integer, 0) > 0
+          ORDER BY data->>'date' DESC
+          LIMIT 14`,
+        ["firewall_daily_archives", profile.id],
+      );
+      const summaries = archiveRows.rows.map((row) => row.data);
+      const summary =
+        summaries.find((item) => item.protected_before_downtime) ||
+        summaries[0];
+      if (!summary)
+        return json(
+          { error: "No appliance-verified saved firewall records are available" },
+          404,
+        );
+      const archive = summary;
+      const expectedSerial = String(archive.appliance_serial || "").trim();
+      const protectedAtRaw =
+        archive.last_pre_downtime_snapshot?.protected_at ||
+        archive.last_pre_downtime_protected_at ||
+        null;
+      const protectedAt = protectedAtRaw ? new Date(protectedAtRaw) : null;
+      const configuredLimit = Number(profile.value("FALLBACK_MAX_ROWS", "25000"));
+      const maxRows = Number.isFinite(configuredLimit)
+        ? Math.min(50000, Math.max(1000, Math.round(configuredLimit)))
+        : 25000;
+      const readVerifiedRecords = (cutoff) =>
+        db.pool.query(
+          `SELECT record, COUNT(*) OVER() AS total_records
+             FROM tms_documents archive
+             CROSS JOIN LATERAL jsonb_array_elements(
+               CASE
+                 WHEN jsonb_typeof(archive.data->'records') = 'array'
+                   THEN archive.data->'records'
+                 ELSE '[]'::jsonb
+               END
+             ) AS record
+            WHERE archive.collection_name = $1
+              AND archive.document_key = $2
+              AND record->>'appliance_serial' = $3
+              AND ($4::timestamptz IS NULL OR (record->>'timestamp')::timestamptz <= $4::timestamptz)
+            ORDER BY (record->>'timestamp')::timestamptz DESC
+            LIMIT $5`,
+          [
+            "firewall_daily_archives",
+            String(archive.id),
+            expectedSerial,
+            cutoff,
+            maxRows,
+          ],
+        );
+      let verifiedRows = protectedAt
+        ? await readVerifiedRecords(protectedAt.toISOString())
+        : { rows: [] };
+      const useProtectedSnapshot = verifiedRows.rows.length > 0;
+      if (!useProtectedSnapshot) verifiedRows = await readVerifiedRecords(null);
+      const records = verifiedRows.rows
+        .map((row) => normalizedFirewallRecord(row.record))
+        .filter(Boolean);
+      const recordsAvailable = Number(
+        verifiedRows.rows[0]?.total_records || records.length,
+      );
+      if (!records.length)
+        return json(
+          { error: "The saved report has no records for this appliance serial" },
+          404,
+        );
+      const timestamps = records
+        .map((record) => new Date(record.timestamp))
+        .filter((timestamp) => !Number.isNaN(timestamp.getTime()))
+        .sort((left, right) => left - right);
+      const identifiedApplications = new Set(
+        records
+          .filter((record) => record.application_identified === true)
+          .map((record) => record.application)
+          .filter(Boolean),
+      );
+      return json({
+        firewall: {
+          id: profile.id,
+          label: profile.label,
+          name: firewallDisplayName(profile),
+        },
+        generated_at: new Date().toISOString(),
+        period: {
+          start:
+            timestamps[0]?.toISOString() ||
+            `${archive.date}T00:00:00.000+05:30`,
+          end:
+            timestamps.at(-1)?.toISOString() ||
+            `${archive.date}T23:59:59.999+05:30`,
+          days: 1,
+          hours: 24,
+        },
+        summary: {
+          records: records.length,
+          records_available: recordsAvailable,
+          records_sampled: records.length < recordsAvailable,
+          source: useProtectedSnapshot
+            ? "appliance_verified_pre_downtime_archive"
+            : "latest_appliance_verified_daily_archive",
+          source_complete: Boolean(
+            !archive.record_limit_reached &&
+              records.length === recordsAvailable,
+          ),
+          source_identity_verified: true,
+          appliance_serial: expectedSerial,
+          archive_records_included: true,
+          archive_fallback: true,
+          archive_date: archive.date,
+          archive_captured_at: archive.captured_at || null,
+          archive_protected_before_downtime: useProtectedSnapshot,
+          archived_rows_available: recordsAvailable,
+          archived_rows_considered: records.length,
+          traffic_bytes: records.reduce(
+            (sum, record) =>
+              sum + record.sent_bytes + record.received_bytes,
+            0,
+          ),
+          application_control: {
+            state: "archive_fallback",
+            rows_in_period: records.filter(
+              (record) => record.application_identified === true,
+            ).length,
+            unique_applications: identifiedApplications.size,
+            source_complete: Boolean(
+              !archive.record_limit_reached &&
+                records.length === recordsAvailable,
+            ),
+          },
+        },
+        archive: {
+          managed_by: "automatic_archive_monitor",
+          write_performed: false,
+          fallback: true,
+          date: archive.date,
+          protected_before_downtime: useProtectedSnapshot,
+        },
+        records,
+      });
+    }
+
     if (route === "/firewall/archive/export" && method === "GET") {
       if (!["it", "admin", "super_admin"].includes(session.role))
         return json({ error: "Forbidden" }, 403);
@@ -5922,6 +7267,8 @@ async function handleRoute(request, { params }) {
       const date = url.searchParams.get("date");
       const from = url.searchParams.get("from");
       const to = url.searchParams.get("to");
+      const exportType =
+        url.searchParams.get("type") === "summary" ? "summary" : "details";
       const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || "");
       if (date && !validDate(date))
         return json({ error: "Invalid archive date" }, 400);
@@ -5939,31 +7286,46 @@ async function handleRoute(request, { params }) {
             new Date(`${rangeStart}T00:00:00Z`).getTime()) /
             86400000,
         ) + 1;
-      if (days > 7)
-        return json({ error: "Export up to 7 archived days at a time" }, 400);
-      const archives = await db
-        .collection("firewall_daily_archives")
-        .find({
-          firewall_id: profile.id,
-          date: { $gte: rangeStart, $lte: rangeEnd },
+      const maximumDays = exportType === "summary" ? 366 : 7;
+      if (days > maximumDays)
+        return json(
+          {
+            error:
+              exportType === "summary"
+                ? "Export up to 366 archive summary days at a time"
+                : "Export up to 7 detailed archived days at a time",
+          },
+          400,
+        );
+      const archives = (
+        await firewallArchiveIndex(db, profile.id, {
+          from: rangeStart,
+          to: rangeEnd,
+          limit: maximumDays,
         })
-        .sort({ date: 1 })
-        .limit(7)
-        .toArray();
-      const records = archives.flatMap((archive) =>
-        (archive.records || []).map((record) => ({
-          archive_date: archive.date,
-          ...record,
-        })),
+      ).reverse();
+      if (!archives.length)
+        return json({ error: "No archived reports in that date range" }, 404);
+      const totalRecords = archives.reduce(
+        (sum, archive) => sum + archive.record_count,
+        0,
       );
-      const filename = `${profile.id}-firewall-archive-${rangeStart}${rangeStart === rangeEnd ? "" : `-to-${rangeEnd}`}.csv`;
-      return new NextResponse(firewallArchiveCsvStream(records), {
+      const filename = `${profile.id}-firewall-archive-${exportType}-${rangeStart}${rangeStart === rangeEnd ? "" : `-to-${rangeEnd}`}.csv`;
+      const body =
+        exportType === "summary"
+          ? firewallArchiveSummaryCsv(
+              archives.map((archive) => archive.archive),
+            )
+          : firewallArchiveDatabaseCsvStream(db, archives);
+      return new NextResponse(body, {
         status: 200,
         headers: {
           "Cache-Control": "no-store",
           "Content-Type": "text/csv; charset=utf-8",
           "Content-Disposition": `attachment; filename="${filename}"`,
-          "X-Archive-Records": String(records.length),
+          "X-Archive-Days": String(archives.length),
+          "X-Archive-Records": String(totalRecords),
+          "X-Archive-Export-Type": exportType,
         },
       });
     }
@@ -5987,15 +7349,7 @@ async function handleRoute(request, { params }) {
       const date = url.searchParams.get("date");
       const from = url.searchParams.get("from");
       const to = url.searchParams.get("to");
-      const includeRecords = url.searchParams.get("include_records") === "true";
       const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || "");
-      const filter = { firewall_id: profile.id };
-      if (validDate(date)) filter.date = date;
-      else if (validDate(from) || validDate(to)) {
-        filter.date = {};
-        if (validDate(from)) filter.date.$gte = from;
-        if (validDate(to)) filter.date.$lte = to;
-      }
       if (date && !validDate(date))
         return json({ error: "Invalid archive date" }, 400);
       if ((from && !validDate(from)) || (to && !validDate(to)))
@@ -6003,18 +7357,8 @@ async function handleRoute(request, { params }) {
       if (validDate(from) && validDate(to) && from > to)
         return json({ error: "Archive start date must be before end date" }, 400);
       const requestedLimit = Number(url.searchParams.get("limit") || 31);
-      const limit = Math.min(includeRecords ? 7 : 365, Math.max(1, requestedLimit));
-      const projection = includeRecords || validDate(date) ? {} : { records: 0 };
-      const archives = await db
-        .collection("firewall_daily_archives")
-        .find(filter, { projection })
-        .sort({ date: -1 })
-        .limit(limit)
-        .toArray();
+      const limit = Math.min(365, Math.max(1, requestedLimit));
       if (validDate(date)) {
-        if (!archives[0])
-          return json({ error: "No archived report for that date" }, 404);
-        const archive = archives[0];
         const requestedRecordPage = Number(
           url.searchParams.get("record_page") || 1,
         );
@@ -6027,36 +7371,60 @@ async function handleRoute(request, { params }) {
         const recordLimit = Number.isFinite(requestedRecordLimit)
           ? Math.min(100, Math.max(1, Math.round(requestedRecordLimit)))
           : 25;
-        const records = archive.records || [];
-        const totalPages = Math.max(1, Math.ceil(records.length / recordLimit));
+        const index = await firewallArchiveIndex(db, profile.id, {
+          date,
+          limit: 1,
+        });
+        if (!index[0])
+          return json({ error: "No archived report for that date" }, 404);
+        const totalRecords = index[0].record_count;
+        const totalPages = Math.max(1, Math.ceil(totalRecords / recordLimit));
         const currentPage = Math.min(recordPage, totalPages);
-        const start = (currentPage - 1) * recordLimit;
+        const result = await firewallArchiveDayPage(
+          db,
+          profile.id,
+          date,
+          currentPage,
+          recordLimit,
+        );
         return json(
           clean({
-            ...archive,
-            records: records.slice(start, start + recordLimit),
+            ...result.archive,
+            records: result.records,
             record_pagination: {
               page: currentPage,
               page_size: recordLimit,
-              total_records: records.length,
+              total_records: totalRecords,
               total_pages: totalPages,
             },
           }),
         );
       }
-      const archiveSummaries = archives.map(({ records: storedRecords, ...item }) => item);
+      const archives = await firewallArchiveIndex(db, profile.id, {
+        from: validDate(from) ? from : null,
+        to: validDate(to) ? to : null,
+        limit,
+      });
+      const captureStatus = await db
+        .collection("firewall_health")
+        .findOne(
+          { firewall_id: profile.id },
+          {
+            projection: {
+              last_archive_at: 1,
+              last_archive_reason: 1,
+              last_archive_records: 1,
+              last_archive_source_complete: 1,
+              last_archive_error: 1,
+              last_archive_error_at: 1,
+            },
+          },
+        );
       return json({
         firewall: { id: profile.id, label: profile.label },
-        archives: clean(includeRecords ? archiveSummaries : archives),
+        archives: clean(archives.map((item) => item.archive)),
         count: archives.length,
-        records: includeRecords
-          ? archives.flatMap((item) =>
-              (item.records || []).map((record) => ({
-                archive_date: item.date,
-                ...record,
-              })),
-            )
-          : undefined,
+        capture_status: clean(captureStatus || null),
       });
     }
 
@@ -6586,12 +7954,20 @@ async function handleRoute(request, { params }) {
       if (p.get("priority")) filter.priority = p.get("priority");
       if (p.get("category")) filter.category = p.get("category");
       if (p.get("location")) filter.location = p.get("location");
-      if (p.get("assignee_id") === "unassigned")
-        filter.assignee_id = null;
-      else if (p.get("assignee_id"))
+      if (
+        p.get("assignee_id") === "unassigned" ||
+        p.get("allocation") === "unallocated"
+      ) {
+        const unallocatedFilter = {
+          $or: [
+            { assignee_id: null },
+            { assignee_id: "" },
+            { assignee_id: { $exists: false } },
+          ],
+        };
+        filter.$and = [...(filter.$and || []), unallocatedFilter];
+      } else if (p.get("assignee_id"))
         filter.assignee_id = p.get("assignee_id");
-      if (p.get("allocation") === "unallocated")
-        filter.assignee_id = null;
       if (p.get("search")) {
         const rx = new RegExp(
           p.get("search").replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
@@ -6611,10 +7987,13 @@ async function handleRoute(request, { params }) {
           const visibilityFilter = filter.$or;
           delete filter.$or;
           filter.$and = [
+            ...(filter.$and || []),
             { $or: visibilityFilter },
             { $or: searchFilter },
           ];
-        } else filter.$or = searchFilter;
+        } else if (filter.$and)
+          filter.$and = [...filter.$and, { $or: searchFilter }];
+        else filter.$or = searchFilter;
       }
       const parsedPage = Number.parseInt(p.get("page") || "1", 10);
       const parsedLimit = Number.parseInt(p.get("limit") || "15", 10);
