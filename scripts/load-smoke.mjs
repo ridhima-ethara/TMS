@@ -1,19 +1,48 @@
 import assert from "node:assert/strict";
+import { randomBytes, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import bcrypt from "bcryptjs";
+import {
+  closePostgres,
+  connectToPostgres,
+} from "../lib/postgres-document-db.js";
 
 const baseUrl = process.env.LOAD_TEST_URL || "http://127.0.0.1:3004/api";
 const requests = Math.min(2000, Math.max(1, Number(process.env.LOAD_REQUESTS || 300)));
 const concurrency = Math.min(100, Math.max(1, Number(process.env.LOAD_CONCURRENCY || 25)));
 
-const accountsResponse = await fetch(`${baseUrl}/auth/demo-accounts`);
-assert.equal(accountsResponse.status, 200, "demo login is required for the local load test");
-const accounts = (await accountsResponse.json()).accounts || [];
-const account = accounts.find((item) => item.role === "super_admin");
-assert.ok(account, "Super Admin demo fixture is unavailable");
-const login = await fetch(`${baseUrl}/auth/demo-login`, {
+// The seeded demo fixtures and /auth/demo-login were removed, so the load test
+// provisions a throwaway Super Admin, signs in normally, and deletes it after.
+const database = await connectToPostgres();
+const loadUserPassword = `Load-${randomBytes(15).toString("base64url")}!aA1`;
+const loadUser = {
+  id: randomUUID(),
+  name: "load smoke",
+  email: `load-${randomBytes(3).toString("hex")}@ethara.ai`,
+  role: "super_admin",
+  department: "Management",
+  password_hash: await bcrypt.hash(loadUserPassword, 12),
+  employee_id: "",
+  location: "Tulip - Third Floor",
+  is_team_head: false,
+  managed_locations: [],
+  active: true,
+  activation_pending_reason: null,
+  email_verification_required: false,
+  email_verified_at: new Date(),
+  session_version: 0,
+  created_at: new Date(),
+};
+await database.collection("users").insertOne(loadUser);
+
+const login = await fetch(`${baseUrl}/auth/login`, {
   method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify({ email: account.email, location: "Tulip" }),
+  headers: { "content-type": "application/json", origin: new URL(baseUrl).origin },
+  body: JSON.stringify({
+    email: loadUser.email,
+    password: loadUserPassword,
+    location: "Tulip",
+  }),
 });
 assert.equal(login.status, 200, "load-test login failed");
 const cookie = (login.headers.get("set-cookie") || "").split(";", 1)[0];
@@ -66,4 +95,6 @@ const result = {
   },
 };
 console.log(JSON.stringify(result, null, 2));
+await database.collection("users").deleteMany({ id: loadUser.id });
+await closePostgres();
 assert.equal(failed, 0, `${failed} load-test requests failed`);

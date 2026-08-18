@@ -75,22 +75,17 @@ const EMPTY_FIREWALL_ROWS = [];
 
 const BANDWIDTH_RANGES = [
   ["today", "Today whole day"],
-  ["24h", "Last 24 hours"],
   ["1h", "Last 1 hour"],
-  ["7d", "Last 7 days"],
-  ["day", "Select a day"],
+  ["24h", "Last 24 hours"],
 ];
 
-function bandwidthQuery(range, selectedDate) {
-  if (range === "today") return "today=true";
-  if (range === "24h") return "hours=24";
+function bandwidthQuery(range) {
   if (range === "1h") return "hours=1";
-  if (range === "7d") return "days=7";
-  return `date=${selectedDate}`;
+  if (range === "24h") return "hours=24";
+  return "today=true";
 }
 
-function bandwidthRangeLabel(range, selectedDate) {
-  if (range === "day") return selectedDate;
+function bandwidthRangeLabel(range) {
   return (
     BANDWIDTH_RANGES.find(([value]) => value === range)?.[1] ||
     "Today whole day"
@@ -373,15 +368,12 @@ function ConnectedDevicesPanel({
   const [interfaceFilter, setInterfaceFilter] = useState("all");
   const [mappingFilter, setMappingFilter] = useState("all");
   const [bandwidthRange, setBandwidthRange] = useState("today");
-  const [bandwidthDate, setBandwidthDate] = useState(
-    firewallLocalDate(),
-  );
   const [periodLogs, setPeriodLogs] = useState(null);
   const [bandwidthMeta, setBandwidthMeta] = useState(null);
   const [bandwidthError, setBandwidthError] = useState("");
   const [bandwidthLoading, setBandwidthLoading] = useState(false);
   useEffect(() => {
-    const queryString = bandwidthQuery(bandwidthRange, bandwidthDate);
+    const queryString = bandwidthQuery(bandwidthRange);
     setBandwidthLoading(true);
     setBandwidthError("");
     setPeriodLogs(null);
@@ -403,7 +395,7 @@ function ConnectedDevicesPanel({
         if (!controller.signal.aborted) setBandwidthLoading(false);
       });
     return () => controller.abort();
-  }, [bandwidthRange, bandwidthDate, firewall]);
+  }, [bandwidthRange, firewall]);
   const interfaces = [
     ...new Set(
       rows
@@ -818,7 +810,7 @@ function ConnectedDevicesPanel({
             <h3 className="text-sm font-bold">Top bandwidth consumers</h3>
             <p className="text-xs text-[#98A0B3]">
               Upload, download and traffic records ·{" "}
-              {bandwidthRangeLabel(bandwidthRange, bandwidthDate)}
+              {bandwidthRangeLabel(bandwidthRange)}
             </p>
           </div>
           <select
@@ -830,15 +822,6 @@ function ConnectedDevicesPanel({
               <option key={value} value={value}>{label}</option>
             ))}
           </select>
-          {bandwidthRange === "day" && (
-            <input
-              type="date"
-              value={bandwidthDate}
-              max={firewallLocalDate()}
-              onChange={(event) => setBandwidthDate(event.target.value)}
-              className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
-            />
-          )}
           {bandwidthLoading && (
             <RefreshCw className="h-4 w-4 animate-spin text-[#4F6EF7]" />
           )}
@@ -883,12 +866,7 @@ function ConnectedDevicesPanel({
         )}
         <div className="grid gap-px bg-[#E3E6EE] sm:grid-cols-2 lg:grid-cols-5">
           {[
-            [
-              bandwidthRange === "day"
-                ? "Selected day total"
-                : "Observed bandwidth",
-              formatBytes(totalObservedBandwidth),
-            ],
+            ["Observed bandwidth", formatBytes(totalObservedBandwidth)],
             ["Clients with traffic", bandwidthRows.length],
             ["Mobile / tablet clients", mobileBandwidthConsumers.length],
             ["Highest consumer", bandwidthRows[0]?.name || "—"],
@@ -1524,9 +1502,24 @@ function ApplicationUsagePanel({
   policyCoverage,
   reportSummary,
   reportPeriod,
+  aggregates,
 }) {
   const logs = listFrom(value);
-  const usageEntries = Object.values(
+  // The report ships a bounded page of records, so when the server-side
+  // aggregate is present it is the only view that covers the whole period.
+  const aggregatedApplications = aggregates?.applications;
+  const usageEntries = aggregatedApplications
+    ? aggregatedApplications.map((row) => ({
+        name: row.name,
+        category: row.category || "Unclassified",
+        risk: row.risk || "Unknown",
+        identified: row.source_kind === "application_control",
+        sessions: Number(row.records || 0),
+        received: Number(row.received_bytes || 0),
+        sent: Number(row.sent_bytes || 0),
+        total: Number(row.traffic_bytes || 0),
+      }))
+    : Object.values(
     logs.reduce((summary, row) => {
       const identified = identifiedApplication(row);
       const name = identified.name;
@@ -1568,7 +1561,8 @@ function ApplicationUsagePanel({
       summary[name].total += received + sent;
       return summary;
     }, {}),
-  ).sort((a, b) => b.total - a.total || b.sessions - a.sessions);
+  );
+  usageEntries.sort((a, b) => b.total - a.total || b.sessions - a.sessions);
   if (!usageEntries.length && loading)
     return (
       <div className="overflow-hidden rounded-2xl border border-[#DDE2EA] bg-white p-6 shadow-sm">
@@ -2271,9 +2265,16 @@ function ApplicationUsagePanel({
   );
 }
 
-function TopApplicationsOverview({ value, onOpen }) {
+function TopApplicationsOverview({ value, onOpen, aggregates }) {
   const rows = listFrom(value);
-  const allApplications = Object.values(
+  const aggregatedApplications = aggregates?.applications;
+  const allApplications = aggregatedApplications
+    ? aggregatedApplications.map((row) => ({
+        name: row.name,
+        total: Number(row.traffic_bytes || 0),
+        identified: row.source_kind === "application_control",
+      }))
+    : Object.values(
     rows.reduce((summary, row) => {
       const detection = identifiedApplication(row);
       const name = detection.name;
@@ -2285,7 +2286,8 @@ function TopApplicationsOverview({ value, onOpen }) {
         numberFrom(row, ["sentbyte", "sent_bytes", "upload"]);
       return summary;
     }, {}),
-  ).sort((a, b) => b.total - a.total);
+  );
+  allApplications.sort((a, b) => b.total - a.total);
   const applications = allApplications.slice(0, 5);
   if (!applications.length) return null;
   const maximum = Math.max(...applications.map((app) => app.total), 1);
@@ -3126,15 +3128,177 @@ function SecurityEventsPanel({ value, sourceMeta = {} }) {
   );
 }
 
+function FirewallAggregateBars({ title, subtitle, rows, empty, valueOf, labelOf }) {
+  const top = Math.max(...rows.map((row) => valueOf(row)), 1);
+  return (
+    <section className={`${FW_CARD} overflow-hidden`}>
+      <div className="border-b border-[#E7E9F2] px-[18px] py-4">
+        <h3 className="text-sm font-bold">{title}</h3>
+        <p className="mt-0.5 text-xs text-[#98A0B5]">{subtitle}</p>
+      </div>
+      {rows.length ? (
+        <div className="space-y-3 p-[18px]">
+          {rows.map((row) => (
+            <div
+              key={row.name}
+              className="grid gap-2 md:grid-cols-[200px_1fr_110px] md:items-center"
+            >
+              <div>
+                <b className="block truncate text-[12.5px]">{row.name}</b>
+                <span className="text-[10.5px] text-[#98A0B5]">{labelOf(row)}</span>
+              </div>
+              <div className="h-2.5 overflow-hidden rounded-full bg-[#F0F1F7]">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-[#4A5FE8] to-[#0E7490]"
+                  style={{ width: `${Math.max(2, (valueOf(row) / top) * 100)}%` }}
+                />
+              </div>
+              <b className="text-right text-[13px] tabular-nums">
+                {formatBytes(row.traffic_bytes)}
+              </b>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="p-6 text-sm text-[#69738B]">{empty}</div>
+      )}
+    </section>
+  );
+}
+
+function FirewallApplicationsPanel({ report }) {
+  const applications = report?.aggregates?.applications || [];
+  const control = report?.summary?.application_control || {};
+  const identified = applications.filter(
+    (row) => row.source_kind === "application_control",
+  ).length;
+  return (
+    <section className={`${FW_CARD} overflow-hidden`}>
+      <div className="border-b border-[#E7E9F2] px-[18px] py-4">
+        <h3 className="text-sm font-bold">Applications in use</h3>
+        <p className="mt-0.5 text-xs text-[#98A0B5]">
+          Every application and service seen on traffic in the selected period ·{" "}
+          {applications.length.toLocaleString()} distinct
+        </p>
+      </div>
+      {control.state !== "identified" && (
+        <div className="border-b border-amber-200 bg-amber-50 px-[18px] py-3 text-xs text-amber-800">
+          <b>Application Control is not naming applications right now.</b> The
+          appliance returned{" "}
+          {Number(control.rows_in_period || 0).toLocaleString()} app-control
+          events for this period
+          {Number(control.retained_events || 0) > 0 &&
+            control.retained_period?.start && (
+              <>
+                {" "}
+                (it still retains{" "}
+                {Number(control.retained_events).toLocaleString()} events from{" "}
+                {formatUsageRangeTimestamp(control.retained_period.start)})
+              </>
+            )}
+          . The names below come from the traffic log&apos;s service field, so
+          they identify the protocol or port rather than the application. Enable
+          an Application Control profile with memory logging on the firewall
+          policies to resolve real application names.
+        </div>
+      )}
+      <div className="grid gap-px bg-[#E7E9F2] sm:grid-cols-2 lg:grid-cols-4">
+        {[
+          ["Distinct applications", applications.length.toLocaleString()],
+          ["Named by App Control", identified.toLocaleString()],
+          [
+            "App-control events",
+            Number(control.rows_in_period || 0).toLocaleString(),
+          ],
+          [
+            "Top application",
+            applications[0]?.name || "—",
+          ],
+        ].map(([label, value]) => (
+          <div key={label} className="bg-white px-[18px] py-3">
+            <div className="text-[10.5px] font-semibold uppercase tracking-wide text-[#98A0B5]">
+              {label}
+            </div>
+            <div className="mt-1 truncate text-[15px] font-bold">{value}</div>
+          </div>
+        ))}
+      </div>
+      {applications.length ? (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-left text-[12.5px]">
+            <thead className="bg-[#F8FAFC] text-[10.5px] uppercase tracking-wide text-[#98A0B5]">
+              <tr>
+                {[
+                  "Application",
+                  "Source",
+                  "Category",
+                  "Risk",
+                  "Records",
+                  "Clients",
+                  "Destinations",
+                  "Traffic",
+                  "Last seen",
+                ].map((column) => (
+                  <th key={column} className="px-3 py-2 font-semibold">
+                    {column}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {applications.map((row) => (
+                <tr key={row.name} className="border-t border-[#EEF0F6]">
+                  <td className="px-3 py-2 font-semibold">{row.name}</td>
+                  <td className="px-3 py-2">
+                    <span
+                      className={`rounded-full border px-2 py-0.5 text-[10.5px] ${
+                        row.source_kind === "application_control"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                          : "border-slate-200 bg-slate-50 text-slate-600"
+                      }`}
+                    >
+                      {row.source_kind === "application_control"
+                        ? "App Control"
+                        : "Service"}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2">{row.category || "—"}</td>
+                  <td className="px-3 py-2">{row.risk || "—"}</td>
+                  <td className="px-3 py-2 tabular-nums">
+                    {row.records.toLocaleString()}
+                  </td>
+                  <td className="px-3 py-2 tabular-nums">{row.sources}</td>
+                  <td className="px-3 py-2 tabular-nums">{row.destinations}</td>
+                  <td className="px-3 py-2 tabular-nums">
+                    {formatBytes(row.traffic_bytes)}
+                  </td>
+                  <td className="px-3 py-2 text-[#69738B]">
+                    {row.last_seen
+                      ? formatUsageRangeTimestamp(row.last_seen)
+                      : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="p-6 text-sm text-[#69738B]">
+          No application or service activity was returned for this period.
+        </div>
+      )}
+    </section>
+  );
+}
+
 function InterfacePeriodUsage({ firewall }) {
   const [range, setRange] = useState("today");
-  const [selectedDate, setSelectedDate] = useState(firewallLocalDate());
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const queryString = bandwidthQuery(range, selectedDate);
+    const queryString = bandwidthQuery(range);
     const controller = new AbortController();
     setLoading(true);
     setError("");
@@ -3151,140 +3315,179 @@ function InterfacePeriodUsage({ firewall }) {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [range, selectedDate, firewall]);
+  }, [range, firewall]);
 
-  const records = report?.records || [];
-  const interfaceUsage = Object.values(
-    records.reduce((summary, row) => {
-      const name = row.source_interface || "Unclassified interface";
-      if (!summary[name])
-        summary[name] = { name, received: 0, sent: 0, total: 0, records: 0 };
-      const received = Number(row.received_bytes || 0);
-      const sent = Number(row.sent_bytes || 0);
-      summary[name].received += received;
-      summary[name].sent += sent;
-      summary[name].total += received + sent;
-      summary[name].records += 1;
-      return summary;
-    }, {}),
-  ).sort((a, b) => b.total - a.total);
+  // `records` is a bounded page of the period (the full set reaches ~236k rows
+  // on HQ), so every total here comes from the server-side aggregate, which is
+  // computed over all of them.
+  const interfaceUsage = (report?.aggregates?.interfaces || []).map((row) => ({
+    name: row.name,
+    received: row.received_bytes,
+    sent: row.sent_bytes,
+    total: row.traffic_bytes,
+    records: row.records,
+  }));
   const busiest = Math.max(...interfaceUsage.map((row) => row.total), 1);
-  const sourceSystems = new Set(records.map((row) => row.source_ip).filter(Boolean))
-    .size;
+  const sourceSystems = Number(report?.aggregates?.source_systems || 0);
 
   return (
-    <section className={`${FW_CARD} overflow-hidden`}>
-      <div className="flex flex-wrap items-center gap-3 border-b border-[#E7E9F2] px-[18px] py-4">
-        <div className="mr-auto">
-          <h3 className="text-sm font-bold">Interface usage by period</h3>
-          <p className="mt-0.5 text-xs text-[#98A0B5]">
-            Timestamped traffic logs grouped by source interface · {firewall.toUpperCase()}
-          </p>
-        </div>
-        <select
-          value={range}
-          onChange={(event) => setRange(event.target.value)}
-          className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
-        >
-          {BANDWIDTH_RANGES.map(([value, label]) => (
-            <option key={value} value={value}>{label}</option>
-          ))}
-        </select>
-        {range === "day" && (
-          <input
-            type="date"
-            value={selectedDate}
-            max={firewallLocalDate()}
-            onChange={(event) => setSelectedDate(event.target.value)}
+    <div className="space-y-4">
+      <section className={`${FW_CARD} overflow-hidden`}>
+        <div className="flex flex-wrap items-center gap-3 border-b border-[#E7E9F2] px-[18px] py-4">
+          <div className="mr-auto">
+            <h3 className="text-sm font-bold">Interface usage by period</h3>
+            <p className="mt-0.5 text-xs text-[#98A0B5]">
+              Timestamped traffic logs grouped by source interface · {firewall.toUpperCase()}
+            </p>
+          </div>
+          <select
+            value={range}
+            onChange={(event) => setRange(event.target.value)}
             className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
-          />
-        )}
-        {loading && <RefreshCw className="h-4 w-4 animate-spin text-[#4A5FE8]" />}
-      </div>
-      <div
-        className={`border-b px-[18px] py-3 text-xs ${
-          error
-            ? "border-red-200 bg-red-50 text-red-700"
-            : "border-[#E7E9F2] bg-[#F8FAFC] text-[#5B6178]"
-        }`}
-      >
-        {error ? (
-          `Unable to load interface usage: ${error}`
-        ) : report?.period ? (
-          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <Clock3 className="h-3.5 w-3.5 text-[#4A5FE8]" />
-            <b className="text-[#374151]">Usage period:</b>
-            <span>{formatUsageRangeTimestamp(report.period.start)}</span>
-            <span>→</span>
-            <span>{formatUsageRangeTimestamp(report.period.end)} IST</span>
-            {report.summary?.record_limit_reached && (
-              <span className="font-semibold text-[#B45309]">
-                · API row limit reached; totals may be partial.
-              </span>
-            )}
-            {report.summary?.source_complete === false &&
-              !report.summary?.record_limit_reached && (
+          >
+            {BANDWIDTH_RANGES.map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+          {loading && <RefreshCw className="h-4 w-4 animate-spin text-[#4A5FE8]" />}
+        </div>
+        <div
+          className={`border-b px-[18px] py-3 text-xs ${
+            error
+              ? "border-red-200 bg-red-50 text-red-700"
+              : "border-[#E7E9F2] bg-[#F8FAFC] text-[#5B6178]"
+          }`}
+        >
+          {error ? (
+            `Unable to load interface usage: ${error}`
+          ) : report?.period ? (
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <Clock3 className="h-3.5 w-3.5 text-[#4A5FE8]" />
+              <b className="text-[#374151]">Usage period:</b>
+              <span>{formatUsageRangeTimestamp(report.period.start)}</span>
+              <span>→</span>
+              <span>{formatUsageRangeTimestamp(report.period.end)} IST</span>
+              {report.summary?.record_limit_reached && (
                 <span className="font-semibold text-[#B45309]">
-                  · The firewall did not return every retained source row;
-                  totals may be partial.
+                  · API row limit reached; totals may be partial.
                 </span>
               )}
-          </span>
-        ) : (
-          "Loading the selected usage period…"
-        )}
-      </div>
-      <div className="grid gap-px bg-[#E7E9F2] sm:grid-cols-2 lg:grid-cols-4">
-        {[
-          ["Usage in period", formatBytes(report?.summary?.traffic_bytes || 0)],
-          ["Traffic records", Number(report?.summary?.records || 0).toLocaleString()],
-          ["Source interfaces", interfaceUsage.length],
-          ["Systems observed", sourceSystems],
-        ].map(([label, metric]) => (
-          <div key={label} className="bg-white p-4">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-[#98A0B5]">
-              {label}
-            </p>
-            <b className="mt-1 block text-xl tabular-nums">{metric}</b>
-          </div>
-        ))}
-      </div>
-      {!loading && !error && (
-        interfaceUsage.length ? (
-          <div className="space-y-3 p-[18px]">
-            {interfaceUsage.slice(0, 10).map((row) => (
-              <div key={row.name} className="grid gap-2 md:grid-cols-[180px_1fr_100px] md:items-center">
-                <div>
-                  <b className="block truncate text-[12.5px]">{row.name}</b>
-                  <span className="text-[10.5px] text-[#98A0B5]">
-                    {row.records.toLocaleString()} records
+              {report.summary?.source_complete === false &&
+                !report.summary?.record_limit_reached && (
+                  <span className="font-semibold text-[#B45309]">
+                    · The firewall did not return every retained source row;
+                    totals may be partial.
                   </span>
-                </div>
-                <div>
-                  <div className="h-2.5 overflow-hidden rounded-full bg-[#F0F1F7]">
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-[#4A5FE8] to-[#0E7490]"
-                      style={{ width: `${Math.max(2, (row.total / busiest) * 100)}%` }}
-                    />
+                )}
+            </span>
+          ) : (
+            "Loading the selected usage period…"
+          )}
+        </div>
+        <div className="grid gap-px bg-[#E7E9F2] sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            ["Usage in period", formatBytes(report?.summary?.traffic_bytes || 0)],
+            ["Traffic records", Number(report?.summary?.records || 0).toLocaleString()],
+            ["Source interfaces", interfaceUsage.length],
+            ["Systems observed", sourceSystems],
+          ].map(([label, metric]) => (
+            <div key={label} className="bg-white p-4">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-[#98A0B5]">
+                {label}
+              </p>
+              <b className="mt-1 block text-xl tabular-nums">{metric}</b>
+            </div>
+          ))}
+        </div>
+        {!loading && !error && (
+          interfaceUsage.length ? (
+            <div className="space-y-3 p-[18px]">
+              {interfaceUsage.slice(0, 10).map((row) => (
+                <div key={row.name} className="grid gap-2 md:grid-cols-[180px_1fr_100px] md:items-center">
+                  <div>
+                    <b className="block truncate text-[12.5px]">{row.name}</b>
+                    <span className="text-[10.5px] text-[#98A0B5]">
+                      {row.records.toLocaleString()} records
+                    </span>
                   </div>
-                  <div className="mt-1 flex justify-between text-[10.5px] text-[#98A0B5]">
-                    <span>↓ {formatBytes(row.received)}</span>
-                    <span>↑ {formatBytes(row.sent)}</span>
+                  <div>
+                    <div className="h-2.5 overflow-hidden rounded-full bg-[#F0F1F7]">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-[#4A5FE8] to-[#0E7490]"
+                        style={{ width: `${Math.max(2, (row.total / busiest) * 100)}%` }}
+                      />
+                    </div>
+                    <div className="mt-1 flex justify-between text-[10.5px] text-[#98A0B5]">
+                      <span>↓ {formatBytes(row.received)}</span>
+                      <span>↑ {formatBytes(row.sent)}</span>
+                    </div>
                   </div>
+                  <b className="text-right text-[13px] tabular-nums">
+                    {formatBytes(row.total)}
+                  </b>
                 </div>
-                <b className="text-right text-[13px] tabular-nums">
-                  {formatBytes(row.total)}
-                </b>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="p-6 text-sm text-[#69738B]">
-            No interface traffic was returned for the selected date range.
-          </div>
-        )
-      )}
-    </section>
+              ))}
+            </div>
+          ) : (
+            <div className="p-6 text-sm text-[#69738B]">
+              No interface traffic was returned for the selected date range.
+            </div>
+          )
+        )}
+      </section>
+      <FirewallApplicationsPanel report={report} />
+      <FirewallAggregateBars
+        title="Destination interfaces"
+        subtitle="Where traffic left the appliance in this period"
+        rows={(report?.aggregates?.destination_interfaces || []).slice(0, 10)}
+        empty="No destination interface traffic in this period."
+        valueOf={(row) => row.traffic_bytes}
+        labelOf={(row) => `${row.records.toLocaleString()} records`}
+      />
+      <FirewallAggregateBars
+        title="Firewall policies"
+        subtitle="Policy that matched each session"
+        rows={(report?.aggregates?.policies || []).slice(0, 10)}
+        empty="The traffic log did not name a policy for this period."
+        valueOf={(row) => row.traffic_bytes}
+        labelOf={(row) => `${row.records.toLocaleString()} sessions`}
+      />
+      <FirewallAggregateBars
+        title="Destination countries"
+        subtitle="Where outbound sessions terminated"
+        rows={(report?.aggregates?.destination_countries || []).slice(0, 10)}
+        empty="No destination country was resolved for this period."
+        valueOf={(row) => row.traffic_bytes}
+        labelOf={(row) => `${row.records.toLocaleString()} sessions · ${row.destinations} hosts`}
+      />
+      <FirewallAggregateBars
+        title="Destination ports"
+        subtitle="Busiest destination ports by traffic"
+        rows={(report?.aggregates?.destination_ports || []).slice(0, 10)}
+        empty="No destination port activity in this period."
+        valueOf={(row) => row.traffic_bytes}
+        labelOf={(row) => `${row.records.toLocaleString()} sessions · ${row.sources} clients`}
+      />
+      <FirewallAggregateBars
+        title="Session actions and severity"
+        subtitle="Action taken by the firewall, then log severity"
+        rows={[
+          ...(report?.aggregates?.actions || []),
+          ...(report?.aggregates?.severities || []),
+        ]}
+        empty="The traffic log did not record an action or severity."
+        valueOf={(row) => row.records}
+        labelOf={(row) => `${row.records.toLocaleString()} sessions`}
+      />
+      <FirewallAggregateBars
+        title="Protocols"
+        subtitle="Transport protocol carrying the traffic"
+        rows={report?.aggregates?.protocols || []}
+        empty="No protocol was recorded for this period."
+        valueOf={(row) => row.traffic_bytes}
+        labelOf={(row) => `${row.records.toLocaleString()} sessions`}
+      />
+    </div>
   );
 }
 
@@ -4896,42 +5099,31 @@ export default function FirewallView() {
   const exportSevenDayReport = async () => {
     setReportLoading(true);
     try {
-      const report = await api(`/firewall/report?days=7&firewall=${firewall}`, {
-        timeout: 60000,
-      });
-      const columns = [
-        "timestamp",
-        "source_ip",
-        "destination_ip",
-        "application",
-        "action",
-        "severity",
-        "sent_bytes",
-        "received_bytes",
-        "message",
-      ];
-      const csv = [
-        columns,
-        ...(report.records || []).map((row) =>
-          columns.map((column) => row[column] ?? ""),
-        ),
-      ]
-        .map((record) =>
-          record
-            .map((value) => `"${String(value).replace(/"/g, '""')}"`)
-            .join(","),
-        )
-        .join("\n");
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(
-        new Blob([csv], { type: "text/csv;charset=utf-8" }),
+      // /firewall/report now returns a bounded page of records, so building the
+      // CSV in the browser would silently export only that page. The archive
+      // export endpoint streams the full range as CSV from the server instead.
+      const to = firewallLocalDate();
+      const from = firewallLocalDate(
+        new Date(Date.now() - 6 * 24 * 60 * 60 * 1000),
       );
-      link.download = `${firewall}-firewall-report-${report.period.start.slice(0, 10)}-to-${report.period.end.slice(0, 10)}.csv`;
+      const response = await fetch(
+        `/api/firewall/archive/export?type=details&from=${from}&to=${to}&firewall=${firewall}`,
+        { credentials: "include" },
+      );
+      if (!response.ok) {
+        let message = `Export failed (${response.status})`;
+        try {
+          message = (await response.json())?.error || message;
+        } catch {}
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `${firewall}-firewall-report-${from}-to-${to}.csv`;
       link.click();
       URL.revokeObjectURL(link.href);
-      toast.success(
-        `Exported ${report.summary.records} firewall records for the last 7 days`,
-      );
+      toast.success(`Exported ${firewall.toUpperCase()} firewall records for ${from} to ${to}`);
     } catch (error) {
       toast.error(error.message);
     } finally {
@@ -5019,45 +5211,34 @@ export default function FirewallView() {
     unclassifiedTraffic,
     applicationCount,
     networkServiceCount,
-  } =
-    useMemo(() => {
-      let total = 0;
-      let unclassified = 0;
-      const identifiedApplications = new Set();
-      const networkServices = new Set();
-      for (const row of trafficLogs) {
-        const received = numberFrom(row, [
-          "rcvdbyte",
-          "received_bytes",
-          "download",
-        ]);
-        const sent = numberFrom(row, ["sentbyte", "sent_bytes", "upload"]);
-        const bytes = received + sent;
-        const name = textFrom(
-          row,
-          ["app", "application", "appname", "service"],
-          "Other traffic",
-        );
-        const identified =
-          row.application_identified === true ||
-          row.application_source === "fortigate_application_control";
-        total += bytes;
-        if (identified) identifiedApplications.add(name);
-        else if (name && name !== "Other traffic") networkServices.add(name);
-        if (
-          !identified ||
-          /^(unscanned|unknown|unknown application|other traffic|other|unclassified)$/i.test(name) ||
-          /^(udp|tcp)[/:]\d+/i.test(name)
-        )
-          unclassified += bytes;
-      }
-      return {
-        applicationTraffic: total,
-        unclassifiedTraffic: unclassified,
-        applicationCount: identifiedApplications.size,
-        networkServiceCount: networkServices.size,
-      };
-    }, [trafficLogs]);
+  } = useMemo(() => {
+    // These totals must describe the whole period. trafficReport.records is now
+    // a bounded page, so they are derived from the server-side aggregate, which
+    // is computed over every record in the period.
+    const applications = trafficReport?.aggregates?.applications || [];
+    const unclassifiedName = (name) =>
+      !name ||
+      /^(unscanned|unknown|unknown application|other traffic|other|unclassified)$/i.test(
+        name,
+      ) ||
+      /^(udp|tcp)[/:]\d+/i.test(name);
+    let unclassified = 0;
+    const identifiedApplications = new Set();
+    const networkServices = new Set();
+    for (const row of applications) {
+      const identified = row.source_kind === "application_control";
+      if (identified) identifiedApplications.add(row.name);
+      else if (row.name) networkServices.add(row.name);
+      if (!identified || unclassifiedName(row.name))
+        unclassified += Number(row.traffic_bytes || 0);
+    }
+    return {
+      applicationTraffic: Number(trafficReport?.summary?.traffic_bytes || 0),
+      unclassifiedTraffic: unclassified,
+      applicationCount: identifiedApplications.size,
+      networkServiceCount: networkServices.size,
+    };
+  }, [trafficReport]);
   const interfaceResults = sections.interfaces?.results || {};
   const interfaceRows = Array.isArray(interfaceResults)
     ? interfaceResults
@@ -5652,6 +5833,7 @@ export default function FirewallView() {
               <div className="grid gap-3.5 lg:grid-cols-2">
                 <TopApplicationsOverview
                   value={trafficLogs}
+                  aggregates={trafficReport?.aggregates}
                   onOpen={() => openDetail("applications", "Throughput")}
                 />
                 <FirewallEstateComparison values={comparison} onSelect={setFirewall} />
@@ -5700,6 +5882,7 @@ export default function FirewallView() {
           <div className="space-y-4">
             <ApplicationUsagePanel
               value={trafficLogs}
+              aggregates={trafficReport?.aggregates}
               devices={sections.devices}
               firewall={firewall}
               inspection={trafficReport?.summary?.application_control}

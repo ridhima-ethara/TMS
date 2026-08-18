@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { randomBytes, randomUUID } from "node:crypto";
+import bcrypt from "bcryptjs";
 import ExcelJS from "exceljs";
 import {
   closePostgres,
@@ -10,6 +12,9 @@ const origin = "http://localhost:3004";
 const database = await connectToPostgres();
 const createdTicketIds = [];
 const createdChecklistIds = [];
+const createdUserIds = [];
+const runId = `requested-${randomBytes(3).toString("hex")}`;
+const memberPassword = `Req-${randomBytes(15).toString("base64url")}!aA1`;
 const testTitle = `KRA import verification ${Date.now()}`;
 
 function cookieFrom(response) {
@@ -35,24 +40,63 @@ async function request(path, { method = "GET", body, cookie } = {}) {
 }
 
 async function demoLogin(email, location) {
-  const result = await request("/auth/demo-login", {
+  // The seeded demo fixtures and /auth/demo-login were removed from the
+  // platform, so this suite provisions its own members and signs in normally.
+  const result = await request("/auth/login", {
     method: "POST",
-    body: { email, location },
+    body: { email, password: memberPassword, location },
   });
   assert.equal(result.response.status, 200, result.payload.error);
   assert.ok(result.cookie);
   return result;
 }
 
+async function createMember({ role, department, location, isTeamHead = false }) {
+  const now = new Date();
+  const user = {
+    id: randomUUID(),
+    name: `${runId} ${role}`,
+    email: `${runId}-${role.replace(/_/g, "-")}@ethara.ai`,
+    role,
+    department,
+    password_hash: await bcrypt.hash(memberPassword, 12),
+    employee_id: `${runId.slice(-4).toUpperCase()}-${role.slice(0, 3).toUpperCase()}`,
+    location,
+    is_team_head: isTeamHead,
+    managed_locations: [],
+    active: true,
+    activation_pending_reason: null,
+    email_verification_required: false,
+    email_verified_at: now,
+    session_version: 0,
+    created_at: now,
+  };
+  await database.collection("users").insertOne(user);
+  createdUserIds.push(user.id);
+  return user;
+}
+
 try {
-  const fixtures = await database
-    .collection("users")
-    .find({ seeded_fixture: true })
-    .toArray();
-  const superAdmin = fixtures.find((user) => user.role === "super_admin");
-  const admin = fixtures.find((user) => user.role === "admin");
-  const itMember = fixtures.find((user) => user.role === "it");
-  const employee = fixtures.find((user) => user.role === "employee");
+  const superAdmin = await createMember({
+    role: "super_admin",
+    department: "Management",
+    location: "Tulip - Third Floor",
+  });
+  const admin = await createMember({
+    role: "admin",
+    department: "Admin",
+    location: "Lotus - Bullpen",
+  });
+  const itMember = await createMember({
+    role: "it",
+    department: "IT",
+    location: "Lotus - Labs",
+  });
+  const employee = await createMember({
+    role: "employee",
+    department: "General",
+    location: "Lotus - Bullpen",
+  });
   assert.ok(superAdmin && admin && itMember && employee);
 
   const superSession = await demoLogin(superAdmin.email, "Tulip");
@@ -240,5 +284,9 @@ try {
       database.collection("notifications").deleteMany({ message: { $regex: testTitle } }),
     ]);
   }
+  if (createdUserIds.length)
+    await database
+      .collection("users")
+      .deleteMany({ id: { $in: createdUserIds } });
   await closePostgres();
 }

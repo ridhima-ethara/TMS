@@ -119,12 +119,81 @@ function emailVerificationRequired() {
   return process.env.NODE_ENV === "production";
 }
 
+const LOOPBACK_HOSTNAMES = new Set([
+  "localhost",
+  "127.0.0.1",
+  "::1",
+  "[::1]",
+]);
+
+// Hosts that cannot be reached from the public internet. Plaintext HTTP is
+// acceptable to these because there is no untrusted network in between; the
+// rule exists to stop a public hostname being served over http.
+function isPrivateHostname(hostname) {
+  const host = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+  if (LOOPBACK_HOSTNAMES.has(host) || host === "::1") return true;
+  if (host.endsWith(".local") || host.endsWith(".internal")) return true;
+  if (host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd"))
+    return true;
+  const parts = host.split(".");
+  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part)))
+    return false;
+  const [a, b] = parts.map(Number);
+  if (parts.some((part) => Number(part) > 255)) return false;
+  if (a === 127 || a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  return false;
+}
+
+// PUBLIC_APP_URL anchors email verification links and the cross-site mutation
+// allowlist, so a wrong or plaintext value is a security problem rather than a
+// cosmetic one. Resolve it once and report the failure instead of throwing, so
+// callers can decide between "reject the request" and "fail the operation".
+let publicAppOriginResult;
+function resolvePublicAppOrigin() {
+  if (publicAppOriginResult) return publicAppOriginResult;
+  const production = process.env.NODE_ENV === "production";
+  const configured = String(process.env.PUBLIC_APP_URL || "").trim();
+  if (!configured) {
+    publicAppOriginResult = production
+      ? { error: "PUBLIC_APP_URL must be configured in production" }
+      : { origin: null };
+    return publicAppOriginResult;
+  }
+  let parsed;
+  try {
+    parsed = new URL(configured);
+  } catch {
+    publicAppOriginResult = {
+      error:
+        "PUBLIC_APP_URL must be an absolute URL, for example https://tms.example.com",
+    };
+    return publicAppOriginResult;
+  }
+  // http:// is permitted only for a host that is not routable from the public
+  // internet (loopback or a private LAN address). Over a real hostname it would
+  // send verification links over plaintext and add a spoofable origin to the
+  // CSRF allowlist. The check deliberately keys on the host rather than
+  // NODE_ENV, because the standalone server always reports production -- so an
+  // environment test would reject `npm start` against http://localhost.
+  if (parsed.protocol !== "https:" && !isPrivateHostname(parsed.hostname)) {
+    publicAppOriginResult = {
+      error:
+        "PUBLIC_APP_URL must use https:// for a publicly routable host",
+    };
+    return publicAppOriginResult;
+  }
+  publicAppOriginResult = { origin: parsed.origin };
+  return publicAppOriginResult;
+}
+
 function publicAppOrigin(request) {
-  const configured = process.env.PUBLIC_APP_URL;
-  if (configured) return new URL(configured).origin;
-  if (process.env.NODE_ENV === "production")
-    throw new Error("PUBLIC_APP_URL must be configured in production");
-  return new URL(request.url).origin;
+  const resolved = resolvePublicAppOrigin();
+  if (resolved.error) throw new Error(resolved.error);
+  return resolved.origin || new URL(request.url).origin;
 }
 
 // ---------------- helpers ----------------
@@ -175,11 +244,23 @@ function rejectsCrossSiteMutation(request) {
     if (forwardedHost && forwardedProtocol)
       allowed.add(`${forwardedProtocol}://${forwardedHost}`);
   }
-  if (process.env.PUBLIC_APP_URL) {
+  const configuredOrigin = resolvePublicAppOrigin();
+  // A misconfigured public origin cannot be trusted to authorise a mutation.
+  if (configuredOrigin.error) return true;
+  if (configuredOrigin.origin) allowed.add(configuredOrigin.origin);
+  // Accept the address the browser actually connected to. A cross-site attacker
+  // controls neither header pair: the browser sets Host to this server and
+  // Origin to the attacker's site, so they only match for a page this server
+  // served. Without this, reaching the app on any address other than the one
+  // baked into PUBLIC_APP_URL (a LAN IP, or plain 127.0.0.1) rejects every
+  // mutation.
+  const hostHeader = request.headers.get("host");
+  if (hostHeader) {
     try {
-      allowed.add(new URL(process.env.PUBLIC_APP_URL).origin);
+      const scheme = new URL(request.url).protocol;
+      allowed.add(new URL(`${scheme}//${hostHeader}`).origin);
     } catch {
-      return true;
+      // A malformed Host header simply contributes no allowed origin.
     }
   }
   try {
@@ -212,7 +293,7 @@ function demoLoginAllowed(request) {
   if (process.env.ALLOW_DEMO_LOGIN !== "true") return false;
   if (process.env.ALLOW_DEMO_LOGIN_REMOTE === "true") return true;
   try {
-    const loopback = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+    const loopback = LOOPBACK_HOSTNAMES;
     const requestHostname = new URL(request.url).hostname.toLowerCase();
     const hostHeader = String(request.headers.get("host") || "").toLowerCase();
     const headerHostname = hostHeader.startsWith("[")
@@ -1446,6 +1527,139 @@ function firewallArchiveSummary(records) {
       message: "Blocked activity is elevated for this archived day.",
     });
   return { summary, escalations };
+}
+
+// Report responses used to ship every merged record to the browser, which on HQ
+// meant ~236k rows / 231 MB per request. Everything the dashboard renders is a
+// grouping of those rows, so the grouping happens here once and the record list
+// is returned as a bounded page instead.
+const FIREWALL_REPORT_RECORD_LIMIT = 2000;
+const FIREWALL_AGGREGATE_LIMIT = 200;
+
+function firewallReportAggregates(records) {
+  const tally = (map, key, row, extra) => {
+    if (key === undefined || key === null || key === "") return;
+    const name = String(key);
+    let entry = map.get(name);
+    if (!entry) {
+      entry = {
+        name,
+        records: 0,
+        sent_bytes: 0,
+        received_bytes: 0,
+        traffic_bytes: 0,
+        sources: new Set(),
+        destinations: new Set(),
+        first_seen: null,
+        last_seen: null,
+      };
+      map.set(name, entry);
+    }
+    const sent = Number(row.sent_bytes || 0);
+    const received = Number(row.received_bytes || 0);
+    entry.records += 1;
+    entry.sent_bytes += sent;
+    entry.received_bytes += received;
+    entry.traffic_bytes += sent + received;
+    if (row.source_ip) entry.sources.add(row.source_ip);
+    if (row.destination_ip) entry.destinations.add(row.destination_ip);
+    const time = row.timestamp || null;
+    if (time) {
+      if (!entry.first_seen || time < entry.first_seen) entry.first_seen = time;
+      if (!entry.last_seen || time > entry.last_seen) entry.last_seen = time;
+    }
+    if (extra) extra(entry, row);
+  };
+  const finish = (map, limit = FIREWALL_AGGREGATE_LIMIT) =>
+    [...map.values()]
+      .map((entry) => ({
+        ...entry,
+        sources: entry.sources.size,
+        destinations: entry.destinations.size,
+      }))
+      .sort((a, b) => b.traffic_bytes - a.traffic_bytes || b.records - a.records)
+      .slice(0, limit);
+
+  const interfaces = new Map();
+  const destinationInterfaces = new Map();
+  const applications = new Map();
+  const protocols = new Map();
+  const policies = new Map();
+  const actions = new Map();
+  const severities = new Map();
+  const countries = new Map();
+  const destinationPorts = new Map();
+  const clients = new Map();
+  const sourceSystems = new Set();
+
+  for (const row of records) {
+    if (row.source_ip) sourceSystems.add(row.source_ip);
+    tally(interfaces, row.source_interface || "Unclassified interface", row);
+    tally(
+      destinationInterfaces,
+      row.destination_interface || "Unclassified interface",
+      row,
+    );
+    tally(protocols, row.protocol, row);
+    tally(policies, row.policy, row);
+    tally(actions, row.action, row);
+    tally(severities, row.severity, row);
+    tally(countries, row.destination_country, row);
+    tally(destinationPorts, row.destination_port, row);
+    // Application Control names the app when deep inspection is on; otherwise
+    // the traffic log still carries a service label, which is the only
+    // application signal available on an appliance without app-ctrl logging.
+    tally(
+      applications,
+      row.application || row.service,
+      row,
+      (entry, source) => {
+        entry.category ||= source.category || null;
+        entry.risk ||= source.application_risk || null;
+        entry.application_action ||= source.application_action || null;
+        entry.identified_records =
+          (entry.identified_records || 0) +
+          (source.application_identified ? 1 : 0);
+        // normalizedFirewallRecord falls `application` back to the service
+        // label, so only application_identified distinguishes a real
+        // Application Control match from a plain service name.
+        if (source.application_identified) entry.source_kind = "application_control";
+        else entry.source_kind ||= "service";
+      },
+    );
+    tally(
+      clients,
+      row.source_mac || row.source_ip,
+      row,
+      (entry, source) => {
+        entry.source_ip ||= source.source_ip || null;
+        entry.source_mac ||= source.source_mac || null;
+        entry.source_name ||= source.source_name || null;
+        entry.source_device_type ||= source.source_device_type || null;
+        entry.source_os_name ||= source.source_os_name || null;
+        entry.source_vendor ||= source.source_vendor || null;
+        entry.asset_user_name ||= source.asset_user_name || null;
+        entry.employee_code ||= source.employee_code || null;
+        entry.asset_email ||= source.asset_email || null;
+        entry.av_status ||= source.av_status || null;
+        entry.inventory_match ||= Boolean(source.inventory_match);
+      },
+    );
+  }
+
+  return {
+    source_systems: sourceSystems.size,
+    interfaces: finish(interfaces),
+    destination_interfaces: finish(destinationInterfaces),
+    applications: finish(applications),
+    protocols: finish(protocols),
+    policies: finish(policies),
+    actions: finish(actions),
+    severities: finish(severities),
+    destination_countries: finish(countries),
+    destination_ports: finish(destinationPorts),
+    clients: finish(clients),
+  };
 }
 
 function firewallRecordFingerprint(row) {
@@ -5916,22 +6130,34 @@ async function handleRoute(request, { params }) {
       return redirect("success");
     }
     if (route === "/auth/register" && method === "POST") {
-      const registrationLimit = await db.consumeRateLimit(
-        requestRateLimitKey("register", request),
-        10,
-        60 * 60_000,
-      );
-      if (registrationLimit.limited)
-        return json(
-          { error: "Too many registration attempts. Try again later." },
-          429,
-        );
       const b = await request.json();
       // Coerce to strings so non-string (e.g. object) input is rejected with a
       // 400 rather than throwing downstream (bcrypt.hash / .toLowerCase).
       const email = (typeof b.email === "string" ? b.email : "")
         .toLowerCase()
         .trim();
+      // Limit per email address, with a much larger per-client backstop.
+      // Keying only on the client address put every registration in the whole
+      // deployment into a single 10/hour bucket: NextRequest exposes no IP, so
+      // requestClientAddress returns a constant unless TRUST_PROXY is set, and
+      // ten signups anywhere locked out everyone else for an hour.
+      const [emailLimit, clientLimit] = await Promise.all([
+        db.consumeRateLimit(
+          requestRateLimitKey("register", request, email),
+          5,
+          60 * 60_000,
+        ),
+        db.consumeRateLimit(
+          requestRateLimitKey("register-client", request),
+          200,
+          60 * 60_000,
+        ),
+      ]);
+      if (emailLimit.limited || clientLimit.limited)
+        return json(
+          { error: "Too many registration attempts. Try again later." },
+          429,
+        );
       const name = textValue(b.name, 150);
       const password = typeof b.password === "string" ? b.password : "";
       if (
@@ -6678,31 +6904,12 @@ async function handleRoute(request, { params }) {
         else if (Array.isArray(sections.logs.items))
           sections.logs = { ...sections.logs, items: logMapping.devices };
         sections.traffic_inventory = logMapping.summary;
-        try {
-          await archiveFirewallRecords(
-            db,
-            profile,
-            firewallDisplayName(profile),
-            logMapping.devices,
-            new Date(),
-            {
-              captureReason: "overview_live_logs",
-              sourceComplete: Boolean(section_meta.logs?.complete),
-              sourceRowsFetched: Number(
-                section_meta.logs?.raw_rows_fetched || logMapping.devices.length,
-              ),
-              sourceRowsAvailable: Number(
-                section_meta.logs?.records_available || logMapping.devices.length,
-              ),
-              sourcePagesFetched: Number(
-                section_meta.logs?.pages_fetched || 1,
-              ),
-              applianceSerial: section_meta.logs?.appliance_serial || "",
-            },
-          );
-        } catch (error) {
-          console.error("Firewall daily archive failed:", error);
-        }
+        // The overview is a read path. Archiving here re-wrote the whole daily
+        // archive document (up to ~250k embedded records) on every dashboard
+        // load, and the document store takes a collection-wide lock to do it,
+        // which made this endpoint hang for minutes. The scheduled archive
+        // monitor and the manual /firewall/archive/sync already persist exactly
+        // these rows via syncFirewallArchiveSnapshot, so nothing is lost.
       }
       const payload = {
         configured: true,
@@ -6985,20 +7192,22 @@ async function handleRoute(request, { params }) {
       };
       const includeArchivedRecords =
         !todayRequested && !(requestedHours > 0 && requestedHours <= 1);
+      // Read the day documents with SQL rather than through the document
+      // store: that helper has no filter pushdown, so it loaded and date-revived
+      // every archive row (~1 GB across all days) just to keep the few days in
+      // range. Postgres filters by firewall and date before anything is parsed.
       const archivedDays = includeArchivedRecords
-        ? await db
-            .collection("firewall_daily_archives")
-            .find(
-              {
-                firewall_id: profile.id,
-                date: {
-                  $gte: firewallArchiveDate(start),
-                  $lte: firewallArchiveDate(end),
-                },
-              },
-              { projection: { records: 1 } },
+        ? (
+            await db.pool.query(
+              `SELECT COALESCE(data->'records', '[]'::jsonb) AS records
+                 FROM tms_documents
+                WHERE collection_name = 'firewall_daily_archives'
+                  AND data->>'firewall_id' = $1
+                  AND data->>'date' >= $2
+                  AND data->>'date' <= $3`,
+              [profile.id, firewallArchiveDate(start), firewallArchiveDate(end)],
             )
-            .toArray()
+          ).rows
         : [];
       const archivedRecordsAvailable = archivedDays.flatMap(
         (day) => day.records || [],
@@ -7045,6 +7254,9 @@ async function handleRoute(request, { params }) {
         },
         summary: {
           records: records.length,
+          records_returned: Math.min(records.length, FIREWALL_REPORT_RECORD_LIMIT),
+          records_truncated: records.length > FIREWALL_REPORT_RECORD_LIMIT,
+          record_page_limit: FIREWALL_REPORT_RECORD_LIMIT,
           api_rows_returned: allRows.length,
           api_rows_fetched: Number(payload?.raw_rows_fetched || allRows.length),
           api_rows_available: Number(payload?.total_lines || allRows.length),
@@ -7067,7 +7279,20 @@ async function handleRoute(request, { params }) {
             ? "firewall_memory_logs_and_verified_daily_archive"
             : "firewall_memory_logs",
           archive_records_included: includeArchivedRecords,
-          inventory: reportInventory.summary,
+          // reportInventory only saw the live API rows for this period, but
+          // `records` also carries the archived rows merged in below. Counting
+          // over `records` keeps this KPI describing the rows actually shown
+          // (on HQ the two populations differed by ~226k rows).
+          inventory: {
+            mapped: records.filter((row) => row.inventory_match).length,
+            unmapped: records.filter(
+              (row) => !row.inventory_match && !row.inventory_conflict,
+            ).length,
+            ambiguous: records.filter((row) => row.inventory_conflict).length,
+            inventory_macs: reportInventory.summary.inventory_macs,
+            errors: reportInventory.summary.errors,
+            api_rows_only: reportInventory.summary,
+          },
           application_control: {
             ...applicationMerge.summary,
             ...applicationRetention,
@@ -7104,7 +7329,8 @@ async function handleRoute(request, { params }) {
           ),
         },
         archive,
-        records,
+        aggregates: firewallReportAggregates(records),
+        records: records.slice(0, FIREWALL_REPORT_RECORD_LIMIT),
       });
     }
 
