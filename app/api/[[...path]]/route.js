@@ -2685,32 +2685,42 @@ async function archiveFirewallRecordsUnlocked(
     const merged = new Map();
     for (const record of [...(existing?.records || []), ...dayRecords])
       merged.set(firewallRecordFingerprint(record), record);
+    // A day's embedded records are re-parsed and re-serialised on every
+    // 15-minute sync. At the old 250k ceiling a single day reached ~32MB and
+    // took ~7s just to revive, stalling the event loop and OOM-killing
+    // Postgres. 50k keeps a day near ~6MB. The ceiling is capped too, not just
+    // the default, so a deployment already exporting
+    // FIREWALL_ARCHIVE_MAX_RECORDS=250000 is clamped down without an env edit.
+    // Full per-record history is unaffected: it lives in the relational
+    // tms_firewall_traffic_records table, which is never truncated.
     const configuredArchiveRows = Number(
-      profile.value("ARCHIVE_MAX_RECORDS", "250000"),
+      profile.value("ARCHIVE_MAX_RECORDS", "50000"),
     );
     const archiveRowLimit = Number.isFinite(configuredArchiveRows)
-      ? Math.min(250000, Math.max(2500, Math.round(configuredArchiveRows)))
-      : 250000;
-    const stored = [...merged.values()]
-      .sort(
-        (a, b) =>
-          new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-      )
-      .slice(0, archiveRowLimit);
+      ? Math.min(50000, Math.max(2500, Math.round(configuredArchiveRows)))
+      : 50000;
+    // Summaries, appliance-identity counters and the hourly bandwidth rollup
+    // are derived from every record seen this cycle, before truncation, so
+    // narrowing what is retained never shrinks the reported totals.
+    const dayAll = [...merged.values()].sort(
+      (a, b) =>
+        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+    );
+    const stored = dayAll.slice(0, archiveRowLimit);
     const expectedApplianceSerial = String(capture.applianceSerial || "").trim();
     const verifiedRecords = expectedApplianceSerial
-      ? stored.filter(
+      ? dayAll.filter(
           (record) => record.appliance_serial === expectedApplianceSerial,
         ).length
       : 0;
     const foreignApplianceRecords = expectedApplianceSerial
-      ? stored.filter(
+      ? dayAll.filter(
           (record) =>
             record.appliance_serial &&
             record.appliance_serial !== expectedApplianceSerial,
         ).length
       : 0;
-    const unverifiedApplianceRecords = stored.filter(
+    const unverifiedApplianceRecords = dayAll.filter(
       (record) => !record.appliance_serial,
     ).length;
     const sourceIdentityVerified = Boolean(
@@ -2718,9 +2728,14 @@ async function archiveFirewallRecordsUnlocked(
         foreignApplianceRecords === 0 &&
         unverifiedApplianceRecords === 0,
     );
-    const archiveAnalysis = firewallArchiveSummary(stored);
+    const archiveAnalysis = firewallArchiveSummary(dayAll);
     const summary = {
       ...archiveAnalysis.summary,
+      // Byte/threat/uniqueness aggregates above cover every record seen for
+      // the day; these two keep the retained-vs-observed distinction explicit
+      // now that the retained slice is smaller than the day.
+      observed_records: dayAll.length,
+      stored_records: stored.length,
       verified_appliance_records: verifiedRecords,
       unverified_appliance_records: unverifiedApplianceRecords,
       foreign_appliance_records: foreignApplianceRecords,
@@ -2761,6 +2776,7 @@ async function archiveFirewallRecordsUnlocked(
       reason: captureReason,
       records_observed: dayRecords.length,
       records_stored: stored.length,
+      records_observed_day: dayAll.length,
       source_complete: Boolean(capture.sourceComplete),
       source_rows_fetched: Number(capture.sourceRowsFetched || normalized.length),
       source_rows_available: Number(
@@ -2814,8 +2830,8 @@ async function archiveFirewallRecordsUnlocked(
           escalation_signature: escalationSignature,
           ...(shouldNotify ? { escalation_notified_at: new Date() } : {}),
           records: stored,
-          latest_record_at: stored[0]?.timestamp || null,
-          first_record_at: stored.at(-1)?.timestamp || null,
+          latest_record_at: dayAll[0]?.timestamp || null,
+          first_record_at: dayAll.at(-1)?.timestamp || null,
           captured_at: capturedAtDate,
           updated_at: new Date(),
         },
@@ -2836,13 +2852,13 @@ async function archiveFirewallRecordsUnlocked(
         db,
         profile.id,
         date,
-        indexedState.rows[0]?.has_records ? dayRecords : stored,
+        indexedState.rows[0]?.has_records ? dayRecords : dayAll,
       );
     } catch (error) {
       console.error("Firewall traffic indexing failed:", error);
     }
     try {
-      await replaceFirewallBandwidthHourly(db, profile.id, date, stored);
+      await replaceFirewallBandwidthHourly(db, profile.id, date, dayAll);
     } catch (error) {
       console.error("Firewall bandwidth summary failed:", error);
     }

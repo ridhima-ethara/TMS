@@ -11,6 +11,7 @@
         "postbuild": "node scripts/prepare-standalone.mjs",
         "demo:passwords": "node --no-warnings --env-file=.env.local scripts/set-demo-passwords.mjs",
         "maintenance:firewall-index": "node --no-warnings --env-file=.env.local scripts/backfill-firewall-traffic-index.mjs",
+    "maintenance:firewall-compact": "node --no-warnings --env-file=.env.local scripts/compact-firewall-archives.mjs",
     "test:workflow": "node --no-warnings --env-file=.env.local scripts/ticket-workflow-e2e.mjs",
     "test:platform": "node --no-warnings --env-file=.env.local scripts/full-platform-e2e.mjs",
     "test:requested": "node --no-warnings --env-file=.env.local scripts/requested-flow-e2e.mjs",
