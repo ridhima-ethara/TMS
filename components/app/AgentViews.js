@@ -484,21 +484,25 @@ export function AgentDashboard({ user, onGoTickets, onGoKra }) {
   const meta = roleMeta(user);
   const [data, setData] = useState(null);
   useEffect(() => {
-    Promise.all([
-      api("/dashboard"),
-      api(`/tickets?assignee_id=${user.id}&limit=200`),
-      api("/tickets?limit=200"),
-      api("/member-checklists"),
-    ])
-      .then(([stats, queue, teamQueue, lists]) =>
-        setData({
-          stats,
-          tickets: queue.items,
-          teamTickets: teamQueue.items,
-          lists,
-        }),
-      )
-      .catch(() => {});
+    const load = () =>
+      Promise.all([
+        api("/dashboard"),
+        api(`/tickets?assignee_id=${user.id}&limit=200`),
+        api("/tickets?limit=200"),
+        api("/member-checklists"),
+      ])
+        .then(([stats, queue, teamQueue, lists]) =>
+          setData({
+            stats,
+            tickets: queue.items,
+            teamTickets: teamQueue.items,
+            lists,
+          }),
+        )
+        .catch(() => {});
+    load();
+    const timer = setInterval(load, 30000);
+    return () => clearInterval(timer);
   }, [user.id]);
   if (!data)
     return <div className="h-96 animate-pulse rounded-xl bg-[#EDF0F4]" />;
@@ -857,6 +861,8 @@ export function AgentTickets({ user, onOpenTicket }) {
   };
   useEffect(() => {
     load();
+    const timer = setInterval(load, 20000);
+    return () => clearInterval(timer);
   }, [scope, user.id]);
   const categoryOptions = [
     ...new Set(tickets.map((ticket) => ticket.category).filter(Boolean)),

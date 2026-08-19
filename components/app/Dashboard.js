@@ -138,7 +138,7 @@ function DeptPanel({ department, onOpenTicket, refresh }) {
         <Stat label="In Progress" value={s.in_progress} icon={Timer} tone="blue" />
         <Stat label="Pending Approval" value={s.pending_approval} icon={FileCheck2} tone="amber" />
         <Stat label="Approved Ready" value={s.approved_ready} icon={CheckCircle2} tone="green" />
-        <Stat label="Resolved" value={s.resolved} icon={CheckCircle2} tone="green" />
+        <Stat label="Resolved" value={(s.resolved || 0) + (s.closed || 0)} icon={CheckCircle2} tone="green" />
         <Stat label="Escalated (>24h)" value={s.escalated} icon={AlertTriangle} tone="red" />
         <Stat label="Avg Response" value={s.avg_response_hours} suffix="h" icon={Gauge} />
         <Stat label="Avg Resolution" value={s.avg_resolution_hours} suffix="h" icon={Gauge} />
@@ -356,7 +356,7 @@ function StaffDash({ user, onOpenTicket, refresh }) {
   }, [refresh])
   if (loading) return <div className="grid grid-cols-2 gap-4 md:grid-cols-4">{Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-24" />)}</div>
   if (!s) return null
-  const cards = [{ label: 'Total', value: s.total, icon: Ticket }, { label: 'Open', value: s.open, icon: Clock, tone: 'blue' }, { label: 'In Progress', value: s.in_progress, icon: Timer, tone: 'blue' }, { label: 'Pending Approval', value: s.pending_approval, icon: FileCheck2, tone: 'amber' }, { label: 'Resolved', value: s.resolved, icon: CheckCircle2, tone: 'green' }, { label: 'Overdue / SLA Breach', value: s.overdue, icon: AlertTriangle, tone: 'red' }, { label: 'Avg Response', value: s.avg_response_hours, suffix: 'h', icon: Gauge }, { label: 'Avg Resolution', value: s.avg_resolution_hours, suffix: 'h', icon: Gauge }, { label: 'SLA Met', value: s.sla_compliance, suffix: '%', icon: Gauge, tone: 'green' }]
+  const cards = [{ label: 'Total', value: s.total, icon: Ticket }, { label: 'Open', value: s.open, icon: Clock, tone: 'blue' }, { label: 'In Progress', value: s.in_progress, icon: Timer, tone: 'blue' }, { label: 'Pending Approval', value: s.pending_approval, icon: FileCheck2, tone: 'amber' }, { label: 'Resolved', value: (s.resolved || 0) + (s.closed || 0), icon: CheckCircle2, tone: 'green' }, { label: 'Overdue / SLA Breach', value: s.overdue, icon: AlertTriangle, tone: 'red' }, { label: 'Avg Response', value: s.avg_response_hours, suffix: 'h', icon: Gauge }, { label: 'Avg Resolution', value: s.avg_resolution_hours, suffix: 'h', icon: Gauge }, { label: 'SLA Met', value: s.sla_compliance, suffix: '%', icon: Gauge, tone: 'green' }]
   return <div className="space-y-6"><div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards.map((c) => <Stat key={c.label} {...c} />)}</div><Charts s={s} /><MyKra refresh={refresh} /><Card><CardHeader className="pb-2"><CardTitle className="text-base">Ticket Calendar</CardTitle></CardHeader><CardContent><TicketCalendar tickets={s.calendar || []} onOpenTicket={onOpenTicket} /></CardContent></Card></div>
 }
 

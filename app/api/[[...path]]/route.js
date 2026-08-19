@@ -4852,6 +4852,7 @@ const LOCATIONS = [
   { name: "Tulip - Basement", building: "Tulip", code: "TULB" },
   { name: "Lotus - Bullpen", building: "Lotus", code: "LOTB" },
   { name: "Lotus - Labs", building: "Lotus", code: "LOTL" },
+  { name: "None", building: "", code: "NONE" },
 ];
 const LOC_NAMES = LOCATIONS.map((l) => l.name);
 
@@ -8511,23 +8512,27 @@ async function handleRoute(request, { params }) {
         if (session.role !== requestedAssignee.role)
           return json({ error: "You can only assign within your team" }, 403);
         const assigningToSelf = requestedAssignee.id === session.id;
-        if (
-          (!assigningToSelf && !isTicketTeamHead(sessionUser, routingTicket)) ||
-          (assigningToSelf && !canAccessTicket(session, routingTicket))
-        )
+        if (!assigningToSelf && !isTicketTeamHead(sessionUser, routingTicket))
           return json(
             {
-              error: assigningToSelf
-                ? "You can only claim tickets routed to your location"
-                : department === "IT"
+              error:
+                department === "IT"
                   ? "Only the location IT head can allocate this ticket to another member"
                   : "Only an Admin team head can allocate this ticket to another member",
             },
             403,
           );
       }
+      // Tickets raised by an IT or Admin member for their own team start
+      // assigned to that member, so their work is tracked without a claim.
+      const effectiveAssignee =
+        requestedAssignee ||
+        (["it", "admin"].includes(session.role) &&
+        department === (session.role === "admin" ? "Admin" : "IT")
+          ? sessionUser
+          : null);
       const statusTimestamps = { raised: now, open: now };
-      if (requestedAssignee) {
+      if (effectiveAssignee) {
         statusTimestamps.assigned = now;
         statusTimestamps.acknowledged = now;
       }
@@ -8541,7 +8546,7 @@ async function handleRoute(request, { params }) {
         title,
         description,
         priority,
-        status: requestedAssignee ? "Assigned" : "Open",
+        status: effectiveAssignee ? "Assigned" : "Open",
         raised_by_id: session.id,
         raised_by_name: session.name,
         raised_for_name: issueUserName,
@@ -8556,22 +8561,22 @@ async function handleRoute(request, { params }) {
         location,
         routing_site: routingSite,
         routed_team: routingSite ? `${department}:${routingSite}` : department,
-        allocation_status: requestedAssignee ? "allocated" : "unallocated",
-        queue_state: requestedAssignee ? "assigned" : "pending",
-        assignee_id: requestedAssignee?.id || null,
-        assignee_name: requestedAssignee?.name || null,
+        allocation_status: effectiveAssignee ? "allocated" : "unallocated",
+        queue_state: effectiveAssignee ? "assigned" : "pending",
+        assignee_id: effectiveAssignee?.id || null,
+        assignee_name: effectiveAssignee?.name || null,
         raised_at: now,
-        assigned_at: requestedAssignee ? now : null,
-        last_assigned_at: requestedAssignee ? now : null,
-        assigned_by_id: requestedAssignee ? session.id : null,
-        assigned_by_name: requestedAssignee ? session.name : null,
-        acknowledged_at: requestedAssignee ? now : null,
-        acknowledged_by_id: requestedAssignee ? session.id : null,
-        acknowledged_by_name: requestedAssignee ? session.name : null,
-        first_response_at: requestedAssignee ? now : null,
-        first_response_by_id: requestedAssignee ? session.id : null,
-        first_response_by_name: requestedAssignee ? session.name : null,
-        response_working_minutes: requestedAssignee ? 0 : null,
+        assigned_at: effectiveAssignee ? now : null,
+        last_assigned_at: effectiveAssignee ? now : null,
+        assigned_by_id: effectiveAssignee ? session.id : null,
+        assigned_by_name: effectiveAssignee ? session.name : null,
+        acknowledged_at: effectiveAssignee ? now : null,
+        acknowledged_by_id: effectiveAssignee ? session.id : null,
+        acknowledged_by_name: effectiveAssignee ? session.name : null,
+        first_response_at: effectiveAssignee ? now : null,
+        first_response_by_id: effectiveAssignee ? session.id : null,
+        first_response_by_name: effectiveAssignee ? session.name : null,
+        response_working_minutes: effectiveAssignee ? 0 : null,
         status_timestamps: statusTimestamps,
         attachments: pendingTicketAttachments.map(attachmentSummary),
         approval_required: false,
@@ -8599,15 +8604,15 @@ async function handleRoute(request, { params }) {
         null,
         t.status,
       );
-      if (requestedAssignee)
+      if (effectiveAssignee)
         await addHistory(
           db,
           id,
           "assignment",
           session,
-          `Acknowledged and assigned to ${requestedAssignee.name}`,
+          `Acknowledged and assigned to ${effectiveAssignee.name}`,
           null,
-          requestedAssignee.name,
+          effectiveAssignee.name,
         );
       await audit(db, session, "ticket.create", "ticket", id, {
         human_id: hid,
@@ -8633,10 +8638,10 @@ async function handleRoute(request, { params }) {
         `New ${department} ticket ${hid}: ${t.title}`,
         t,
       );
-      if (requestedAssignee)
+      if (effectiveAssignee && effectiveAssignee.id !== session.id)
         await notify(
           db,
-          requestedAssignee.id,
+          effectiveAssignee.id,
           `Ticket ${hid} assigned to you`,
           t,
         );
@@ -8684,6 +8689,28 @@ async function handleRoute(request, { params }) {
 
       // staff-only mutations
       const isStaff = ["it", "admin", "super_admin"].includes(session.role);
+
+      // DELETE — remove a mistakenly raised ticket and its trail entirely.
+      if (seg.length === 2 && method === "DELETE") {
+        if (
+          session.role !== "super_admin" &&
+          session.role !== (ticket.department === "Admin" ? "admin" : "it")
+        )
+          return json({ error: "Forbidden" }, 403);
+        await db.collection("tickets").deleteOne({ id: ticketId });
+        await Promise.all([
+          db.collection("history").deleteMany({ ticket_id: ticketId }),
+          db.collection("comments").deleteMany({ ticket_id: ticketId }),
+          db.collection("approvals").deleteMany({ ticket_id: ticketId }),
+          db.collection("notifications").deleteMany({ ticket_id: ticketId }),
+        ]);
+        await audit(db, session, "ticket.delete", "ticket", ticketId, {
+          human_id: ticket.human_id,
+          title: ticket.title,
+          status: ticket.status,
+        });
+        return json({ ok: true });
+      }
 
       // update (status/assign/priority/resolution)
       if (seg.length === 2 && method === "PATCH") {
@@ -8775,17 +8802,10 @@ async function handleRoute(request, { params }) {
                 403,
               );
             const actorIsTicketHead = isTicketTeamHead(actor, ticket);
-            if (u?.id === session.id) {
-              if (
-                ticket.assignee_id &&
-                ticket.assignee_id !== session.id &&
-                !actorIsTicketHead
-              )
-                return json(
-                  { error: "This ticket is already allocated to another member" },
-                  409,
-                );
-            } else if (u && !actorIsTicketHead)
+            // Any team member may take a ticket over for themselves, even if
+            // it is already allocated to someone else; assigning a DIFFERENT
+            // member still requires the team head.
+            if (u && u.id !== session.id && !actorIsTicketHead)
               return json(
                 { error: "Only the location team head can assign another member" },
                 403,
@@ -9767,10 +9787,16 @@ async function handleRoute(request, { params }) {
       return json(await tasksFromSpreadsheet(form.get("file")));
     }
     if (route === "/member-checklists" && method === "POST") {
-      if (session.role !== "super_admin")
+      if (!["super_admin", "it", "admin"].includes(session.role))
         return json({ error: "Forbidden" }, 403);
       const b = await request.json();
-      const member = await db.collection("users").findOne({ id: b.member_id });
+      // Members define their own daily KRA; only a Super Admin can create
+      // one on behalf of somebody else.
+      const targetMemberId =
+        session.role === "super_admin" ? b.member_id : session.id;
+      const member = await db
+        .collection("users")
+        .findOne({ id: targetMemberId });
       if (!member) return json({ error: "Member not found" }, 400);
       if (!["it", "admin"].includes(member.role))
         return json({ error: "KRA can be assigned only to IT or Admin members" }, 400);
@@ -9911,12 +9937,27 @@ async function handleRoute(request, { params }) {
             remark: "",
           },
       );
-      const doneCount = responses.filter((r) => r.done).length;
+      // Additional ad-hoc work done today, beyond the constant daily KRA.
+      // Extras count toward the day's totals but never block completion.
+      const extras = Array.isArray(b.extra_items)
+        ? b.extra_items
+            .slice(0, 50)
+            .map((entry, index) => ({
+              key: `extra_${index}`,
+              item: textValue(entry?.item, 300),
+              done: entry?.done !== false,
+              remark: textValue(entry?.remark, 1000),
+              extra: true,
+            }))
+            .filter((entry) => entry.item)
+        : [];
+      const allResponses = [...responses, ...extras];
+      const doneCount = allResponses.filter((r) => r.done).length;
       const now = new Date();
       const deadline = kraDeadlineAt(date, list.cutoff || KRA_CUTOFF);
       const late = Boolean(deadline && now > deadline);
       const completed =
-        doneCount === responses.length && responses.length > 0
+        responses.length > 0 && responses.every((r) => r.done)
       const status = late ? "Late" : completed ? "Completed" : "Partial";
       const existing = await db
         .collection("member_checklist_submissions")
@@ -9927,9 +9968,10 @@ async function handleRoute(request, { params }) {
         member_id: session.id,
         member_name: session.name,
         date,
-        responses,
+        responses: allResponses,
         done_count: doneCount,
-        total: responses.length,
+        total: allResponses.length,
+        extra_count: extras.length,
         status,
         cutoff: KRA_CUTOFF,
         deadline_at: deadline,
@@ -9957,7 +9999,7 @@ async function handleRoute(request, { params }) {
         ok: true,
         status,
         done_count: doneCount,
-        total: responses.length,
+        total: allResponses.length,
         late,
       });
     }

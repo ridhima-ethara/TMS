@@ -45,6 +45,7 @@ import {
   FileCheck2,
   CheckCircle2,
   Star,
+  Trash2,
 } from "lucide-react";
 
 function Bar({ children }) {
@@ -90,10 +91,9 @@ export default function TicketDrawer({
         locationSite(user.location) === ticketSite));
   const canUnassign =
     canAssignOthers || !t?.assignee_id || t?.assignee_id === user.id;
-  const assignmentLocked =
-    Boolean(t?.assignee_id) &&
-    t.assignee_id !== user.id &&
-    !canAssignOthers;
+  // Members may always take a ticket over for themselves, so the assignee
+  // control stays enabled; the options list still limits who they can pick.
+  const assignmentLocked = false;
   const canControlTicket =
     canAssignOthers || t?.assignee_id === user.id;
 
@@ -130,6 +130,26 @@ export default function TicketDrawer({
       await api(`/tickets/${ticketId}`, { method: "PATCH", body });
       toast.success(msg || "Updated");
       await load();
+      onChanged?.();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeTicket = async () => {
+    if (
+      !window.confirm(
+        `Delete ${t?.human_id || "this ticket"} permanently? The ticket and its full history will be removed from the platform.`,
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      await api(`/tickets/${ticketId}`, { method: "DELETE" });
+      toast.success("Ticket deleted");
+      onClose?.();
       onChanged?.();
     } catch (e) {
       toast.error(e.message);
@@ -429,6 +449,20 @@ export default function TicketDrawer({
                 <Separator />
 
                 {/* STAFF ACTIONS */}
+                {isStaff && (
+                  <div className="flex justify-end">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={removeTicket}
+                      className="border-red-200 text-red-700 hover:bg-red-50"
+                    >
+                      <Trash2 className="mr-1 h-4 w-4" />
+                      Delete ticket
+                    </Button>
+                  </div>
+                )}
                 {isStaff && !isTerminal && (
                   <div className="space-y-3">
                     <p className="text-sm font-medium">Actions</p>
@@ -456,11 +490,7 @@ export default function TicketDrawer({
                             )}
                             {(canAssignOthers
                               ? deptUsers
-                              : deptUsers.filter(
-                                  (u) =>
-                                    u.id === user.id &&
-                                    (!t.assignee_id || t.assignee_id === user.id),
-                                )
+                              : deptUsers.filter((u) => u.id === user.id)
                             ).map((u) => (
                               <SelectItem key={u.id} value={u.id}>
                                 {u.name}

@@ -21,26 +21,30 @@ function Kpi({ label, value, detail, tone = 'default' }) {
 function AgentWorkload({ tickets }) {
   const rows = useMemo(() => {
     const grouped = {}
-    tickets.filter((ticket) => ticket.assignee_name && !DONE.includes(ticket.status)).forEach((ticket) => {
-      const item = grouped[ticket.assignee_name] || { name: ticket.assignee_name, open: 0, overdue: 0 }
-      item.open++
-      if (ticket.sla_resolution_due && new Date(ticket.sla_resolution_due) < new Date()) item.overdue++
+    tickets.filter((ticket) => ticket.assignee_name).forEach((ticket) => {
+      const item = grouped[ticket.assignee_name] || { name: ticket.assignee_name, total: 0, open: 0, resolved: 0, overdue: 0 }
+      item.total++
+      if (DONE.includes(ticket.status)) item.resolved++
+      else {
+        item.open++
+        if (ticket.sla_resolution_due && new Date(ticket.sla_resolution_due) < new Date()) item.overdue++
+      }
       grouped[ticket.assignee_name] = item
     })
-    return Object.values(grouped).sort((a, b) => b.open - a.open).slice(0, 4)
+    return Object.values(grouped).sort((a, b) => b.total - a.total)
   }, [tickets])
-  const max = Math.max(...rows.map((row) => row.open), 1)
+  const max = Math.max(...rows.map((row) => row.total), 1)
   return (
     <Card className="border-[#E5E9EF] p-4 shadow-none sm:p-6">
-      <h3 className="mb-4 font-bold">Agent workload</h3>
+      <h3 className="mb-4 font-bold">Agent workload <span className="ml-1 text-xs font-normal text-[#8B93A1]">every agent with assigned tickets in the selected period</span></h3>
       <div className="space-y-4">{rows.map((row, index) => (
         <div key={row.name} className="grid grid-cols-[40px_minmax(0,1fr)_auto] items-center gap-3 sm:grid-cols-[44px_170px_1fr_auto]">
           <span className={`grid h-10 w-10 place-items-center rounded-full text-sm font-semibold ${index % 2 ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'}`}>{initials(row.name)}</span>
           <span className="font-medium">{row.name}</span>
-          <div className="col-span-2 col-start-2 h-3 overflow-hidden rounded-full bg-[#F4F6F8] sm:col-auto"><div className={index % 2 ? 'h-full bg-[#20A377]' : 'h-full bg-[#388AD9]'} style={{ width: `${(row.open / max) * 100}%` }} /></div>
-          <span className="col-start-3 row-start-1 whitespace-nowrap text-xs text-[#4B5563] sm:col-auto sm:row-auto sm:text-sm">{row.open} open · {row.overdue} overdue</span>
+          <div className="col-span-2 col-start-2 h-3 overflow-hidden rounded-full bg-[#F4F6F8] sm:col-auto"><div className={index % 2 ? 'h-full bg-[#20A377]' : 'h-full bg-[#388AD9]'} style={{ width: `${(row.total / max) * 100}%` }} /></div>
+          <span className="col-start-3 row-start-1 whitespace-nowrap text-xs text-[#4B5563] sm:col-auto sm:row-auto sm:text-sm">{row.total} total · {row.open} open · {row.resolved} done{row.overdue ? ` · ${row.overdue} overdue` : ''}</span>
         </div>
-      ))}</div>
+      ))}{rows.length === 0 && <p className="text-sm text-[#8B93A1]">No assigned tickets in the selected period.</p>}</div>
     </Card>
   )
 }
@@ -50,11 +54,15 @@ function TicketCard({ ticket, onOpenTicket }) {
   const done = DONE.includes(ticket.status)
   return (
     <button onClick={() => onOpenTicket(ticket.id)} className={`w-full rounded-xl border bg-white p-4 text-left transition hover:shadow-md ${sla.breach && !done ? 'border-red-300' : 'border-[#E5E9EF]'}`}>
-      <p className="font-mono text-xs text-[#85817D]">{ticket.human_id}</p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="font-mono text-xs text-[#85817D]">{ticket.human_id}</p>
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${ticket.priority === 'Critical' ? 'bg-red-800 text-white' : ticket.priority === 'High' ? 'bg-orange-100 text-orange-800' : ticket.priority === 'Medium' ? 'bg-yellow-100 text-yellow-800' : 'bg-emerald-100 text-emerald-800'}`}>{ticket.priority}</span>
+      </div>
       <p className="mt-1 truncate font-semibold">{ticket.title}</p>
+      <p className="mt-0.5 truncate text-xs text-[#4B5563]">{ticket.assignee_name || 'Unassigned'} · raised {fmtShort(ticket.created_at)}</p>
       <div className="mt-2 flex items-center justify-between gap-2 text-xs">
         <span className={`rounded-full px-2.5 py-1 ${done ? 'bg-green-100 text-green-800' : sla.breach ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>{done ? `✓ Closed ${fmtShort(ticket.updated_at)}` : sla.text}</span>
-        <span className="text-[#85817D]">{initials(ticket.assignee_name || 'Unassigned')}</span>
+        <span className="text-[#85817D]">{ticket.status}</span>
       </div>
     </button>
   )
@@ -81,17 +89,30 @@ export default function SuperAdminTickets({ onOpenTicket }) {
   const [overdueOnly, setOverdueOnly] = useState(false)
   const [period, setPeriod] = useState('week')
   const [category, setCategory] = useState('all')
-  useEffect(() => { api('/tickets?limit=200').then((result) => setTickets(result.items)).catch(() => {}) }, [])
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
+  useEffect(() => {
+    const load = () => api('/tickets?limit=200').then((result) => setTickets(result.items)).catch(() => {})
+    load()
+    const timer = setInterval(load, 30000)
+    return () => clearInterval(timer)
+  }, [])
 
   const periodTickets = useMemo(() => {
     if (!tickets) return []
+    // Explicit date range takes precedence over the rolling period.
+    if (fromDate || toDate) {
+      const start = fromDate ? new Date(`${fromDate}T00:00:00`) : new Date(0)
+      const end = toDate ? new Date(`${toDate}T23:59:59.999`) : new Date(8640000000000000)
+      return tickets.filter((ticket) => { const created = new Date(ticket.created_at); return created >= start && created <= end })
+    }
     if (period === 'all') return tickets
     const start = new Date(); start.setHours(0, 0, 0, 0)
     if (period === 'week') start.setDate(start.getDate() - start.getDay())
     if (period === '30') start.setDate(start.getDate() - 29)
     if (period === '90') start.setDate(start.getDate() - 89)
     return tickets.filter((ticket) => new Date(ticket.created_at) >= start)
-  }, [tickets, period])
+  }, [tickets, period, fromDate, toDate])
 
   const stats = useMemo(() => {
     if (!tickets) return null
@@ -126,18 +147,18 @@ export default function SuperAdminTickets({ onOpenTicket }) {
 
   if (!tickets || !stats) return <Skeleton className="h-[620px] w-full rounded-xl" />
   const columns = [
-    { title: 'Open', rows: filtered.filter((ticket) => ticket.status === 'Open').slice(0, 3) },
-    { title: 'In progress', rows: filtered.filter((ticket) => !DONE.includes(ticket.status) && ticket.status !== 'Open').slice(0, 3) },
-    { title: 'Resolved', rows: filtered.filter((ticket) => DONE.includes(ticket.status)).slice(0, 3) },
+    { title: 'Open', rows: filtered.filter((ticket) => ticket.status === 'Open') },
+    { title: 'In progress', rows: filtered.filter((ticket) => !DONE.includes(ticket.status) && ticket.status !== 'Open') },
+    { title: 'Resolved / Closed', rows: filtered.filter((ticket) => DONE.includes(ticket.status)) },
   ]
 
   return (
     <div className="space-y-5 text-[#111827]">
       <div className="grid gap-4 sm:grid-cols-2 sm:gap-6 lg:grid-cols-4">
-        <Kpi label="Open tickets" value={stats.active.length} detail="↗ +3 vs last week" tone="red" />
-        <Kpi label="SLA breached" value={stats.overdue.length} detail="oldest active breach" tone="red" />
-        <Kpi label="Resolved this week" value={stats.resolved.length} detail="avg 1.9d to close" tone="green" />
-        <Kpi label="Avg first response" value={`${stats.avgResponse}h`} detail="↘ improving" tone="green" />
+        <Kpi label="Open tickets" value={stats.active.length} detail="active in selected period" tone="red" />
+        <Kpi label="SLA breached" value={stats.overdue.length} detail="active tickets past resolution SLA" tone="red" />
+        <Kpi label="Resolved / Closed" value={stats.resolved.length} detail="completed in selected period" tone="green" />
+        <Kpi label="Avg first response" value={`${stats.avgResponse}h`} detail="measured on first response" tone="green" />
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[1.65fr_1fr]">
@@ -147,9 +168,9 @@ export default function SuperAdminTickets({ onOpenTicket }) {
 
       <AgentWorkload tickets={periodTickets} />
 
-      <div className="grid gap-6 lg:grid-cols-3">{columns.map((column) => <div key={column.title}><h3 className="mb-3 text-base font-semibold text-[#4B5563]">{column.title} <span className="ml-1 rounded-full border px-2 py-0.5 text-xs">{column.rows.length}</span></h3><div className="space-y-3">{column.rows.map((ticket) => <TicketCard key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />)}</div></div>)}</div>
+      <div className="grid gap-6 lg:grid-cols-3">{columns.map((column) => <div key={column.title}><h3 className="mb-3 text-base font-semibold text-[#4B5563]">{column.title} <span className="ml-1 rounded-full border px-2 py-0.5 text-xs">{column.rows.length}</span></h3><div className="max-h-[560px] space-y-3 overflow-y-auto pr-1">{column.rows.map((ticket) => <TicketCard key={ticket.id} ticket={ticket} onOpenTicket={onOpenTicket} />)}</div></div>)}</div>
 
-      <div className="flex flex-wrap items-center gap-3 py-2"><Filter className="h-5 w-5 text-[#4B5563]" /><span className="font-semibold text-[#4B5563]">Shared filters:</span><Select value={status} onValueChange={setStatus}><SelectTrigger className="w-full bg-white sm:w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All statuses</SelectItem><SelectItem value="Open">Open</SelectItem><SelectItem value="In Progress">In progress</SelectItem><SelectItem value="Resolved">Resolved</SelectItem><SelectItem value="Closed">Closed</SelectItem></SelectContent></Select><Select value={category} onValueChange={setCategory}><SelectTrigger className="w-full bg-white sm:w-48"><SelectValue placeholder="Category" /></SelectTrigger><SelectContent><SelectItem value="all">All categories</SelectItem>{categoryOptions.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><button onClick={() => setOverdueOnly((value) => !value)} className={`w-full rounded-full border px-4 py-2 text-sm sm:w-auto ${overdueOnly ? 'border-red-200 bg-red-100 text-red-800' : 'bg-white text-[#4B5563]'}`}>Overdue only {overdueOnly ? '×' : ''}</button><Select value={period} onValueChange={setPeriod}><SelectTrigger className="w-full rounded-full bg-white sm:w-40"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="week">This week</SelectItem><SelectItem value="30">Last 30 days</SelectItem><SelectItem value="90">Last 90 days</SelectItem><SelectItem value="all">All time</SelectItem></SelectContent></Select></div>
+      <div className="flex flex-wrap items-center gap-3 py-2"><Filter className="h-5 w-5 text-[#4B5563]" /><span className="font-semibold text-[#4B5563]">Shared filters:</span><Select value={status} onValueChange={setStatus}><SelectTrigger className="w-full bg-white sm:w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All statuses</SelectItem><SelectItem value="Open">Open</SelectItem><SelectItem value="In Progress">In progress</SelectItem><SelectItem value="Resolved">Resolved</SelectItem><SelectItem value="Closed">Closed</SelectItem></SelectContent></Select><Select value={category} onValueChange={setCategory}><SelectTrigger className="w-full bg-white sm:w-48"><SelectValue placeholder="Category" /></SelectTrigger><SelectContent><SelectItem value="all">All categories</SelectItem>{categoryOptions.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><button onClick={() => setOverdueOnly((value) => !value)} className={`w-full rounded-full border px-4 py-2 text-sm sm:w-auto ${overdueOnly ? 'border-red-200 bg-red-100 text-red-800' : 'bg-white text-[#4B5563]'}`}>Overdue only {overdueOnly ? '×' : ''}</button><label className="flex items-center gap-1 text-sm text-[#4B5563]">From<input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} className="h-9 rounded-lg border border-[#DDE2EA] bg-white px-2 text-sm" /></label><label className="flex items-center gap-1 text-sm text-[#4B5563]">To<input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} className="h-9 rounded-lg border border-[#DDE2EA] bg-white px-2 text-sm" /></label>{(fromDate || toDate) && <button onClick={() => { setFromDate(''); setToDate('') }} className="rounded-full border px-3 py-2 text-sm text-[#4B5563]">Clear dates ×</button>}<Select value={period} onValueChange={setPeriod}><SelectTrigger className="w-full rounded-full bg-white sm:w-40"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="week">This week</SelectItem><SelectItem value="30">Last 30 days</SelectItem><SelectItem value="90">Last 90 days</SelectItem><SelectItem value="all">All time</SelectItem></SelectContent></Select></div>
 
       <div className="grid gap-5 xl:grid-cols-2"><DepartmentPanel department="IT" tickets={filtered.filter((ticket) => ticket.department === 'IT')} onOpenTicket={onOpenTicket} /><DepartmentPanel department="Admin" tickets={filtered.filter((ticket) => ticket.department === 'Admin')} onOpenTicket={onOpenTicket} /></div>
     </div>

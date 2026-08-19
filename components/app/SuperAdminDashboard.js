@@ -107,7 +107,9 @@ const makeStats = (tickets) => {
   return {
     total: tickets.length,
     in_progress: count((ticket) => ticket.status === "In Progress"),
-    resolved: count((ticket) => ticket.status === "Resolved"),
+    // Completed work: tickets auto-close when no user confirmation is
+    // required, so "Resolved" must count Closed tickets too.
+    resolved: count((ticket) => ["Resolved", "Closed"].includes(ticket.status)),
     escalated: count(
       (ticket) =>
         !DONE.includes(ticket.status) &&
@@ -327,11 +329,19 @@ function PriorityMix({ stats, open }) {
   );
 }
 
-function MemberPerformance({ rows, color }) {
+function MemberPerformance({ rows, color, unassigned = 0 }) {
+  const assignedTotal = (rows || []).reduce(
+    (sum, member) => sum + (member.assigned || 0),
+    0,
+  );
   return (
     <div className="border-t border-[#E5E9EF] px-5 py-4">
       <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[#9CA3AF]">
         Member SLA performance
+        <span className="ml-2 normal-case tracking-normal text-[#8B93A1]">
+          {assignedTotal} assigned to members
+          {unassigned ? ` · ${unassigned} in the unassigned team queue` : ""}
+        </span>
       </p>
       <div className="grid gap-3 xl:grid-cols-2">
         {(rows || []).map((member) => (
@@ -464,6 +474,9 @@ function DeskCard({ department, stats, tickets, members }) {
       </div>
       <MemberPerformance
         rows={members}
+        unassigned={
+          tickets.filter((ticket) => !ticket.assignee_id).length
+        }
         color={department === "IT" ? "#2E7CD6" : "#1B7F6E"}
       />
     </Card>
@@ -552,27 +565,31 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
   });
   const [to, setTo] = useState(() => inputDate(new Date()));
   useEffect(() => {
-    Promise.all([
-      api("/dashboard?department=IT"),
-      api("/dashboard?department=Admin"),
-      api("/tickets?department=IT&limit=200"),
-      api("/tickets?department=Admin&limit=200"),
-      api("/reports/member-sla?department=IT"),
-      api("/reports/member-sla?department=Admin"),
-      api("/reports/daily-kra"),
-    ])
-      .then(([it, admin, itTickets, adminTickets, itSla, adminSla, kra]) =>
-        setData({
-          it,
-          admin,
-          itTickets: itTickets.items,
-          adminTickets: adminTickets.items,
-          itSla,
-          adminSla,
-          kra,
-        }),
-      )
-      .catch(() => {});
+    const load = () =>
+      Promise.all([
+        api("/dashboard?department=IT"),
+        api("/dashboard?department=Admin"),
+        api("/tickets?department=IT&limit=200"),
+        api("/tickets?department=Admin&limit=200"),
+        api("/reports/member-sla?department=IT"),
+        api("/reports/member-sla?department=Admin"),
+        api("/reports/daily-kra"),
+      ])
+        .then(([it, admin, itTickets, adminTickets, itSla, adminSla, kra]) =>
+          setData({
+            it,
+            admin,
+            itTickets: itTickets.items,
+            adminTickets: adminTickets.items,
+            itSla,
+            adminSla,
+            kra,
+          }),
+        )
+        .catch(() => {});
+    load();
+    const timer = setInterval(load, 60000);
+    return () => clearInterval(timer);
   }, []);
 
   const view = useMemo(() => {
