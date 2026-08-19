@@ -42,9 +42,15 @@ async function request(path, { method = "GET", body, cookie } = {}) {
 async function demoLogin(email, location) {
   // The seeded demo fixtures and /auth/demo-login were removed from the
   // platform, so this suite provisions its own members and signs in normally.
+  const member = await database.collection("users").findOne({ email });
   const result = await request("/auth/login", {
     method: "POST",
-    body: { email, password: memberPassword, location },
+    body: {
+      email,
+      password: memberPassword,
+      location,
+      employee_id: member?.employee_id || "",
+    },
   });
   assert.equal(result.response.status, 200, result.payload.error);
   assert.ok(result.cookie);

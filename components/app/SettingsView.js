@@ -30,7 +30,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Search, Settings2, ShieldCheck, Users } from "lucide-react";
+import { KeyRound, Search, Settings2, ShieldCheck, Users } from "lucide-react";
 import { toast } from "sonner";
 
 const blank = {
@@ -48,13 +48,34 @@ export default function SettingsView() {
   const [members, setMembers] = useState([]);
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
-  const load = () =>
+  const [resetRequests, setResetRequests] = useState([]);
+  const load = () => {
     api("/users")
       .then(setMembers)
       .catch((error) => toast.error(error.message));
+    api("/password-reset-requests")
+      .then((rows) =>
+        setResetRequests(rows.filter((row) => row.status === "pending")),
+      )
+      .catch(() => setResetRequests([]));
+  };
   useEffect(() => {
     load();
   }, []);
+  const resolveReset = async (id, status) => {
+    try {
+      await api(`/password-reset-requests/${id}`, {
+        method: "PATCH",
+        body: { status },
+      });
+      toast.success(
+        status === "completed" ? "Request marked as done" : "Request dismissed",
+      );
+      load();
+    } catch (error) {
+      toast.error(error.message);
+    }
+  };
   const visible = members.filter(
     (member) =>
       !search ||
@@ -74,6 +95,16 @@ export default function SettingsView() {
         password: editing.password || undefined,
       };
       await api(`/users/${editing.id}`, { method: "PATCH", body });
+      if (editing.password) {
+        const pending = resetRequests.find(
+          (row) => row.user_id === editing.id,
+        );
+        if (pending)
+          await api(`/password-reset-requests/${pending.id}`, {
+            method: "PATCH",
+            body: { status: "completed" },
+          }).catch(() => {});
+      }
       toast.success("Member settings updated");
       setEditing(null);
       load();
@@ -121,6 +152,57 @@ export default function SettingsView() {
           <p className="text-xs text-[#9CA3AF]">Active accounts</p>
         </Card>
       </div>
+      {resetRequests.length > 0 && (
+        <Card className="border-amber-200 bg-amber-50/70 p-4 shadow-none">
+          <div className="mb-3 flex items-center gap-2">
+            <KeyRound className="h-4 w-4 text-amber-600" />
+            <h3 className="text-sm font-bold">
+              Password reset requests ({resetRequests.length})
+            </h3>
+          </div>
+          <div className="space-y-2">
+            {resetRequests.map((request) => (
+              <div
+                key={request.id}
+                className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-white p-3"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold">
+                    {request.name}
+                  </p>
+                  <p className="truncate text-xs text-[#9CA3AF]">
+                    {request.email}
+                    {request.employee_id ? ` · ${request.employee_id}` : ""} ·{" "}
+                    {new Date(request.created_at).toLocaleString()}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      const member = members.find(
+                        (candidate) => candidate.id === request.user_id,
+                      );
+                      if (!member)
+                        return toast.error("Member account was not found");
+                      setEditing({ ...blank, ...member, password: "" });
+                    }}
+                  >
+                    Set new password
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => resolveReset(request.id, "dismissed")}
+                  >
+                    Dismiss
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
       <Card className="overflow-hidden border-[#E5E9EF] shadow-none">
         <div className="overflow-x-auto">
           <Table className="min-w-[760px]">
@@ -270,7 +352,7 @@ export default function SettingsView() {
                   onChange={(event) =>
                     setEditing({ ...editing, password: event.target.value })
                   }
-                  placeholder="Minimum 6 characters"
+                  placeholder="Minimum 12 characters"
                 />
               </div>
               <label className="flex items-center gap-3 rounded-lg border p-3 text-sm">

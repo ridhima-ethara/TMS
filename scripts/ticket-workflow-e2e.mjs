@@ -62,7 +62,11 @@ async function login(user) {
   const response = await fetch(`${baseUrl}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: user.email, password }),
+    body: JSON.stringify({
+      email: user.email,
+      password,
+      employee_id: user.employee_id,
+    }),
   });
   const body = await response.json();
   ensureResponse({ status: response.status, body }, 200, `${user.role} login`);

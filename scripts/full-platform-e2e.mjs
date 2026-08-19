@@ -52,7 +52,12 @@ async function request(path, { method = "GET", body, cookie, headers = {} } = {}
 async function login(user) {
   const result = await request("/auth/login", {
     method: "POST",
-    body: { email: user.email, password, location: user.location },
+    body: {
+      email: user.email,
+      password,
+      location: user.location,
+      employee_id: user.employee_id,
+    },
   });
   equal(result.response.status, 200, `${user.role} login failed`);
   const cookie = (result.response.headers.get("set-cookie") || "").split(";", 1)[0];

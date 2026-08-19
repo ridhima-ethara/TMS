@@ -15,6 +15,7 @@ import {
   Check,
   Eye,
   EyeOff,
+  KeyRound,
   Loader2,
   LogIn,
   MailCheck,
@@ -116,7 +117,12 @@ export default function Login({ onLogin }) {
   const [remember, setRemember] = useState(false);
   const [login, setLogin] = useState({
     email: "",
+    employee_id: "",
     password: "",
+  });
+  const [forgot, setForgot] = useState({
+    email: "",
+    employee_id: "",
   });
   const [otp, setOtp] = useState({
     code: "",
@@ -129,6 +135,7 @@ export default function Login({ onLogin }) {
   const [reg, setReg] = useState({
     name: "",
     email: "",
+    employee_id: "",
     password: "",
     confirm: "",
     role: "employee",
@@ -147,8 +154,6 @@ export default function Login({ onLogin }) {
     );
     if (verification === "success")
       toast.success("Email verified. You can now sign in.");
-    else if (verification === "approval-pending")
-      toast.success("Email verified. Your account is awaiting approval.");
     else if (verification === "invalid")
       toast.error("This verification link is invalid or has expired.");
     if (verification) {
@@ -268,6 +273,31 @@ export default function Login({ onLogin }) {
     setLogin((current) => ({ ...current, password: "" }));
   };
 
+  const doForgot = async (event) => {
+    event?.preventDefault();
+    setLoading(true);
+    try {
+      const result = await api("/auth/password-reset-request", {
+        method: "POST",
+        body: forgot,
+      });
+      toast.success(
+        result.message ||
+          "Your reset request has been sent to the Super Admin.",
+      );
+      setMode("login");
+      setLogin((current) => ({
+        ...current,
+        email: forgot.email,
+        password: "",
+      }));
+    } catch (error) {
+      toast.error(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const otpSeconds = Math.max(
     0,
     Math.ceil((Number(otp.expiresAt) - otpClock) / 1000),
@@ -300,6 +330,7 @@ export default function Login({ onLogin }) {
         body: {
           name: reg.name,
           email: reg.email,
+          employee_id: reg.employee_id,
           password: reg.password,
           role: reg.role,
           location: reg.location,
@@ -381,17 +412,33 @@ export default function Login({ onLogin }) {
                       required
                     />
                   </Field>
+                  <Field label="Employee ID" htmlFor="login-employee-id">
+                    <Input
+                      id="login-employee-id"
+                      autoComplete="off"
+                      className={INPUT_CLASS}
+                      value={login.employee_id}
+                      onChange={(event) =>
+                        setLogin({ ...login, employee_id: event.target.value })
+                      }
+                      placeholder="e.g. EMP-1023"
+                      disabled={loading}
+                      required
+                    />
+                  </Field>
                   <Field
                     label="Password"
                     htmlFor="login-password"
                     right={
                       <button
                         type="button"
-                        onClick={() =>
-                          toast.info(
-                            "Contact your super admin to reset your password",
-                          )
-                        }
+                        onClick={() => {
+                          setForgot({
+                            email: login.email,
+                            employee_id: login.employee_id,
+                          });
+                          setMode("forgot");
+                        }}
                         className="text-xs font-medium text-[#ED00ED]/80 transition hover:text-[#FF39FF]"
                       >
                         Forgot password?
@@ -579,6 +626,92 @@ export default function Login({ onLogin }) {
                   </button>
                 </div>
               </>
+            ) : mode === "forgot" ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setMode("login")}
+                  className="mb-5 inline-flex items-center gap-2 text-xs font-semibold text-[var(--login-muted)] transition hover:text-[#ED00ED]"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  Back to sign in
+                </button>
+                <div className="mb-6">
+                  <span className="mb-4 grid h-12 w-12 place-items-center rounded-xl bg-[#ED00ED]/10 text-[#ED00ED]">
+                    <KeyRound className="h-6 w-6" />
+                  </span>
+                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-[#ED00ED]">
+                    Account recovery
+                  </p>
+                  <h1 className="text-2xl font-semibold tracking-tight text-[var(--login-text)] sm:text-[28px]">
+                    Forgot your password?
+                  </h1>
+                  <p className="mt-2 text-sm leading-6 text-[var(--login-muted)]">
+                    Submit your details and the Super Admin will receive a
+                    reset request. You will be able to sign in with the new
+                    password they set for you.
+                  </p>
+                </div>
+
+                <form onSubmit={doForgot} className="space-y-5">
+                  <Field label="Email" htmlFor="forgot-email">
+                    <Input
+                      id="forgot-email"
+                      type="email"
+                      autoComplete="email"
+                      className={INPUT_CLASS}
+                      value={forgot.email}
+                      onChange={(event) =>
+                        setForgot({ ...forgot, email: event.target.value })
+                      }
+                      placeholder="you@ethara.ai"
+                      disabled={loading}
+                      required
+                    />
+                  </Field>
+                  <Field
+                    label="Employee ID"
+                    htmlFor="forgot-employee-id"
+                    right={
+                      <span className="text-xs text-[var(--login-faint)]">
+                        Optional
+                      </span>
+                    }
+                  >
+                    <Input
+                      id="forgot-employee-id"
+                      autoComplete="off"
+                      className={INPUT_CLASS}
+                      value={forgot.employee_id}
+                      onChange={(event) =>
+                        setForgot({
+                          ...forgot,
+                          employee_id: event.target.value,
+                        })
+                      }
+                      placeholder="e.g. EMP-1023"
+                      disabled={loading}
+                    />
+                  </Field>
+                  <Button
+                    type="submit"
+                    disabled={loading}
+                    className="login-submit-button h-11 w-full rounded-lg border-0 bg-[linear-gradient(135deg,#ED00ED_0%,#B84EDC_55%,#908DCE_100%)] font-semibold text-white shadow-[0_12px_26px_rgba(0,0,0,0.24)] hover:brightness-110"
+                  >
+                    {loading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Sending request...
+                      </>
+                    ) : (
+                      <>
+                        <KeyRound className="h-4 w-4" />
+                        Send reset request
+                      </>
+                    )}
+                  </Button>
+                </form>
+              </>
             ) : (
               <>
                 <button
@@ -639,6 +772,20 @@ export default function Login({ onLogin }) {
                         </span>
                       )}
                     </div>
+                  </Field>
+                  <Field label="Employee ID" htmlFor="register-employee-id">
+                    <Input
+                      id="register-employee-id"
+                      autoComplete="off"
+                      className={INPUT_CLASS}
+                      value={reg.employee_id}
+                      onChange={(event) =>
+                        setReg({ ...reg, employee_id: event.target.value })
+                      }
+                      placeholder="e.g. EMP-1023"
+                      disabled={loading}
+                      required
+                    />
                   </Field>
 
                   <div>

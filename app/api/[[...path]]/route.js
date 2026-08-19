@@ -203,6 +203,12 @@ function json(data, status = 200) {
   return res;
 }
 
+function sessionCookieSecure() {
+  if (process.env.SESSION_COOKIE_SECURE === "false") return false;
+  if (process.env.SESSION_COOKIE_SECURE === "true") return true;
+  return process.env.NODE_ENV === "production";
+}
+
 function requestClientAddress(request) {
   // Forwarded headers are attacker-controlled unless the deployment explicitly
   // confirms that a trusted reverse proxy replaces them.
@@ -3812,7 +3818,7 @@ function setLoginChallengeCookie(response, token) {
   response.cookies.set("tf_login_challenge", token, {
     httpOnly: true,
     sameSite: "strict",
-    secure: process.env.NODE_ENV === "production",
+    secure: sessionCookieSecure(),
     path: "/api/auth",
     maxAge: LOGIN_OTP_TTL_MS / 1000,
   });
@@ -3822,7 +3828,7 @@ function clearLoginChallengeCookie(response) {
   response.cookies.set("tf_login_challenge", "", {
     httpOnly: true,
     sameSite: "strict",
-    secure: process.env.NODE_ENV === "production",
+    secure: sessionCookieSecure(),
     path: "/api/auth",
     maxAge: 0,
   });
@@ -3855,7 +3861,7 @@ async function createLoginSessionResponse(user, remember = false, location) {
   response.cookies.set("tf_token", token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: sessionCookieSecure(),
     path: "/",
     maxAge,
   });
@@ -5827,6 +5833,7 @@ async function handleRoute(request, { params }) {
         .toLowerCase()
         .trim();
       const password = typeof body.password === "string" ? body.password : "";
+      const employeeId = textValue(body.employee_id, 50);
       if (body.location && !ticketLocationSite(body.location))
         return json({ error: "Select Tulip or Lotus as your location" }, 400);
       if (await loginRateLimited(db, request, email))
@@ -5844,6 +5851,16 @@ async function handleRoute(request, { params }) {
       if (!user || !(await bcrypt.compare(password, user.password_hash))) {
         return json({ error: "Invalid credentials" }, 401);
       }
+      // Accounts without an employee ID on file (legacy records) skip the
+      // check so they are not locked out; the same generic error as a wrong
+      // password keeps accounts unprobeable.
+      const storedEmployeeId = textValue(user.employee_id, 50);
+      if (
+        storedEmployeeId &&
+        storedEmployeeId.toLowerCase() !== employeeId.toLowerCase()
+      ) {
+        return json({ error: "Invalid credentials" }, 401);
+      }
       if (
         user.seeded_fixture === true &&
         process.env.ALLOW_DEMO_LOGIN !== "true"
@@ -5852,7 +5869,7 @@ async function handleRoute(request, { params }) {
       if (user.email_verification_required && !user.email_verified_at)
         return json({ error: "Verify your email address before signing in" }, 403);
       if (user.active === false)
-        return json({ error: "This account is awaiting approval or has been disabled" }, 403);
+        return json({ error: "This account has been disabled. Contact your administrator." }, 403);
       await clearLoginAttempts(db, request, email);
       if (loginOtpRequired()) {
         if (!emailDeliveryConfigured())
@@ -6109,19 +6126,13 @@ async function handleRoute(request, { params }) {
       if (!verification) return redirect("invalid");
       const user = await db.collection("users").findOne({ id: verification.user_id });
       if (!user) return redirect("invalid");
-      const adminApprovalRequired = [
-        "admin_approval",
-        "email_verification_and_admin_approval",
-      ].includes(user.activation_pending_reason);
       await db.collection("users").updateOne(
         { id: user.id },
         {
           $set: {
             email_verified_at: now,
-            active: adminApprovalRequired ? false : true,
-            activation_pending_reason: adminApprovalRequired
-              ? "admin_approval"
-              : null,
+            active: true,
+            activation_pending_reason: null,
             updated_at: now,
           },
         },
@@ -6195,6 +6206,9 @@ async function handleRoute(request, { params }) {
           { error: "Please select a valid work location (Tulip or Lotus)" },
           400,
         );
+      const registrationEmployeeId = textValue(b.employee_id, 50);
+      if (!registrationEmployeeId)
+        return json({ error: "Employee ID is required" }, 400);
       const existing = await db.collection("users").findOne({ email });
       if (existing)
         return json(
@@ -6204,8 +6218,6 @@ async function handleRoute(request, { params }) {
       const department =
         role === "it" ? "IT" : role === "admin" ? "Admin" : "General";
       const requiresEmailVerification = emailVerificationRequired();
-      const requiresAdminApproval =
-        !managerSite && ["it", "admin"].includes(role);
       if (requiresEmailVerification && !emailDeliveryConfigured())
         return json(
           {
@@ -6226,18 +6238,16 @@ async function handleRoute(request, { params }) {
         role,
         department,
         password_hash: hash,
-        employee_id: textValue(b.employee_id, 50),
+        employee_id: registrationEmployeeId,
         location: registrationSite,
         is_team_head: Boolean(managerSite),
         managed_locations: managerSite ? [managerSite] : [],
-        active: !requiresEmailVerification && !requiresAdminApproval,
+        // Accounts are active as soon as registration (and email verification,
+        // when enabled) completes; a Super Admin can disable an account later.
+        active: !requiresEmailVerification,
         activation_pending_reason: requiresEmailVerification
-          ? requiresAdminApproval
-            ? "email_verification_and_admin_approval"
-            : "email_verification"
-          : requiresAdminApproval
-            ? "admin_approval"
-            : null,
+          ? "email_verification"
+          : null,
         email_verification_required: requiresEmailVerification,
         email_verified_at: requiresEmailVerification ? null : now,
         session_version: 0,
@@ -6253,17 +6263,6 @@ async function handleRoute(request, { params }) {
           {
             pending: true,
             message: "Account created. Check your email to verify your address.",
-          },
-          202,
-        );
-      }
-      if (!user.active) {
-        await audit(db, user, "register.pending", "user", user.id, { role });
-        return json(
-          {
-            pending: true,
-            message:
-              "Account created and awaiting Super Admin approval for the requested staff role",
           },
           202,
         );
@@ -6285,12 +6284,80 @@ async function handleRoute(request, { params }) {
       res.cookies.set("tf_token", token, {
         httpOnly: true,
         sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
+        secure: sessionCookieSecure(),
         path: "/",
         maxAge: 7 * 24 * 3600,
       });
       await audit(db, user, "register", "user", user.id, { role });
       return res;
+    }
+    if (route === "/auth/password-reset-request" && method === "POST") {
+      const b = await request.json();
+      const email = (typeof b.email === "string" ? b.email : "")
+        .toLowerCase()
+        .trim();
+      const employeeId = textValue(b.employee_id, 50);
+      const [emailLimit, clientLimit] = await Promise.all([
+        db.consumeRateLimit(
+          requestRateLimitKey("password-reset", request, email),
+          3,
+          60 * 60_000,
+        ),
+        db.consumeRateLimit(
+          requestRateLimitKey("password-reset-client", request),
+          30,
+          60 * 60_000,
+        ),
+      ]);
+      if (emailLimit.limited || clientLimit.limited)
+        return json({ error: "Too many reset requests. Try again later." }, 429);
+      // Always the same response so account existence cannot be probed.
+      const generic = {
+        ok: true,
+        message:
+          "If the account exists, the Super Admin has been notified and will reset your password.",
+      };
+      if (
+        email.length > 254 ||
+        !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@ethara\.ai$/i.test(email)
+      )
+        return json(generic);
+      const user = await db.collection("users").findOne({ email });
+      if (!user || user.active === false) return json(generic);
+      const storedEmployeeId = textValue(user.employee_id, 50);
+      if (
+        storedEmployeeId &&
+        employeeId &&
+        storedEmployeeId.toLowerCase() !== employeeId.toLowerCase()
+      )
+        return json(generic);
+      const pending = await db
+        .collection("password_reset_requests")
+        .findOne({ user_id: user.id, status: "pending" });
+      if (!pending) {
+        await db.collection("password_reset_requests").insertOne({
+          id: uuidv4(),
+          user_id: user.id,
+          name: user.name,
+          email: user.email,
+          employee_id: storedEmployeeId,
+          status: "pending",
+          created_at: new Date(),
+        });
+        const superAdmins = await db
+          .collection("users")
+          .find({ role: "super_admin", active: { $ne: false } })
+          .toArray();
+        await notify(
+          db,
+          superAdmins.map((admin) => admin.id),
+          `Password reset requested by ${user.name} (${user.email}). Review it in Member settings.`,
+          null,
+          "reminder",
+        );
+        await audit(db, user, "auth.password_reset_requested", "user", user.id, {});
+      }
+      return json(generic);
     }
     if (route === "/auth/logout" && method === "POST") {
       const tokenSession = await getSession(request);
@@ -6311,7 +6378,7 @@ async function handleRoute(request, { params }) {
       res.cookies.set("tf_token", "", {
         httpOnly: true,
         sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
+        secure: sessionCookieSecure(),
         path: "/",
         maxAge: 0,
       });
@@ -6672,6 +6739,56 @@ async function handleRoute(request, { params }) {
         password_hash: set.password_hash ? "changed" : undefined,
       });
       return json(clean(await db.collection("users").findOne({ id: user.id })));
+    }
+    if (route === "/password-reset-requests" && method === "GET") {
+      if (session.role !== "super_admin")
+        return json({ error: "Forbidden" }, 403);
+      const requests = await db
+        .collection("password_reset_requests")
+        .find({})
+        .sort({ created_at: -1 })
+        .limit(200)
+        .toArray();
+      return json(clean(requests));
+    }
+    if (seg[0] === "password-reset-requests" && seg[1] && method === "PATCH") {
+      if (session.role !== "super_admin")
+        return json({ error: "Forbidden" }, 403);
+      const b = await request.json();
+      if (!["completed", "dismissed"].includes(b.status))
+        return json({ error: "Status must be completed or dismissed" }, 400);
+      const resetRequest = await db
+        .collection("password_reset_requests")
+        .findOne({ id: seg[1] });
+      if (!resetRequest) return json({ error: "Reset request not found" }, 404);
+      if (resetRequest.status !== "pending")
+        return json({ error: "This request is already resolved" }, 409);
+      await db.collection("password_reset_requests").updateOne(
+        { id: resetRequest.id },
+        {
+          $set: {
+            status: b.status,
+            resolved_by: session.id,
+            resolved_by_name: session.name,
+            resolved_at: new Date(),
+          },
+        },
+      );
+      await audit(
+        db,
+        session,
+        "auth.password_reset_resolved",
+        "password_reset_request",
+        resetRequest.id,
+        { status: b.status, user_id: resetRequest.user_id },
+      );
+      return json(
+        clean(
+          await db
+            .collection("password_reset_requests")
+            .findOne({ id: resetRequest.id }),
+        ),
+      );
     }
     if (route === "/categories" && method === "GET") {
       const dept = new URL(request.url).searchParams.get("department");

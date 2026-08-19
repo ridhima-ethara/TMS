@@ -111,7 +111,12 @@ try {
   const loginResponse = await fetch(`${baseUrl}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: user.email, password, remember: true }),
+    body: JSON.stringify({
+      email: user.email,
+      password,
+      remember: true,
+      employee_id: user.employee_id,
+    }),
   });
   assert.equal(loginResponse.status, 200);
   const loginBody = await loginResponse.json();
