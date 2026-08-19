@@ -9910,6 +9910,7 @@ async function handleRoute(request, { params }) {
         return json({ error: "KRA responses must be a list" }, 400);
       const expectedItems = Array.isArray(list.items) ? list.items : [];
       const submittedByItem = new Map();
+      const extraFromResponses = [];
       for (const response of b.responses.slice(0, 200)) {
         if (!response || typeof response !== "object" || Array.isArray(response))
           return json({ error: "Invalid KRA response" }, 400);
@@ -9917,8 +9918,22 @@ async function handleRoute(request, { params }) {
         const matched = expectedItems.find(
           (expected) => expected.key === response.key || expected.label === item,
         );
-        if (!matched)
+        if (!matched) {
+          // Ad-hoc work the member added for today rides along with the
+          // standard responses; anything else unmatched is rejected.
+          if (
+            (response.self_added === true || response.extra === true) &&
+            item
+          ) {
+            extraFromResponses.push({
+              item,
+              done: response.done === true,
+              remark: textValue(response.remark, 1000),
+            });
+            continue;
+          }
           return json({ error: "A KRA response does not match this checklist" }, 400);
+        }
         if (submittedByItem.has(matched.key))
           return json({ error: "Duplicate KRA response" }, 400);
         submittedByItem.set(matched.key, {
@@ -9939,18 +9954,20 @@ async function handleRoute(request, { params }) {
       );
       // Additional ad-hoc work done today, beyond the constant daily KRA.
       // Extras count toward the day's totals but never block completion.
-      const extras = Array.isArray(b.extra_items)
-        ? b.extra_items
-            .slice(0, 50)
-            .map((entry, index) => ({
-              key: `extra_${index}`,
-              item: textValue(entry?.item, 300),
-              done: entry?.done !== false,
-              remark: textValue(entry?.remark, 1000),
-              extra: true,
-            }))
-            .filter((entry) => entry.item)
-        : [];
+      const extras = [
+        ...extraFromResponses,
+        ...(Array.isArray(b.extra_items) ? b.extra_items : []),
+      ]
+        .slice(0, 50)
+        .map((entry, index) => ({
+          key: `extra_${index}`,
+          item: textValue(entry?.item, 300),
+          done: entry?.done !== false,
+          remark: textValue(entry?.remark, 1000),
+          extra: true,
+          self_added: true,
+        }))
+        .filter((entry) => entry.item);
       const allResponses = [...responses, ...extras];
       const doneCount = allResponses.filter((r) => r.done).length;
       const now = new Date();

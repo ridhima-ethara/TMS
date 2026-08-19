@@ -155,7 +155,13 @@ function MiniKra({ lists, onGoKra }) {
   if (!list)
     return (
       <Card className="border-[#E5E9EF] p-5 shadow-none">
-        <p className="text-sm text-[#9CA3AF]">No KRA assigned.</p>
+        <p className="text-sm text-[#9CA3AF]">
+          No KRA assigned or added yet.
+        </p>
+        <Button variant="outline" size="sm" className="mt-3" onClick={onGoKra}>
+          <Plus className="mr-1 h-4 w-4" />
+          Add my daily KRA
+        </Button>
       </Card>
     );
   const submission = list.today_submission;
@@ -1423,6 +1429,62 @@ function CompliancePanel({ submissions, assignedAt, overdue }) {
   );
 }
 
+function CreateOwnKraCard({ onCreated }) {
+  const [title, setTitle] = useState("My Daily KRA");
+  const [items, setItems] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    const list = items
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!list.length)
+      return toast.error("Add at least one daily work item (one per line)");
+    setBusy(true);
+    try {
+      await api("/member-checklists", {
+        method: "POST",
+        body: { title, items: list },
+      });
+      toast.success("Daily KRA created");
+      onCreated?.();
+    } catch (error) {
+      toast.error(error.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Card className="border-[#E5E9EF] p-5 shadow-none">
+      <h3 className="font-bold">Set up my daily KRA</h3>
+      <p className="mt-1 text-sm text-[#9CA3AF]">
+        No KRA is assigned to you yet. Define the work you do every day — it
+        stays constant each day, and you can log additional work on any day
+        before submitting.
+      </p>
+      <Input
+        className="mt-3"
+        value={title}
+        onChange={(event) => setTitle(event.target.value)}
+        placeholder="Title"
+      />
+      <textarea
+        rows={6}
+        className="mt-2 w-full rounded-lg border border-[#E5E9EF] p-3 text-sm"
+        value={items}
+        onChange={(event) => setItems(event.target.value)}
+        placeholder={"One daily work item per line, e.g.\nCheck backup job status\nReview firewall alerts\nClear pending tickets"}
+      />
+      <div className="mt-2 flex justify-end">
+        <Button size="sm" onClick={submit} disabled={busy}>
+          <Plus className="mr-1 h-4 w-4" />
+          Create daily KRA
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 function TodayChecklist({ list, onSubmitted }) {
   const initial = list.items.map((item) => {
     const existing = list.today_submission?.responses?.find(
@@ -1700,11 +1762,7 @@ export function AgentKra({ user }) {
             {lists.map((list) => (
               <TodayChecklist key={list.id} list={list} onSubmitted={load} />
             ))}
-            {!lists.length && (
-              <Card className="p-10 text-center text-[#9CA3AF] shadow-none">
-                No KRA assigned yet.
-              </Card>
-            )}
+            {!lists.length && <CreateOwnKraCard onCreated={load} />}
           </div>
           <div className="space-y-4">
             <CompliancePanel
