@@ -4457,44 +4457,13 @@ function siteTicketFilter(site) {
   };
 }
 
-function itTicketScope(session) {
-  const sites = session?.is_team_head
-    ? managedItSites(session)
-    : [ticketLocationSite(session?.location)].filter(Boolean);
-  if (!sites.length) return { department: "IT" };
-  // Legacy/unclassified unallocated tickets must remain claimable by the IT
-  // team. Once a member claims one, assignee_id keeps it in that member's
-  // scope; other members still cannot see or modify another person's ticket.
-  const unallocatedSharedQueue = {
-    $and: [
-      {
-        $or: [
-          { assignee_id: null },
-          { assignee_id: "" },
-          { assignee_id: { $exists: false } },
-        ],
-      },
-      {
-        $or: [
-          { routing_site: null },
-          { routing_site: "" },
-          { routing_site: { $exists: false } },
-        ],
-      },
-    ],
-  };
-  return {
-    $and: [
-      { department: "IT" },
-      {
-        $or: [
-          { assignee_id: session.id },
-          ...sites.map((site) => siteTicketFilter(site)),
-          unallocatedSharedQueue,
-        ],
-      },
-    ],
-  };
+function itTicketScope() {
+  // Every IT member sees the whole IT team's tickets (both sites, all
+  // statuses) so team boards and resolved/closed columns stay complete.
+  // Claiming, allocating and status updates remain guarded separately:
+  // claims stay site-scoped via canAccessTicket and updates require the
+  // assigned member or a team head.
+  return { department: "IT" };
 }
 
 function canAccessTicket(session, ticket) {
@@ -4585,7 +4554,7 @@ async function ensureTicketRoutingData(database) {
 // role-based ticket filter
 function scopeFilter(session) {
   if (session.role === "super_admin") return {};
-  if (session.role === "it") return itTicketScope(session);
+  if (session.role === "it") return itTicketScope();
   if (session.role === "admin") return { department: "Admin" };
   // Employees can see tickets they raised and tickets explicitly raised for them.
   return { $or: [{ raised_by_id: session.id }, { issue_user_id: session.id }] };
@@ -8372,7 +8341,7 @@ async function handleRoute(request, { params }) {
       const parsedLimit = Number.parseInt(p.get("limit") || "15", 10);
       const page = Number.isFinite(parsedPage) ? Math.max(1, parsedPage) : 1;
       const limit = Number.isFinite(parsedLimit)
-        ? Math.min(100, Math.max(1, parsedLimit))
+        ? Math.min(200, Math.max(1, parsedLimit))
         : 15;
       const total = await db.collection("tickets").countDocuments(filter);
       const items = await db
@@ -8649,8 +8618,15 @@ async function handleRoute(request, { params }) {
       const ticketId = seg[1];
       const ticket = await db.collection("tickets").findOne({ id: ticketId });
       if (!ticket) return json({ error: "Not found" }, 404);
-      // Object-level authorization includes the routed IT location.
-      if (!canAccessTicket(session, ticket))
+      // Reads are team-wide: any IT member may open any IT ticket so the
+      // team board links resolve. Mutations keep the stricter site/assignee
+      // authorization below via canAccessTicket and the per-action guards.
+      const canReadTicket =
+        canAccessTicket(session, ticket) ||
+        (session.role === "it" && ticket.department === "IT");
+      if (seg.length === 2 && method === "GET") {
+        if (!canReadTicket) return json({ error: "Forbidden" }, 403);
+      } else if (!canAccessTicket(session, ticket))
         return json({ error: "Forbidden" }, 403);
 
       // GET detail
