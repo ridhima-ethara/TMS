@@ -1,0 +1,97 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1787121983666,
+  "projectRoot": "/home/ec2-user/TMS",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "npm run build 2>&1 | grep -E 'error|✓ Compiled|Prepared' | head -3",
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "TMS": {
+      "path": "TMS",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1787121983654,
+      "keyFiles": []
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "app/api/[[...path]]/route.js",
+      "accessCount": 24,
+      "lastAccessed": 1787129649761,
+      "type": "file"
+    },
+    {
+      "path": "lib/postgres-document-db.js",
+      "accessCount": 8,
+      "lastAccessed": 1787125253504,
+      "type": "file"
+    },
+    {
+      "path": ".env.local",
+      "accessCount": 3,
+      "lastAccessed": 1787125641977,
+      "type": "file"
+    },
+    {
+      "path": "components/app/Login.js",
+      "accessCount": 2,
+      "lastAccessed": 1787123865517,
+      "type": "file"
+    },
+    {
+      "path": "lib/appapi.js",
+      "accessCount": 2,
+      "lastAccessed": 1787124526427,
+      "type": "file"
+    },
+    {
+      "path": "TMS/TMS/package.json",
+      "accessCount": 1,
+      "lastAccessed": 1787122143843,
+      "type": "file"
+    },
+    {
+      "path": "TMS/TMS/.env.example",
+      "accessCount": 1,
+      "lastAccessed": 1787122146415,
+      "type": "file"
+    },
+    {
+      "path": "TMS/TMS/.env.local",
+      "accessCount": 1,
+      "lastAccessed": 1787122146531,
+      "type": "file"
+    },
+    {
+      "path": "components/app/FirewallView.js",
+      "accessCount": 1,
+      "lastAccessed": 1787124395334,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}
