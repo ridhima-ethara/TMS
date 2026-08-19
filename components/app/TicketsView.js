@@ -1076,7 +1076,7 @@ export function RaiseTicket({ user, onCreated }) {
                   />
                 </div>
                 <div>
-                  <Label className="text-xs">Company email</Label>
+                  <Label className="text-xs">Company email (optional)</Label>
                   <Input
                     type="email"
                     className="mt-1 h-11 bg-white"
@@ -1088,7 +1088,7 @@ export function RaiseTicket({ user, onCreated }) {
                   />
                 </div>
                 <div>
-                  <Label className="text-xs">GRP code</Label>
+                  <Label className="text-xs">GRP code (optional)</Label>
                   <Input
                     className="mt-1 h-11 bg-white"
                     value={f.employee_id}

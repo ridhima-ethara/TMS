@@ -8417,15 +8417,15 @@ async function handleRoute(request, { params }) {
         hasExplicitIssueUser &&
         !b.raised_for_id
       ) {
-        if (!requestedName || !requestedEmail || !requestedEmployeeId)
+        if (!requestedName)
           return json(
             {
               error:
-                "Enter the affected employee name, company email and GRP code, or leave all three blank for an internal ticket",
+                "Enter the affected employee name; company email and GRP code are optional",
             },
             400,
           );
-        if (!/^[^\s@]+@ethara\.ai$/i.test(requestedEmail))
+        if (requestedEmail && !/^[^\s@]+@ethara\.ai$/i.test(requestedEmail))
           return json(
             { error: "Enter a valid @ethara.ai email for the affected employee" },
             400,
