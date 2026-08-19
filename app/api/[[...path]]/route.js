@@ -90,6 +90,7 @@ async function connectToDatabase() {
         ),
       ]);
       await ensureDesignatedItManagers(db);
+      await ensureLocations(db);
       await ensureTicketRoutingData(db);
       await ensureKraDefaults(db);
       await migrateTicketSlaData(db);
@@ -4529,6 +4530,18 @@ async function ensureDesignatedItManagers(database) {
   );
 }
 
+// Locations added to LOCATIONS after the initial seed still need to reach
+// deployed databases; insert any missing ones at startup.
+async function ensureLocations(database) {
+  const existing = await database.collection("locations").find({}).toArray();
+  const names = new Set(existing.map((location) => location.name));
+  const missing = LOCATIONS.filter((location) => !names.has(location.name));
+  if (missing.length)
+    await database
+      .collection("locations")
+      .insertMany(missing.map((location) => ({ id: uuidv4(), ...location })));
+}
+
 async function ensureTicketRoutingData(database) {
   const tickets = database.collection("tickets");
   await Promise.all([
@@ -4836,6 +4849,7 @@ const LOCATIONS = [
   { name: "Tulip - First Floor", building: "Tulip", code: "TUL1" },
   { name: "Tulip - Second Floor", building: "Tulip", code: "TUL2" },
   { name: "Tulip - Third Floor", building: "Tulip", code: "TUL3" },
+  { name: "Tulip - Basement", building: "Tulip", code: "TULB" },
   { name: "Lotus - Bullpen", building: "Lotus", code: "LOTB" },
   { name: "Lotus - Labs", building: "Lotus", code: "LOTL" },
 ];
@@ -8634,16 +8648,14 @@ async function handleRoute(request, { params }) {
       const ticketId = seg[1];
       const ticket = await db.collection("tickets").findOne({ id: ticketId });
       if (!ticket) return json({ error: "Not found" }, 404);
-      // Reads are team-wide: any IT member may open any IT ticket so the
-      // team board links resolve. Mutations keep the stricter site/assignee
-      // authorization below via canAccessTicket and the per-action guards.
+      // Access is team-wide: any IT member may open and work with any IT
+      // ticket, so correcting a mistakenly entered ticket never returns
+      // Forbidden for teammates. Sensitive workflow operations (status
+      // changes, allocating others) keep their per-action guards below.
       const canReadTicket =
         canAccessTicket(session, ticket) ||
         (session.role === "it" && ticket.department === "IT");
-      if (seg.length === 2 && method === "GET") {
-        if (!canReadTicket) return json({ error: "Forbidden" }, 403);
-      } else if (!canAccessTicket(session, ticket))
-        return json({ error: "Forbidden" }, 403);
+      if (!canReadTicket) return json({ error: "Forbidden" }, 403);
 
       // GET detail
       if (seg.length === 2 && method === "GET") {
@@ -8849,6 +8861,77 @@ async function handleRoute(request, { params }) {
             ticket.priority,
             b.priority,
           );
+        }
+        if (b.location !== undefined && b.location !== ticket.location) {
+          const nextLocation = textValue(b.location, 150);
+          const validLocation = nextLocation
+            ? await db.collection("locations").findOne({ name: nextLocation })
+            : null;
+          if (!validLocation)
+            return json({ error: "Select a valid ticket location" }, 400);
+          set.location = nextLocation;
+          set.routing_site = ticketLocationSite(nextLocation) || null;
+          await addHistory(
+            db,
+            ticketId,
+            "details",
+            session,
+            "Location updated",
+            ticket.location,
+            nextLocation,
+          );
+        }
+        if (b.category !== undefined && b.category !== ticket.category) {
+          const nextCategory = textValue(b.category, 100);
+          const validCategory = nextCategory
+            ? await db.collection("categories").findOne({
+                department: ticket.department,
+                name: nextCategory,
+              })
+            : null;
+          if (!validCategory)
+            return json({ error: "Select a valid category" }, 400);
+          set.category = nextCategory;
+          await addHistory(
+            db,
+            ticketId,
+            "details",
+            session,
+            "Category updated",
+            ticket.category,
+            nextCategory,
+          );
+        }
+        if (b.title !== undefined) {
+          const nextTitle = textValue(b.title, 200);
+          if (!nextTitle) return json({ error: "Title cannot be empty" }, 400);
+          if (nextTitle !== ticket.title) {
+            set.title = nextTitle;
+            await addHistory(
+              db,
+              ticketId,
+              "details",
+              session,
+              "Title updated",
+              ticket.title,
+              nextTitle,
+            );
+          }
+        }
+        if (b.description !== undefined) {
+          const nextDescription = textValue(b.description, 5000);
+          if (nextDescription !== (ticket.description || "")) {
+            set.description = nextDescription;
+            await addHistory(
+              db,
+              ticketId,
+              "details",
+              session,
+              "Description updated",
+              null,
+              null,
+            );
+          }
         }
         if (b.status && b.status !== ticket.status) {
           if (!STATUSES.includes(b.status))

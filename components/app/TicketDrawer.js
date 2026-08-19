@@ -70,6 +70,8 @@ export default function TicketDrawer({
   const [busy, setBusy] = useState(false);
   const [comment, setComment] = useState("");
   const [commentType, setCommentType] = useState("public");
+  const [locationOptions, setLocationOptions] = useState([]);
+  const [categoryOptions, setCategoryOptions] = useState([]);
   const isStaff = ["it", "admin", "super_admin"].includes(user.role);
   const isTerminal = ["Resolved", "Closed", "Cancelled"].includes(t?.status);
   const deptUsers = users.filter((u) =>
@@ -109,6 +111,18 @@ export default function TicketDrawer({
   useEffect(() => {
     if (open && ticketId) load();
   }, [ticketId, open]);
+  useEffect(() => {
+    if (!open || !isStaff) return;
+    api("/locations")
+      .then(setLocationOptions)
+      .catch(() => {});
+  }, [open, isStaff]);
+  useEffect(() => {
+    if (!open || !isStaff || !t?.department) return;
+    api(`/categories?department=${t.department}`)
+      .then(setCategoryOptions)
+      .catch(() => {});
+  }, [open, isStaff, t?.department]);
 
   const patch = async (body, msg) => {
     setBusy(true);
@@ -451,6 +465,48 @@ export default function TicketDrawer({
                               <SelectItem key={u.id} value={u.id}>
                                 {u.name}
                                 {u.id === user.id ? " (Me)" : ""}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Location</Label>
+                        <Select
+                          value={t.location || ""}
+                          disabled={busy}
+                          onValueChange={(v) =>
+                            patch({ location: v }, "Location updated")
+                          }
+                        >
+                          <SelectTrigger className="h-9 w-full sm:w-52">
+                            <SelectValue placeholder="Location" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {locationOptions.map((l) => (
+                              <SelectItem key={l.id} value={l.name}>
+                                {l.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Category</Label>
+                        <Select
+                          value={t.category || ""}
+                          disabled={busy}
+                          onValueChange={(v) =>
+                            patch({ category: v }, "Category updated")
+                          }
+                        >
+                          <SelectTrigger className="h-9 w-full sm:w-52">
+                            <SelectValue placeholder="Category" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {categoryOptions.map((c) => (
+                              <SelectItem key={c.id} value={c.name}>
+                                {c.name}
                               </SelectItem>
                             ))}
                           </SelectContent>
