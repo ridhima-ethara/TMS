@@ -85,7 +85,8 @@ function ChecklistCard({ list, onSubmitted }) {
   )
 }
 
-function CreateOwnKra({ onCreated }) {
+function CreateOwnKra({ onCreated, collapsible = false }) {
+  const [openForm, setOpenForm] = useState(!collapsible)
   const [title, setTitle] = useState('My Daily KRA')
   const [items, setItems] = useState('')
   const [busy, setBusy] = useState(false)
@@ -96,12 +97,25 @@ function CreateOwnKra({ onCreated }) {
     try {
       await api('/member-checklists', { method: 'POST', body: { title, items: list } })
       toast.success('Daily KRA created')
+      setItems('')
+      if (collapsible) setOpenForm(false)
       onCreated?.()
     } catch (e) { toast.error(e.message) } finally { setBusy(false) }
   }
+  if (!openForm)
+    return (
+      <div className="flex justify-end">
+        <Button variant="outline" size="sm" onClick={() => setOpenForm(true)}><Plus className="h-4 w-4 mr-1" />Add my own KRA</Button>
+      </div>
+    )
   return (
     <Card>
-      <CardHeader className="pb-2"><CardTitle className="text-base">Set up my daily KRA</CardTitle></CardHeader>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base">Set up my daily KRA</CardTitle>
+          {collapsible && <button onClick={() => setOpenForm(false)} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>}
+        </div>
+      </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm text-muted-foreground">Define the work you do every day. These items stay constant each day; you can also log additional work on any day when submitting.</p>
         <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" />
@@ -123,7 +137,7 @@ export default function MyChecklist() {
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">Complete and submit your daily KRA. Submissions are recorded and tracked by the Super Admin, and any additional work you add counts for that day.</p>
       {lists.map((l) => <ChecklistCard key={l.id} list={l} onSubmitted={load} />)}
-      {lists.length === 0 && <CreateOwnKra onCreated={load} />}
+      <CreateOwnKra onCreated={load} collapsible={lists.length > 0} />
     </div>
   )
 }
