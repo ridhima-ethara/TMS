@@ -653,6 +653,9 @@ const FIREWALL_BANDWIDTH_CACHE_KEY = Symbol.for(
 const FIREWALL_OVERVIEW_CACHE_KEY = Symbol.for(
   "ticketflow.firewallOverviewCache",
 );
+const FIREWALL_OVERVIEW_INFLIGHT_KEY = Symbol.for(
+  "ticketflow.firewallOverviewInflight",
+);
 
 async function probeFirewallAvailability(db, firewallId) {
   const profile = firewallProfile(firewallId);
@@ -6815,6 +6818,15 @@ async function handleRoute(request, { params }) {
       const cachedOverview = overviewCache.get(overviewCacheKey);
       if (cachedOverview && Date.now() - cachedOverview.createdAt < 30_000)
         return json(cachedOverview.payload);
+      // Building an overview queries every appliance endpoint and pages
+      // through its memory logs, which can take well over the client timeout.
+      // Once any snapshot exists, serve it immediately and refresh in the
+      // background; only the very first load for a scope waits on the
+      // appliance. Concurrent cold requests share one in-flight fetch.
+      if (!globalThis[FIREWALL_OVERVIEW_INFLIGHT_KEY])
+        globalThis[FIREWALL_OVERVIEW_INFLIGHT_KEY] = new Map();
+      const overviewInflight = globalThis[FIREWALL_OVERVIEW_INFLIGHT_KEY];
+      const buildOverview = async () => {
       const fw = profile.value;
       const baseUrl = String(fw("API_URL")).replace(/\/$/, "");
       const apiKey = fw("API_KEY");
@@ -6881,7 +6893,7 @@ async function handleRoute(request, { params }) {
           createdAt: Date.now(),
           payload,
         });
-        return json(payload);
+        return payload;
       }
       const headerName = fw("API_HEADER", "Authorization");
       const prefix = fw("API_PREFIX", "Bearer");
@@ -7064,7 +7076,25 @@ async function handleRoute(request, { params }) {
       });
       if (overviewCache.size > 12)
         overviewCache.delete(overviewCache.keys().next().value);
-      return json(payload);
+      return payload;
+      };
+      let overviewPromise = overviewInflight.get(overviewCacheKey);
+      if (!overviewPromise) {
+        overviewPromise = buildOverview().finally(() => {
+          overviewInflight.delete(overviewCacheKey);
+        });
+        overviewInflight.set(overviewCacheKey, overviewPromise);
+      }
+      if (cachedOverview) {
+        overviewPromise.catch((error) =>
+          console.error(
+            "Firewall overview background refresh failed:",
+            error?.message || error,
+          ),
+        );
+        return json(cachedOverview.payload);
+      }
+      return json(await overviewPromise);
     }
 
     if (route === "/firewall/downtime" && method === "GET") {
