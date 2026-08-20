@@ -1,7 +1,7 @@
 {
   "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"node --env-file=.env.local /tmp/claude-1000/-home-ec2-user-TMS/137fdfad-0ff2-4055-b96f-82f8185040b5/scratchpad/dbtest.mjs\",\"timeout\":120000,\"description\":\"Run adapter pushdown sanity test ...",
-  "error": "Exit code 1\n(node:39256) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/ec2-user/TMS/TMS/TMS/lib/postgres-document-db.js is not specified and it doesn't parse as CommonJS.\nReparsing as ES module because module syntax was detected. This incurs a performance overhead.\nTo eliminate this warning, add \"type\": \"module\" to /home/ec2-user/TMS/TMS/TMS/package.json.\n(Use `node --trace-warnings ...` to show where the warning was created)\n/home/ec2-user/TMS/TMS/TMS/node_modules/pg-pool/...",
-  "timestamp": "2026-08-19T07:42:12.743Z",
+  "tool_input_preview": "{\"command\":\"git fetch origin && git log --oneline main..origin/main; git pull --rebase origin main 2>&1 | tail -3 && git push 2>&1 | tail -2\",\"description\":\"Rebase onto remote changes and push\"}",
+  "error": "Exit code 143\nCommand timed out after 2m 0s\nFrom https://github.com/ridhima-ethara/TMS\n   ede0407..bf6ee3d  main       -> origin/main\n * [new branch]      master     -> origin/master\nbf6ee3d Merge origin/main into local firewall archive fixes\na9d8fbb changes",
+  "timestamp": "2026-08-19T18:22:34.532Z",
   "retry_count": 1
 }

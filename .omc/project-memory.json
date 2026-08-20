@@ -9,7 +9,7 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "npm run build 2>&1 | grep -E 'error|✓ Compiled|Prepared' | head -3",
+    "buildCommand": "npm run build",
     "testCommand": null,
     "lintCommand": null,
     "devCommand": null,
@@ -40,8 +40,26 @@
   "hotPaths": [
     {
       "path": "app/api/[[...path]]/route.js",
-      "accessCount": 24,
-      "lastAccessed": 1787129649761,
+      "accessCount": 65,
+      "lastAccessed": 1787213208505,
+      "type": "file"
+    },
+    {
+      "path": "components/app/SuperAdminDashboard.js",
+      "accessCount": 20,
+      "lastAccessed": 1787218156087,
+      "type": "file"
+    },
+    {
+      "path": "components/app/AgentViews.js",
+      "accessCount": 17,
+      "lastAccessed": 1787212758357,
+      "type": "file"
+    },
+    {
+      "path": "components/app/SuperAdminTickets.js",
+      "accessCount": 15,
+      "lastAccessed": 1787212837570,
       "type": "file"
     },
     {
@@ -51,9 +69,39 @@
       "type": "file"
     },
     {
+      "path": "TMS/TMS/components/app/SuperAdminDashboard.js",
+      "accessCount": 7,
+      "lastAccessed": 1787209789257,
+      "type": "file"
+    },
+    {
+      "path": "components/app/TicketDrawer.js",
+      "accessCount": 7,
+      "lastAccessed": 1787212701859,
+      "type": "file"
+    },
+    {
+      "path": "components/app/MyChecklist.js",
+      "accessCount": 6,
+      "lastAccessed": 1787164557109,
+      "type": "file"
+    },
+    {
+      "path": "components/app/TicketsView.js",
+      "accessCount": 6,
+      "lastAccessed": 1787212890065,
+      "type": "file"
+    },
+    {
       "path": ".env.local",
       "accessCount": 3,
       "lastAccessed": 1787125641977,
+      "type": "file"
+    },
+    {
+      "path": "lib/appapi.js",
+      "accessCount": 3,
+      "lastAccessed": 1787212693183,
       "type": "file"
     },
     {
@@ -63,9 +111,21 @@
       "type": "file"
     },
     {
-      "path": "lib/appapi.js",
+      "path": "components/app/Dashboard.js",
       "accessCount": 2,
-      "lastAccessed": 1787124526427,
+      "lastAccessed": 1787163239605,
+      "type": "file"
+    },
+    {
+      "path": "TMS/TMS/components/app/SuperAdminTickets.js",
+      "accessCount": 2,
+      "lastAccessed": 1787209748293,
+      "type": "file"
+    },
+    {
+      "path": "TMS/TMS/tmp/ticket-stats.mjs",
+      "accessCount": 2,
+      "lastAccessed": 1787210596477,
       "type": "file"
     },
     {
@@ -90,6 +150,36 @@
       "path": "components/app/FirewallView.js",
       "accessCount": 1,
       "lastAccessed": 1787124395334,
+      "type": "file"
+    },
+    {
+      "path": "TMS/TMS/components/app/AgentViews.js",
+      "accessCount": 1,
+      "lastAccessed": 1787210497378,
+      "type": "file"
+    },
+    {
+      "path": "tmp/verify-mapping.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1787210692678,
+      "type": "file"
+    },
+    {
+      "path": "tmp/migrate-standard-statuses.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1787212943629,
+      "type": "file"
+    },
+    {
+      "path": "tmp/check-status.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1787213149098,
+      "type": "file"
+    },
+    {
+      "path": "tmp/verify-user-issues.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1787218172149,
       "type": "file"
     }
   ],

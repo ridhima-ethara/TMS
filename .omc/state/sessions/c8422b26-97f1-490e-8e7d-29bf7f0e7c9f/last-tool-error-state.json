@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cd /home/ec2-user/TMS/TMS/TMS && node --no-warnings --env-file=.env.local tmp/ticket-stats.mjs\",\"description\":\"Query ticket status distribution from document store\"}",
+  "error": "Exit code 1\ncolumns: data:jsonb, created_at:timestamp with time zone, updated_at:timestamp with time zone, collection_name:text, document_key:text\n/home/ec2-user/TMS/TMS/TMS/node_modules/pg/lib/client.js:545\n          Error.captureStackTrace(err)\n                ^\n\nerror: column \"collection\" does not exist\n    at /home/ec2-user/TMS/TMS/TMS/node_modules/pg/lib/client.js:545:17\n    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at async file:///home/ec2-user/TMS/...",
+  "timestamp": "2026-08-20T07:22:58.545Z",
+  "retry_count": 3
+}
