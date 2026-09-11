@@ -16,6 +16,7 @@ import ApprovalsView from "@/components/app/ApprovalsView";
 import ParkingView from "@/components/app/ParkingView";
 import SettingsView from "@/components/app/SettingsView";
 import FirewallView from "@/components/app/FirewallView";
+import VendorAnalysis from "@/components/app/VendorAnalysis";
 import {
   AgentDashboard,
   AgentKra,
@@ -36,6 +37,7 @@ import { toast } from "sonner";
 import {
   Ticket,
   LayoutDashboard,
+  Laptop,
   FileCheck2,
   ClipboardCheck,
   ScrollText,
@@ -69,6 +71,7 @@ const NAV = {
     { k: "tickets", label: "IT Tickets", icon: Ticket },
     { k: "approvals", label: "Approvals", icon: FileCheck2 },
     { k: "mychecklist", label: "My KRA", icon: ClipboardCheck },
+    { k: "vendor-analysis", label: "Vendor Analysis", icon: Laptop },
     { k: "firewall", label: "Firewall Utilization", icon: Shield },
   ],
   admin: [
@@ -76,6 +79,7 @@ const NAV = {
     { k: "tickets", label: "Admin Tickets", icon: Ticket },
     { k: "approvals", label: "Approvals", icon: FileCheck2 },
     { k: "mychecklist", label: "My KRA", icon: ClipboardCheck },
+    { k: "vendor-analysis", label: "Vendor Analysis", icon: Laptop },
     { k: "parking", label: "Parking", icon: Car },
     { k: "firewall", label: "Firewall Utilization", icon: Shield },
   ],
@@ -84,6 +88,7 @@ const NAV = {
     { k: "tickets", label: "All Tickets", icon: Ticket },
     { k: "approvals", label: "Approval Inbox", icon: FileCheck2 },
     { k: "member-checklists", label: "Member KRA", icon: Users },
+    { k: "vendor-analysis", label: "Vendor Analysis", icon: Laptop },
     { k: "parking", label: "Parking", icon: Car },
     { k: "settings", label: "Settings", icon: Settings },
     { k: "firewall", label: "Firewall Utilization", icon: Shield },
@@ -500,6 +505,7 @@ export default function App() {
     approvals: "Approvals",
     mychecklist: "My KRA / Daily Tasks",
     "member-checklists": "Member KRA",
+    "vendor-analysis": "Laptop Vendor Analysis",
     parking: "Tulip Parking",
     settings: "Member Settings",
     firewall: "Firewall Utilization",
@@ -775,10 +781,14 @@ export default function App() {
               <MyChecklist />
             ))}
           {view === "member-checklists" && <SuperAdminMemberKra />}
+          {view === "vendor-analysis" &&
+            ["it", "admin", "super_admin"].includes(user.role) && (
+              <VendorAnalysis onOpenTicket={setOpenTicketId} />
+            )}
           {view === "parking" && <ParkingView />}
           {view === "settings" && <SettingsView />}
           {view === "firewall" && <FirewallView user={user} />}
-          {view === "audit" && <AuditView />}
+          {view === "audit" && <AuditView onOpenTicket={setOpenTicketId} />}
           </div>
         </main>
       </div>

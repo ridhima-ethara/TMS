@@ -23,6 +23,7 @@ import {
   workingHoursBetween,
   workingMinutesBetween,
 } from "@/lib/sla";
+import { LAPTOP_ASSETS } from "@/lib/constants/laptop-assets";
 
 // ---------------- PostgreSQL ----------------
 let db;
@@ -91,7 +92,9 @@ async function connectToDatabase() {
       ]);
       await ensureDesignatedItManagers(db);
       await ensureLocations(db);
+      await ensureCategories(db);
       await ensureTicketRoutingData(db);
+      await ensureStandardTicketStatuses(db);
       await ensureKraDefaults(db);
       await migrateTicketSlaData(db);
       startSlaMonitor(db);
@@ -4169,9 +4172,11 @@ async function decideApprovalFromEmail(database, context, decision, remarks) {
   if (decision === "reject" && !cleanRemarks)
     throw requestError("Remarks are required when rejecting a request", 400);
   const { approval, ticket, user } = context;
+  // Ticket status stays within the standard set; the approval outcome itself
+  // lives on the approval record.
   const mapping = decision === "approve"
-    ? { approval: "Approved", ticket: "Approved - Ready for Action" }
-    : { approval: "Rejected", ticket: "Approval Rejected" };
+    ? { approval: "Approved", ticket: "In Progress" }
+    : { approval: "Rejected", ticket: "In Progress" };
   const now = new Date();
   const result = await database.collection("approvals").updateOne(
     { id: approval.id, ticket_id: ticket.id, status: "Pending" },
@@ -4408,27 +4413,11 @@ async function addHistory(db, ticketId, type, actor, note, from, to) {
   });
 }
 
-const STATUSES = [
-  "Open",
-  "Assigned",
-  "Acknowledged",
-  "Approval Preparation",
-  "Pending Super Admin Approval",
-  "Clarification Required",
-  "Approval On Hold",
-  "Approval Rejected",
-  "Approved - Ready for Action",
-  "In Progress",
-  "Pending User Response",
-  "Pending Vendor",
-  "Pending Finance",
-  "Pending Material",
-  "On Hold",
-  "Resolved",
-  "Closed",
-  "Cancelled",
-];
-const TERMINAL_TICKET_STATUSES = ["Resolved", "Closed", "Cancelled"];
+// Standard ticket statuses. Workflow micro-states (assignment, acknowledgement,
+// approval, waiting-on states) are tracked in dedicated fields/collections —
+// the ticket status itself only ever holds one of these four values.
+const STATUSES = ["Open", "In Progress", "Closed", "Cancelled"];
+const TERMINAL_TICKET_STATUSES = ["Closed", "Cancelled"];
 
 const DESIGNATED_IT_MANAGERS = Object.freeze({
   "hukum@ethara.ai": "Lotus",
@@ -4542,6 +4531,33 @@ async function ensureLocations(database) {
       .insertMany(missing.map((location) => ({ id: uuidv4(), ...location })));
 }
 
+// Seeded categories only land on a fresh database; existing deployments get
+// newly added categories backfilled here, per department.
+async function ensureCategories(database) {
+  const existing = await database.collection("categories").find({}).toArray();
+  const missing = [];
+  const retired = [];
+  for (const [department, list] of Object.entries(CATEGORIES_BY_DEPARTMENT)) {
+    const inDepartment = existing.filter(
+      (category) => category.department === department,
+    );
+    const names = new Set(inDepartment.map((category) => category.name));
+    for (const name of list)
+      if (!names.has(name)) missing.push({ id: uuidv4(), department, name });
+    // Categories the department no longer offers. Anything a team added
+    // themselves is theirs to keep, so only standard rows are retired.
+    // Existing tickets keep their stored category: it is only re-validated
+    // when someone actually changes it.
+    for (const category of inDepartment)
+      if (!category.custom && !list.includes(category.name))
+        retired.push(category.id);
+  }
+  if (missing.length)
+    await database.collection("categories").insertMany(missing);
+  for (const id of retired)
+    await database.collection("categories").deleteOne({ id });
+}
+
 async function ensureTicketRoutingData(database) {
   const tickets = database.collection("tickets");
   await Promise.all([
@@ -4578,6 +4594,58 @@ async function ensureTicketRoutingData(database) {
       ),
     ),
   );
+}
+
+// One-time normalization: fold legacy workflow statuses into the standard set
+// (Open, In Progress, Closed, Cancelled). Runs at startup and is a no-op once
+// every ticket already carries a standard status. Filtering happens in JS —
+// the Postgres document shim does not support $nin on find().
+function standardTicketStatus(original, ticket) {
+  if (STATUSES.includes(original)) return original;
+  if (original === "Resolved") return "Closed";
+  return ticket.assignee_id ? "In Progress" : "Open";
+}
+
+async function ensureStandardTicketStatuses(database) {
+  const tickets = database.collection("tickets");
+  const all = await tickets.find({}).toArray();
+  let fixed = 0;
+  for (const ticket of all) {
+    // A status_migrated_from stamp means an earlier normalization touched the
+    // ticket; its value is the pre-migration status and is the truth to map
+    // from (this also repairs rows a faulty earlier run moved incorrectly).
+    const original = ticket.status_migrated_from || ticket.status;
+    const target = standardTicketStatus(original, ticket);
+    const set = {};
+    if (ticket.status !== target) {
+      set.status = target;
+      if (target === "Closed") {
+        set.closed_at =
+          ticket.closed_at ||
+          ticket.resolved_at ||
+          ticket.resolution?.resolved_date ||
+          ticket.updated_at ||
+          new Date();
+        set.updated_at = set.closed_at;
+      }
+      if (target === "In Progress" && !ticket.work_started_at)
+        set.work_started_at =
+          ticket.updated_at || ticket.created_at || new Date();
+    }
+    if (ticket.status_migrated_from) {
+      // Clear the stamp so later boots never re-map a legitimately changed
+      // status; keep the legacy value for the record when it was non-standard.
+      set.status_migrated_from = null;
+      if (!STATUSES.includes(original)) set.legacy_status = original;
+    } else if (!STATUSES.includes(ticket.status)) {
+      set.legacy_status = ticket.status;
+    }
+    if (Object.keys(set).length) {
+      await tickets.updateOne({ id: ticket.id }, { $set: set });
+      fixed++;
+    }
+  }
+  if (fixed) console.log(`Standardized ${fixed} legacy ticket status(es)`);
 }
 
 // role-based ticket filter
@@ -4821,29 +4889,179 @@ async function migrateTicketSlaData(database) {
   }
 }
 
+// ---------------- LAPTOP ASSET INVENTORY ----------------
+// The vendor laptop sheets are bundled at build time (lib/constants/
+// laptop-assets.js) and mirrored into the laptop_assets collection so ticket
+// creation and vendor analytics query one place. The sync runs at most once
+// per process and only rewrites the collection when the bundled dataset
+// changes (tracked by a fingerprint document).
+
+const LAPTOP_ASSET_FINGERPRINT = createHash("sha256")
+  .update(JSON.stringify(LAPTOP_ASSETS))
+  .digest("hex");
+let laptopAssetsSynced = false;
+
+function normalizedSerial(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function normalizedEmployeeCode(value) {
+  return String(value || "").toUpperCase().replace(/[\s-]+/g, "");
+}
+
+async function ensureLaptopAssets(database) {
+  if (laptopAssetsSynced) return;
+  const marker = await database
+    .collection("laptop_asset_sync")
+    .findOne({ id: "bundled" });
+  if (marker?.fingerprint !== LAPTOP_ASSET_FINGERPRINT) {
+    await database.collection("laptop_assets").deleteMany({ source: "bundled" });
+    await database.collection("laptop_assets").insertMany(
+      LAPTOP_ASSETS.map((asset) => ({
+        id: `laptop_${asset.serial_number}`,
+        ...asset,
+        source: "bundled",
+      })),
+    );
+    await database.collection("laptop_asset_sync").updateOne(
+      { id: "bundled" },
+      {
+        $set: {
+          id: "bundled",
+          fingerprint: LAPTOP_ASSET_FINGERPRINT,
+          asset_count: LAPTOP_ASSETS.length,
+          synced_at: new Date(),
+        },
+      },
+      { upsert: true },
+    );
+  }
+  laptopAssetsSynced = true;
+}
+
+// Resolves the laptop behind a ticket: an explicitly entered serial number
+// wins, then the affected member's GRP code, then their company email.
+async function findLaptopAsset(database, { serial, employeeCode, email }) {
+  const assets = database.collection("laptop_assets");
+  const wantedSerial = normalizedSerial(serial);
+  if (wantedSerial) {
+    const asset = await assets.findOne({ serial_number: wantedSerial });
+    if (asset) return { asset, matchedBy: "serial_number" };
+    return { asset: null, matchedBy: null };
+  }
+  const wantedCode = normalizedEmployeeCode(employeeCode);
+  if (wantedCode) {
+    const asset = await assets.findOne({ employee_code: wantedCode });
+    if (asset) return { asset, matchedBy: "employee_code" };
+  }
+  const wantedEmail = String(email || "").trim().toLowerCase();
+  if (wantedEmail) {
+    const asset = await assets.findOne({ email: wantedEmail });
+    if (asset) return { asset, matchedBy: "email" };
+  }
+  return { asset: null, matchedBy: null };
+}
+
+function laptopTicketFields(asset, matchedBy, enteredSerial) {
+  if (!asset)
+    return enteredSerial
+      ? {
+          asset_serial_number: normalizedSerial(enteredSerial),
+          asset_brand: null,
+          asset_vendor: null,
+          asset_platform: null,
+          asset_owner_name: null,
+          asset_owner_email: null,
+          asset_employee_code: null,
+          asset_match_source: null,
+          asset_matched: false,
+        }
+      : {};
+  return {
+    asset_serial_number: asset.serial_number,
+    asset_brand: asset.brand,
+    asset_vendor: asset.vendor,
+    asset_platform: asset.platform,
+    asset_owner_name: asset.name,
+    asset_owner_email: asset.email,
+    asset_employee_code: asset.employee_code,
+    asset_match_source: matchedBy,
+    asset_matched: true,
+  };
+}
+
+const LAPTOP_CATEGORY_RX = /laptop|hardware|device configuration|asset/i;
+// "Procurement Hardware" is a purchase request for new kit, not a fault on an
+// issued machine, so it is excluded from laptop/vendor auto-mapping.
+const PROCUREMENT_CATEGORY_RX = /procurement/i;
+const isLaptopCategory = (category) =>
+  LAPTOP_CATEGORY_RX.test(category || "") &&
+  !PROCUREMENT_CATEGORY_RX.test(category || "");
+
 // ---------------- SEED ----------------
-const CATEGORIES = [
+// Ticket categories are department-specific: an IT member never sees Admin
+// categories and vice versa. CATEGORIES_BY_DEPARTMENT is the single source of
+// truth for seeding, the boot migration and the delete guard.
+const IT_CATEGORIES = [
   "Daily Operations",
   "Employee Onboarding",
   "Employee Offboarding",
   "Email & Slack Support",
+  "Laptop Issue",
   "Laptop Allocation",
   "Laptop Replacement",
   "Laptop Repair",
+  "Laptop Charger Replacement",
+  "Laptop Return",
   "Hardware Accessories",
   "IT Asset Inventory",
   "Internet Issues",
   "WiFi Issues",
   "LAN & Network Issues",
   "Printer Support",
+  "VC Setup \u2013 HDMI & Type-C Cable Issue",
   "Software Installation",
   "Device Configuration",
   "Vendor Asset Receipt",
+  "Vendor Assets Return",
   "Asset Transfer",
+  "Firewall Related Task",
+  "Create Policies for Audit",
+  "Review Audit IT Policies",
+  "IT Operation",
+  "Cloud Related Issues",
+  "Cloud Billing Issues",
+  "Invoice Submission",
+  "Endpoint Security",
   "Account & Access Management",
   "Administrative Support",
+  "Procurement Software",
+  "Procurement Hardware",
   "Other",
 ];
+
+const ADMIN_CATEGORIES = [
+  "Facilities & Maintenance",
+  "Housekeeping & Hygiene",
+  "Security & Safety",
+  "Access Control",
+  "Parking Management",
+  "Signage & Branding",
+  "Office Supplies & Stationery",
+  "Pantry & Cafeteria",
+  "Furniture & Workspace",
+  "Plants & Office D\u00e9cor",
+  "Vendor Management",
+  "Office Events & Setup",
+  "Logistics & Courier",
+  "Asset & Inventory \u2013 Admin",
+  "Compliance & Safety",
+];
+
+const CATEGORIES_BY_DEPARTMENT = {
+  IT: IT_CATEGORIES,
+  Admin: ADMIN_CATEGORIES,
+};
 const LOCATIONS = [
   { name: "Tulip - Ground Floor", building: "Tulip", code: "TULG" },
   { name: "Tulip - First Floor", building: "Tulip", code: "TUL1" },
@@ -5079,10 +5297,15 @@ const CHECKLIST_ITEMS = [
 ];
 
 function mapStatus(s) {
+  // Ticket statuses normalize to the standard set (Open, In Progress,
+  // Closed, Cancelled); "Done"/"Completed" stays for admin tasks.
   const m = {
-    Resolve: "Resolved",
+    Resolve: "Closed",
+    Resolved: "Closed",
     Done: "Completed",
     "In Process": "In Progress",
+    Assigned: "In Progress",
+    Acknowledged: "In Progress",
   };
   return m[s] || s;
 }
@@ -5355,8 +5578,12 @@ async function seedDb(db) {
 
   // categories
   const cats = [
-    ...CATEGORIES.map((c) => ({ id: uuidv4(), department: "IT", name: c })),
-    ...CATEGORIES.map((c) => ({ id: uuidv4(), department: "Admin", name: c })),
+    ...IT_CATEGORIES.map((c) => ({ id: uuidv4(), department: "IT", name: c })),
+    ...ADMIN_CATEGORIES.map((c) => ({
+      id: uuidv4(),
+      department: "Admin",
+      name: c,
+    })),
   ];
   await db.collection("categories").insertMany(cats);
   await db
@@ -5433,7 +5660,7 @@ async function seedDb(db) {
       updated_at: resolvedAt,
       first_response_at: ackAt,
       resolution:
-        status === "Resolved"
+        status === "Closed"
           ? {
               summary: "Issue resolved",
               action_taken: "Standard fix applied",
@@ -5458,13 +5685,13 @@ async function seedDb(db) {
       id: uuidv4(),
       ticket_id: id,
       type: "status",
-      to: "Acknowledged",
+      to: "In Progress",
       by_name: assignee,
       by_role: "it",
       note: "",
       created_at: ackAt,
     });
-    if (status === "Resolved")
+    if (status === "Closed")
       histDocs.push({
         id: uuidv4(),
         ticket_id: id,
@@ -5535,7 +5762,7 @@ async function seedDb(db) {
     title: "New printer procurement for HQ2",
     description: "Existing printer beyond repair, need replacement",
     priority: "High",
-    status: "Approval Preparation",
+    status: "In Progress",
     raised_by_id: employee.id,
     raised_by_name: "Emma Employee",
     raised_for_name: "Emma Employee",
@@ -5574,7 +5801,8 @@ async function seedDb(db) {
   ];
   const adminTickets = [];
   const adminHist = [];
-  for (const [title, cat, prio, status] of ADMIN_TICKET_SEED) {
+  for (const [title, cat, prio, statusRaw] of ADMIN_TICKET_SEED) {
+    const status = mapStatus(statusRaw);
     const id = uuidv4();
     const hid = await humanId(db, "ADM");
     const createdAt = new Date(
@@ -5612,7 +5840,7 @@ async function seedDb(db) {
       updated_at: resolvedAt,
       first_response_at: ackAt,
       resolution:
-        status === "Resolved"
+        status === "Closed"
           ? {
               summary: "Handled",
               action_taken: "Resolved by admin team",
@@ -5636,17 +5864,17 @@ async function seedDb(db) {
       id: uuidv4(),
       ticket_id: id,
       type: "status",
-      to: "Acknowledged",
+      to: "In Progress",
       by_name: admin.name,
       by_role: "admin",
       created_at: ackAt,
     });
-    if (status === "Resolved")
+    if (status === "Closed")
       adminHist.push({
         id: uuidv4(),
         ticket_id: id,
         type: "status",
-        to: "Resolved",
+        to: "Closed",
         by_name: admin.name,
         by_role: "admin",
         created_at: resolvedAt,
@@ -6485,6 +6713,9 @@ async function handleRoute(request, { params }) {
       email: sessionUser.email,
       role: sessionUser.role,
       department: sessionUser.department,
+      // Lets the raise-ticket form resolve the raiser's own issued laptop when
+      // they are the affected employee.
+      employee_id: sessionUser.employee_id || "",
       location: loginSite(tokenSession.login_site, sessionUser),
       is_team_head: Boolean(sessionUser.is_team_head),
       managed_locations: sessionUser.managed_locations || [],
@@ -6799,8 +7030,312 @@ async function handleRoute(request, { params }) {
       const cats = await db.collection("categories").find(q).toArray();
       return json(clean(cats));
     }
+    // Ticket categories are managed in-app by Super Admin (either department)
+    // and by a team head for their own department. Seeded categories are
+    // protected: ensureCategories would re-create them on the next boot, so
+    // only categories added here can be removed again.
+    if (route === "/categories" && method === "POST") {
+      const categoryTeamHead =
+        ["it", "admin"].includes(session.role) && sessionUser?.is_team_head;
+      if (session.role !== "super_admin" && !categoryTeamHead)
+        return json({ error: "Forbidden" }, 403);
+      const b = await request.json();
+      const ownDepartment = session.role === "admin" ? "Admin" : "IT";
+      const department =
+        session.role === "super_admin" ? b.department || "IT" : ownDepartment;
+      if (!["IT", "Admin"].includes(department))
+        return json({ error: "Invalid department" }, 400);
+      const name = textValue(b.name, 100);
+      if (!name) return json({ error: "Category name is required" }, 400);
+      // Case-insensitive duplicate check within the department.
+      const existing = await db
+        .collection("categories")
+        .find({ department })
+        .toArray();
+      if (
+        existing.some(
+          (category) =>
+            String(category.name).toLowerCase() === name.toLowerCase(),
+        )
+      )
+        return json(
+          { error: `"${name}" already exists in ${department}` },
+          409,
+        );
+      const doc = {
+        id: uuidv4(),
+        department,
+        name,
+        custom: true,
+        created_by: session.name,
+        created_at: new Date(),
+      };
+      await db.collection("categories").insertOne(doc);
+      await audit(db, session, "category.create", "category", doc.id, {
+        department,
+        name,
+      });
+      return json(clean(doc));
+    }
+
+    if (seg[0] === "categories" && seg[1] && method === "DELETE") {
+      const categoryTeamHead =
+        ["it", "admin"].includes(session.role) && sessionUser?.is_team_head;
+      if (session.role !== "super_admin" && !categoryTeamHead)
+        return json({ error: "Forbidden" }, 403);
+      const category = await db
+        .collection("categories")
+        .findOne({ id: seg[1] });
+      if (!category) return json({ error: "Category not found" }, 404);
+      if (session.role !== "super_admin") {
+        const ownDepartment = session.role === "admin" ? "Admin" : "IT";
+        if (category.department !== ownDepartment)
+          return json(
+            { error: "You can only manage your own department's categories" },
+            403,
+          );
+      }
+      const standardForDepartment =
+        CATEGORIES_BY_DEPARTMENT[category.department] || [];
+      if (standardForDepartment.includes(category.name))
+        return json(
+          {
+            error: `"${category.name}" is a standard category and cannot be removed`,
+          },
+          400,
+        );
+      // Refuse to strand tickets that already use this category.
+      const inUse = await db
+        .collection("tickets")
+        .countDocuments({ department: category.department, category: category.name });
+      if (inUse)
+        return json(
+          {
+            error: `${inUse} ticket${inUse === 1 ? "" : "s"} already use "${category.name}", so it cannot be removed`,
+          },
+          409,
+        );
+      await db.collection("categories").deleteOne({ id: seg[1] });
+      await audit(db, session, "category.delete", "category", seg[1], {
+        department: category.department,
+        name: category.name,
+      });
+      return json({ ok: true });
+    }
+
     if (route === "/locations" && method === "GET") {
       return json(clean(await db.collection("locations").find({}).toArray()));
+    }
+
+    // ---- LAPTOP ASSET LOOKUP ----
+    // Used by the raise-ticket forms to map an entered serial number or GRP
+    // code to the issued laptop and its vendor. Available to every signed-in
+    // role: employees also raise laptop tickets.
+    if (route === "/assets/laptops" && method === "GET") {
+      await ensureLaptopAssets(db);
+      const url = new URL(request.url);
+      const query = textValue(url.searchParams.get("query"), 120);
+      if (!query) return json({ items: [], total: 0 });
+      const serial = normalizedSerial(query);
+      const code = normalizedEmployeeCode(query);
+      const rx = new RegExp(
+        query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        "i",
+      );
+      const items = await db
+        .collection("laptop_assets")
+        .find({
+          $or: [
+            { serial_number: serial },
+            { employee_code: code },
+            { serial_number: rx },
+            { employee_code: rx },
+            { email: rx },
+            { name: rx },
+          ],
+        })
+        .limit(10)
+        .toArray();
+      // Exact serial/GRP hits first so the form can auto-select confidently.
+      items.sort((a, b) => {
+        const exact = (asset) =>
+          asset.serial_number === serial || asset.employee_code === code ? 0 : 1;
+        return exact(a) - exact(b);
+      });
+      // Analysis for the best match, so the raise-ticket form can show the
+      // machine's own history and its vendor's record before the ticket is
+      // filed. Available to every signed-in role: employees raise laptop
+      // tickets too, and a repeat fault is worth seeing at the point of entry.
+      const match = items[0] || null;
+      let analysis = null;
+      if (match) {
+        const DONE_STATUSES = ["Resolved", "Closed", "Cancelled"];
+        const [assetTickets, vendorTickets, vendorFleet] = await Promise.all([
+          db
+            .collection("tickets")
+            .find({ asset_serial_number: match.serial_number })
+            .sort({ created_at: -1 })
+            .toArray(),
+          match.vendor
+            ? db.collection("tickets").find({ asset_vendor: match.vendor }).toArray()
+            : Promise.resolve([]),
+          match.vendor
+            ? db.collection("laptop_assets").countDocuments({ vendor: match.vendor })
+            : Promise.resolve(0),
+        ]);
+        const openOf = (rows) =>
+          rows.filter((ticket) => !DONE_STATUSES.includes(ticket.status)).length;
+        analysis = {
+          serial_number: match.serial_number,
+          vendor: match.vendor || null,
+          brand: match.brand || null,
+          laptop: {
+            tickets_total: assetTickets.length,
+            tickets_open: openOf(assetTickets),
+            last_issue_at: assetTickets[0]?.created_at || null,
+            recent: assetTickets.slice(0, 3).map((ticket) => ({
+              id: ticket.id,
+              human_id: ticket.human_id,
+              title: ticket.title,
+              status: ticket.status,
+              category: ticket.category,
+              created_at: ticket.created_at,
+            })),
+          },
+          vendor_summary: match.vendor
+            ? {
+                fleet_size: vendorFleet,
+                tickets_total: vendorTickets.length,
+                tickets_open: openOf(vendorTickets),
+                issue_rate_per_100: vendorFleet
+                  ? Math.round((vendorTickets.length / vendorFleet) * 10000) / 100
+                  : null,
+              }
+            : null,
+        };
+      }
+      return json({ items: clean(items), total: items.length, analysis: clean(analysis) });
+    }
+
+    // ---- VENDOR ANALYSIS ----
+    // Aggregates laptop-mapped tickets by issuing vendor so IT, Admin, and
+    // Super Admin can see which vendor's laptops raise the most issues.
+    if (route === "/reports/vendor-analysis" && method === "GET") {
+      if (!["it", "admin", "super_admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      await ensureLaptopAssets(db);
+      const assets = await db.collection("laptop_assets").find({}).toArray();
+      const tickets = await db
+        .collection("tickets")
+        .find({ asset_serial_number: { $exists: true, $ne: null } })
+        .sort({ created_at: -1 })
+        .toArray();
+      const DONE_STATUSES = new Set(["Resolved", "Closed", "Cancelled"]);
+      const vendors = new Map();
+      const vendorEntry = (name) => {
+        if (!vendors.has(name))
+          vendors.set(name, {
+            vendor: name,
+            fleet_size: 0,
+            brands: {},
+            platforms: {},
+            tickets_total: 0,
+            tickets_open: 0,
+            tickets_closed: 0,
+            tickets_overdue: 0,
+            by_category: {},
+            by_priority: {},
+            by_status: {},
+            resolution_days: [],
+            recent_tickets: [],
+          });
+        return vendors.get(name);
+      };
+      for (const asset of assets) {
+        const entry = vendorEntry(asset.vendor || "Unknown");
+        entry.fleet_size += 1;
+        if (asset.brand)
+          entry.brands[asset.brand] = (entry.brands[asset.brand] || 0) + 1;
+        if (asset.platform)
+          entry.platforms[asset.platform] =
+            (entry.platforms[asset.platform] || 0) + 1;
+      }
+      let unmatchedTickets = 0;
+      for (const ticket of tickets) {
+        if (!ticket.asset_vendor) {
+          unmatchedTickets += 1;
+          continue;
+        }
+        const entry = vendorEntry(ticket.asset_vendor);
+        entry.tickets_total += 1;
+        const resolvedAt = ticket.resolved_at || ticket.resolution?.resolved_date;
+        if (DONE_STATUSES.has(ticket.status)) entry.tickets_closed += 1;
+        else {
+          entry.tickets_open += 1;
+          if (
+            ticket.sla_resolution_due &&
+            new Date(ticket.sla_resolution_due).getTime() < Date.now()
+          )
+            entry.tickets_overdue += 1;
+        }
+        if (resolvedAt && ticket.created_at)
+          entry.resolution_days.push(
+            (new Date(resolvedAt) - new Date(ticket.created_at)) / 86400000,
+          );
+        if (ticket.category)
+          entry.by_category[ticket.category] =
+            (entry.by_category[ticket.category] || 0) + 1;
+        if (ticket.priority)
+          entry.by_priority[ticket.priority] =
+            (entry.by_priority[ticket.priority] || 0) + 1;
+        if (ticket.status)
+          entry.by_status[ticket.status] =
+            (entry.by_status[ticket.status] || 0) + 1;
+        // The vendor drill-down lists tickets in full, so keep a workable
+        // page of them rather than a six-row preview.
+        if (entry.recent_tickets.length < 60)
+          entry.recent_tickets.push({
+            id: ticket.id,
+            human_id: ticket.human_id,
+            title: ticket.title,
+            status: ticket.status,
+            priority: ticket.priority,
+            category: ticket.category,
+            created_at: ticket.created_at,
+            resolved_at: resolvedAt || null,
+            sla_resolution_due: ticket.sla_resolution_due || null,
+            asset_serial_number: ticket.asset_serial_number,
+            asset_brand: ticket.asset_brand,
+            issue_user_name: ticket.issue_user_name,
+          });
+      }
+      const rows = [...vendors.values()].map(({ resolution_days, ...entry }) => ({
+        ...entry,
+        issue_rate_per_100: entry.fleet_size
+          ? Math.round((entry.tickets_total / entry.fleet_size) * 10000) / 100
+          : null,
+        // Two decimals so same-day fixes stay expressible in hours.
+        avg_resolution_days: resolution_days.length
+          ? Math.round(
+              (resolution_days.reduce((sum, value) => sum + value, 0) /
+                resolution_days.length) *
+                100,
+            ) / 100
+          : null,
+      }));
+      rows.sort((a, b) => b.tickets_total - a.tickets_total || b.fleet_size - a.fleet_size);
+      const mappedTickets = tickets.length - unmatchedTickets;
+      return json({
+        vendors: clean(rows),
+        totals: {
+          fleet_size: assets.length,
+          mapped_tickets: mappedTickets,
+          open_tickets: rows.reduce((sum, row) => sum + row.tickets_open, 0),
+          unmatched_tickets: unmatchedTickets,
+          top_vendor: rows.find((row) => row.tickets_total > 0)?.vendor || null,
+        },
+        generated_at: new Date(),
+      });
     }
 
     if (route === "/firewall/overview" && method === "GET") {
@@ -7953,6 +8488,18 @@ async function handleRoute(request, { params }) {
       const tickets = await db.collection("tickets").find(filter).toArray();
       const count = (f) => tickets.filter(f).length;
       const now = Date.now();
+      // Approval state lives on approval records, not the ticket status.
+      const pendingApprovalIds = new Set(
+        (
+          await db
+            .collection("approvals")
+            .find(
+              { status: "Pending", ticket_id: { $in: tickets.map((t) => t.id) } },
+              { projection: { ticket_id: 1 } },
+            )
+            .toArray()
+        ).map((approval) => approval.ticket_id),
+      );
       // SLA timings
       const respTimes = [],
         resTimes = [];
@@ -8018,11 +8565,16 @@ async function handleRoute(request, { params }) {
             !t.assignee_id &&
             !TERMINAL_TICKET_STATUSES.includes(t.status),
         ),
-        assigned: count((t) => t.status === "Assigned"),
+        assigned: count(
+          (t) =>
+            Boolean(t.assignee_id) && !TERMINAL_TICKET_STATUSES.includes(t.status),
+        ),
         in_progress: count((t) => t.status === "In Progress"),
         pending_user: count((t) => t.status === "Pending User Response"),
         pending_approval: count(
-          (t) => t.status === "Pending Super Admin Approval",
+          (t) =>
+            pendingApprovalIds.has(t.id) &&
+            !TERMINAL_TICKET_STATUSES.includes(t.status),
         ),
         clarification: count((t) => t.status === "Clarification Required"),
         approved_ready: count(
@@ -8111,9 +8663,15 @@ async function handleRoute(request, { params }) {
 
     // ---- REPORTS: member SLA ----
     if (route === "/reports/member-sla" && method === "GET") {
-      if (session.role !== "super_admin")
+      const isTeamHead =
+        ["it", "admin"].includes(session.role) && sessionUser?.is_team_head;
+      if (session.role !== "super_admin" && !isTeamHead)
         return json({ error: "Forbidden" }, 403);
-      const dept = new URL(request.url).searchParams.get("department") || "IT";
+      // A team head is scoped to their own department whatever they ask for.
+      const ownDepartment = session.role === "admin" ? "Admin" : "IT";
+      const dept = isTeamHead
+        ? ownDepartment
+        : new URL(request.url).searchParams.get("department") || "IT";
       const role = dept === "Admin" ? "admin" : "it";
       const members = await db
         .collection("users")
@@ -8162,8 +8720,12 @@ async function handleRoute(request, { params }) {
             res.push(
               workingHoursBetween(t.raised_at || t.created_at, resolvedAt),
             );
-            if (t.work_started_at)
-              work.push(workingHoursBetween(t.work_started_at, resolvedAt));
+            // Fall back to acknowledgement/first response so active time is
+            // measured on every resolved ticket, not just the minority that
+            // recorded an explicit work_started_at.
+            const workFrom = t.work_started_at || responseAt;
+            if (workFrom)
+              work.push(workingHoursBetween(workFrom, resolvedAt));
             resolvedCount++;
             if (
               t.sla_resolution_due &&
@@ -8355,6 +8917,7 @@ async function handleRoute(request, { params }) {
           { issue_user_name: rx },
           { issue_user_email: rx },
           { issue_user_employee_code: rx },
+          { asset_serial_number: rx },
         ];
         if (filter.$or) {
           const visibilityFilter = filter.$or;
@@ -8371,8 +8934,11 @@ async function handleRoute(request, { params }) {
       const parsedPage = Number.parseInt(p.get("page") || "1", 10);
       const parsedLimit = Number.parseInt(p.get("limit") || "15", 10);
       const page = Number.isFinite(parsedPage) ? Math.max(1, parsedPage) : 1;
+      // The team boards and dashboards load a department in one page. A 200
+      // cap silently truncated the oldest tickets — including allocated,
+      // still-active ones — so they vanished from every member's view.
       const limit = Number.isFinite(parsedLimit)
-        ? Math.min(200, Math.max(1, parsedLimit))
+        ? Math.min(1000, Math.max(1, parsedLimit))
         : 15;
       const total = await db.collection("tickets").countDocuments(filter);
       const items = await db
@@ -8396,6 +8962,16 @@ async function handleRoute(request, { params }) {
       const department = b.department || "IT";
       if (!["IT", "Admin"].includes(department))
         return json({ error: "Invalid department" }, 400);
+      // IT and Admin members raise only within their own department.
+      const ownDepartment =
+        session.role === "it" ? "IT" : session.role === "admin" ? "Admin" : null;
+      if (ownDepartment && department !== ownDepartment)
+        return json(
+          {
+            error: `You can raise tickets for the ${ownDepartment} department only`,
+          },
+          403,
+        );
       const title = textValue(b.title, 200);
       const description = textValue(b.description, 10000);
       if (!title || !description)
@@ -8492,8 +9068,13 @@ async function handleRoute(request, { params }) {
         (session.role === "employee"
           ? session.email
           : textValue(b.email, 254).toLowerCase() || session.email);
+      // Affected-employee details are optional throughout. A GRP code, when
+      // given, resolves the issued laptop and its vendor; when the raiser is
+      // the subject, it comes from their own profile.
       const issueEmployeeCode =
-        issueUser?.employee_id || textValue(b.employee_id, 50);
+        issueUser?.employee_id ||
+        textValue(b.employee_id, 50) ||
+        (hasExplicitIssueUser ? "" : textValue(sessionUser.employee_id, 50));
       const explicitLocation = textValue(b.location, 150);
       if (explicitLocation) {
         const validLocation = await db
@@ -8536,6 +9117,20 @@ async function handleRoute(request, { params }) {
         statusTimestamps.assigned = now;
         statusTimestamps.acknowledged = now;
       }
+      // Laptop/vendor mapping: an explicitly entered serial number always maps
+      // the ticket to a laptop; for laptop-related categories the affected
+      // member's GRP code or email resolves the issued laptop automatically.
+      const enteredSerial = textValue(b.asset_serial_number, 100);
+      let laptopFields = {};
+      if (enteredSerial || isLaptopCategory(category)) {
+        await ensureLaptopAssets(db);
+        const { asset, matchedBy } = await findLaptopAsset(db, {
+          serial: enteredSerial,
+          employeeCode: issueEmployeeCode,
+          email: issueUserEmail,
+        });
+        laptopFields = laptopTicketFields(asset, matchedBy, enteredSerial);
+      }
       const t = {
         id,
         human_id: hid,
@@ -8546,7 +9141,10 @@ async function handleRoute(request, { params }) {
         title,
         description,
         priority,
-        status: effectiveAssignee ? "Assigned" : "Open",
+        // Every ticket starts in Open. Assigning it moves it out of the
+        // Unallocated queue but does not start work; a member moving it to
+        // In Progress is what stamps work_started_at and begins active time.
+        status: "Open",
         raised_by_id: session.id,
         raised_by_name: session.name,
         raised_for_name: issueUserName,
@@ -8579,6 +9177,7 @@ async function handleRoute(request, { params }) {
         response_working_minutes: effectiveAssignee ? 0 : null,
         status_timestamps: statusTimestamps,
         attachments: pendingTicketAttachments.map(attachmentSummary),
+        ...laptopFields,
         approval_required: false,
         legacy_id: null,
         ...slaDates(department, priority, now),
@@ -8827,7 +9426,8 @@ async function handleRoute(request, { params }) {
           set.queue_state = u ? "assigned" : "pending";
           if ((ticket.assignee_id || null) !== (u?.id || null)) {
             if (u) {
-              if (ticket.status === "Open") set.status = "Assigned";
+              // Assignment alone does not start the clock: the ticket stays
+              // Open until a member moves it to In Progress.
               if (!ticket.assigned_at) set.assigned_at = now;
               set.last_assigned_at = now;
               set.assigned_by_id = session.id;
@@ -8957,7 +9557,7 @@ async function handleRoute(request, { params }) {
           if (!STATUSES.includes(b.status))
             return json({ error: "Invalid status" }, 400);
           // block execution before approval
-          const executionStatuses = ["In Progress", "Resolved"];
+          const executionStatuses = ["In Progress", "Closed"];
           if (
             ticket.approval_required &&
             executionStatuses.includes(b.status)
@@ -8985,32 +9585,20 @@ async function handleRoute(request, { params }) {
               403,
             );
           if (
-            ["In Progress", "Resolved"].includes(b.status) &&
+            ["In Progress", "Closed"].includes(b.status) &&
             !effectiveAssignee
           )
             return json(
-              { error: "Assign the ticket before starting or resolving it" },
+              { error: "Assign the ticket before starting or closing it" },
               400,
             );
-          if (b.status === "Closed" && acknowledgementRequired)
-            return json(
-              {
-                error:
-                  "The affected employee must acknowledge the resolution before this ticket can close",
-              },
-              409,
-            );
-          const effectiveStatus =
-            b.status === "Resolved" && !acknowledgementRequired
-              ? "Closed"
-              : b.status;
+          const effectiveStatus = b.status;
           set.status = effectiveStatus;
           const statusKey = b.status
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, "_")
             .replace(/^_|_$/g, "");
           set[`status_timestamps.${statusKey}`] = now;
-          if (b.status === "Acknowledged") markAcknowledged();
           if (b.status === "In Progress") {
             markAcknowledged();
             if (!ticket.work_started_at) {
@@ -9020,11 +9608,8 @@ async function handleRoute(request, { params }) {
             }
             lifecycleChanged = true;
           }
-          if (b.status === "Resolved") {
-            markResolved();
-            if (!acknowledgementRequired) markClosed({ automatic: true });
-          }
           if (b.status === "Closed") {
+            markResolved();
             markClosed();
           }
           await addHistory(
@@ -9072,12 +9657,12 @@ async function handleRoute(request, { params }) {
             resolved_by: session.name,
             resolved_date: now,
           };
-          const finalStatus = acknowledgementRequired ? "Resolved" : "Closed";
+          const finalStatus = "Closed";
           set.status = finalStatus;
           markAcknowledged();
           markResolved();
-          if (!acknowledgementRequired) markClosed({ automatic: true });
-          if (b.status !== "Resolved")
+          markClosed({ automatic: true });
+          if (b.status !== "Closed")
             await addHistory(
               db,
               ticketId,
@@ -9090,9 +9675,7 @@ async function handleRoute(request, { params }) {
           await notify(
             db,
             requesterId(ticket),
-            acknowledgementRequired
-              ? `Ticket ${ticket.human_id} resolved - please confirm`
-              : `Ticket ${ticket.human_id} resolved and closed`,
+            `Ticket ${ticket.human_id} resolved and closed`,
             ticket,
           );
         }
@@ -9385,7 +9968,7 @@ async function handleRoute(request, { params }) {
           { id: ticketId },
           {
             $set: {
-              status: "Pending Super Admin Approval",
+              status: "In Progress",
               approval_required: true,
               "status_timestamps.pending_super_admin_approval": approvalNow,
               updated_at: approvalNow,
@@ -9444,15 +10027,14 @@ async function handleRoute(request, { params }) {
         const remarksRequired = ["partial", "reject", "hold", "clarify"];
         if (remarksRequired.includes(decision) && !b.remarks)
           return json({ error: "Remarks required" }, 400);
+        // Ticket status stays within the standard set; the approval outcome
+        // itself lives on the approval record shown alongside the ticket.
         const map = {
-          approve: { appr: "Approved", ticket: "Approved - Ready for Action" },
-          partial: {
-            appr: "Partially Approved",
-            ticket: "Approved - Ready for Action",
-          },
-          reject: { appr: "Rejected", ticket: "Approval Rejected" },
-          hold: { appr: "On Hold", ticket: "Approval On Hold" },
-          clarify: { appr: "Clarification", ticket: "Clarification Required" },
+          approve: { appr: "Approved", ticket: "In Progress" },
+          partial: { appr: "Partially Approved", ticket: "In Progress" },
+          reject: { appr: "Rejected", ticket: "In Progress" },
+          hold: { appr: "On Hold", ticket: "In Progress" },
+          clarify: { appr: "Clarification", ticket: "In Progress" },
         };
         const m = map[decision];
         if (!m) return json({ error: "Invalid decision" }, 400);
@@ -9705,7 +10287,7 @@ async function handleRoute(request, { params }) {
         title: `Checklist issue: ${b.item}`,
         description: b.remarks || "",
         priority: b.priority || "Medium",
-        status: "Open",
+        status: "In Progress",
         raised_by_id: session.id,
         raised_by_name: session.name,
         raised_for_name: session.name,
@@ -10020,6 +10602,67 @@ async function handleRoute(request, { params }) {
         late,
       });
     }
+    // Super Admin edits an existing member KRA: title, schedule, location and
+    // the task list itself. Mirrors the create route's validation.
+    if (seg[0] === "member-checklists" && seg[1] && method === "PATCH") {
+      if (session.role !== "super_admin")
+        return json({ error: "Forbidden" }, 403);
+      const existing = await db
+        .collection("member_checklists")
+        .findOne({ id: seg[1] });
+      if (!existing) return json({ error: "Checklist not found" }, 404);
+      const b = await request.json();
+      const set = { updated_at: new Date(), updated_by: session.name };
+
+      if (b.title !== undefined) {
+        const title = textValue(b.title, 200);
+        if (!title) return json({ error: "Title is required" }, 400);
+        set.title = title;
+      }
+      if (b.items !== undefined) {
+        if (!Array.isArray(b.items))
+          return json({ error: "Add at least one daily work item" }, 400);
+        const items = b.items
+          .filter(Boolean)
+          .slice(0, 200)
+          .map((label, i) => ({ key: `mc_${i}`, label: textValue(label, 300) }))
+          .filter((item) => item.label);
+        if (!items.length)
+          return json({ error: "Add at least one daily work item" }, 400);
+        set.items = items;
+      }
+      if (b.frequency !== undefined || b.repeat !== undefined)
+        set.frequency =
+          String(b.frequency || b.repeat || "Daily").toLowerCase() ===
+          "weekdays"
+            ? "Weekdays"
+            : "Daily";
+      if (b.location !== undefined) set.location = textValue(b.location, 150);
+      if (typeof b.active === "boolean") set.active = b.active;
+
+      await db
+        .collection("member_checklists")
+        .updateOne({ id: seg[1] }, { $set: set });
+      const updated = await db
+        .collection("member_checklists")
+        .findOne({ id: seg[1] });
+      await audit(
+        db,
+        session,
+        "member_checklist.update",
+        "member_checklist",
+        seg[1],
+        { member: existing.member_name, title: updated.title },
+      );
+      await notify(
+        db,
+        existing.member_id,
+        `Your daily checklist was updated: ${updated.title}`,
+        null,
+      );
+      return json(clean(updated));
+    }
+
     if (seg[0] === "member-checklists" && seg[1] && method === "DELETE") {
       if (session.role !== "super_admin")
         return json({ error: "Forbidden" }, 403);
@@ -10161,13 +10804,86 @@ async function handleRoute(request, { params }) {
     if (route === "/audit" && method === "GET") {
       if (session.role !== "super_admin")
         return json({ error: "Forbidden" }, 403);
+      const p = new URL(request.url).searchParams;
+      const filter = {};
+      if (p.get("action")) filter.action = p.get("action");
+      if (p.get("entity")) filter.entity = p.get("entity");
+      if (p.get("actor_id")) filter.actor_id = p.get("actor_id");
+      if (p.get("actor_role")) filter.actor_role = p.get("actor_role");
+      const from = p.get("from");
+      const to = p.get("to");
+      if (from || to) {
+        filter.created_at = {};
+        if (from) filter.created_at.$gte = new Date(`${from}T00:00:00`);
+        if (to) filter.created_at.$lte = new Date(`${to}T23:59:59.999`);
+      }
+      const search = textValue(p.get("search"), 120);
+      if (search) {
+        const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+        filter.$or = [
+          { actor_name: rx },
+          { action: rx },
+          { entity: rx },
+          { entity_id: rx },
+          { "details.human_id": rx },
+        ];
+      }
+      const parsedLimit = Number.parseInt(p.get("limit") || "300", 10);
+      const limit = Number.isFinite(parsedLimit)
+        ? Math.min(1000, Math.max(1, parsedLimit))
+        : 300;
       const items = await db
+        .collection("audit_logs")
+        .find(filter)
+        .sort({ created_at: -1 })
+        .limit(limit)
+        .toArray();
+      // Ticket rows link straight to the ticket, so resolve the readable id
+      // for entries whose details did not record one.
+      const missingTicketIds = [
+        ...new Set(
+          items
+            .filter(
+              (item) => item.entity === "ticket" && item.entity_id && !item.details?.human_id,
+            )
+            .map((item) => item.entity_id),
+        ),
+      ];
+      const ticketNames = new Map();
+      if (missingTicketIds.length) {
+        const referenced = await db
+          .collection("tickets")
+          .find({ id: { $in: missingTicketIds } })
+          .toArray();
+        for (const ticket of referenced)
+          ticketNames.set(ticket.id, ticket.human_id);
+      }
+      const rows = items.map((item) => ({
+        ...item,
+        ticket_id: item.entity === "ticket" ? item.entity_id || null : null,
+        ticket_human_id:
+          item.entity === "ticket"
+            ? item.details?.human_id || ticketNames.get(item.entity_id) || null
+            : null,
+      }));
+      // Filter options come from the whole collection, not the filtered rows,
+      // so narrowing one filter never empties the others.
+      const optionSource = await db
         .collection("audit_logs")
         .find({})
         .sort({ created_at: -1 })
-        .limit(300)
+        .limit(5000)
         .toArray();
-      return json(clean(items));
+      const uniqueSorted = (key) =>
+        [...new Set(optionSource.map((item) => item[key]).filter(Boolean))].sort();
+      return json({
+        items: clean(rows),
+        filters: {
+          actions: uniqueSorted("action"),
+          entities: uniqueSorted("entity"),
+          actors: uniqueSorted("actor_name"),
+        },
+      });
     }
 
     return json({ error: `Route ${route} not found` }, 404);

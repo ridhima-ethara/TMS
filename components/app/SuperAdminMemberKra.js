@@ -38,6 +38,7 @@ import {
   Copy,
   FileSpreadsheet,
   Loader2,
+  Pencil,
   Plus,
   Trash2,
   X,
@@ -189,7 +190,7 @@ function Streak({ list, submissions }) {
   );
 }
 
-function KraCard({ list, member, submissions, onDelete, onDuplicate }) {
+function KraCard({ list, member, submissions, onEdit, onDelete, onDuplicate }) {
   const todaySubmission = submissions.find(
     (submission) =>
       submission.checklist_id === list.id &&
@@ -222,6 +223,15 @@ function KraCard({ list, member, submissions, onDelete, onDuplicate }) {
         >
           {status}
         </span>
+        <Button
+          variant="outline"
+          size="icon"
+          className="h-8 w-8"
+          title="Edit checklist"
+          onClick={() => onEdit(list)}
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </Button>
         <Button
           variant="outline"
           size="icon"
@@ -269,6 +279,205 @@ function KraCard({ list, member, submissions, onDelete, onDuplicate }) {
         </span>
       </div>
     </Card>
+  );
+}
+
+// Super Admin edits an existing member KRA. The member it belongs to is fixed
+// here — reassigning would be a different checklist, so only the title,
+// schedule, location and task list are editable.
+function EditChecklist({ list, locations, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    title: list?.title || "",
+    items: (list?.items || []).map((item) => item.label),
+    repeat: list?.frequency || "Daily",
+    location: list?.location || "",
+    active: list?.active !== false,
+  });
+  const [newTask, setNewTask] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const addTask = () => {
+    const label = newTask.trim();
+    if (!label) return;
+    setForm((current) => ({ ...current, items: [...current.items, label] }));
+    setNewTask("");
+  };
+  const updateTask = (index, value) =>
+    setForm((current) => ({
+      ...current,
+      items: current.items.map((item, i) => (i === index ? value : item)),
+    }));
+  const removeTask = (index) =>
+    setForm((current) => ({
+      ...current,
+      items: current.items.filter((_, i) => i !== index),
+    }));
+
+  const save = async () => {
+    const items = form.items.map((item) => item.trim()).filter(Boolean);
+    if (!form.title.trim()) return toast.error("Title is required");
+    if (!items.length) return toast.error("Add at least one daily work item");
+    setBusy(true);
+    try {
+      await api(`/member-checklists/${list.id}`, {
+        method: "PATCH",
+        body: {
+          title: form.title.trim(),
+          items,
+          frequency: form.repeat,
+          location: form.location,
+          active: form.active,
+        },
+      });
+      toast.success(`Updated ${list.member_name}'s KRA`);
+      onSaved();
+      onClose();
+    } catch (error) {
+      toast.error(error.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={Boolean(list)} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="max-h-[calc(100dvh-1rem)] max-w-[640px] overflow-y-auto rounded-2xl sm:max-h-[92vh]">
+        <DialogHeader>
+          <DialogTitle className="text-xl font-bold">
+            Edit daily KRA
+          </DialogTitle>
+          <p className="mt-1 text-sm text-[#9CA3AF]">
+            {list?.member_name} ·{" "}
+            {list?.member_role === "it" ? "IT team" : "Admin team"}
+          </p>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div>
+            <Label className="text-xs">Checklist title</Label>
+            <Input
+              className="mt-1 h-11"
+              value={form.title}
+              onChange={(event) =>
+                setForm({ ...form, title: event.target.value })
+              }
+              placeholder="Daily Checklist"
+            />
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Label className="text-xs">Repeats</Label>
+              <Select
+                value={form.repeat}
+                onValueChange={(value) => setForm({ ...form, repeat: value })}
+              >
+                <SelectTrigger className="mt-1 h-11">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Daily">Daily</SelectItem>
+                  <SelectItem value="Weekdays">Weekdays</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Location</Label>
+              <Select
+                value={form.location || "none"}
+                onValueChange={(value) =>
+                  setForm({ ...form, location: value === "none" ? "" : value })
+                }
+              >
+                <SelectTrigger className="mt-1 h-11">
+                  <SelectValue placeholder="Not set" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Not set</SelectItem>
+                  {locations.map((location) => (
+                    <SelectItem key={location.name} value={location.name}>
+                      {location.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-baseline justify-between">
+              <Label className="text-xs">
+                Daily tasks{" "}
+                <span className="text-[#9CA3AF]">({form.items.length})</span>
+              </Label>
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, active: !form.active })}
+                className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${form.active ? "bg-[#E4F5EE] text-[#0E6B47]" : "bg-[#EDF0F4] text-[#6B7280]"}`}
+              >
+                {form.active ? "Active" : "Paused"}
+              </button>
+            </div>
+            <div className="mt-2 space-y-2">
+              {form.items.map((item, index) => (
+                <div key={index} className="flex items-center gap-2">
+                  <Input
+                    className="h-10"
+                    value={item}
+                    onChange={(event) => updateTask(index, event.target.value)}
+                  />
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-10 w-10 shrink-0 text-red-600"
+                    title="Remove task"
+                    onClick={() => removeTask(index)}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+              {!form.items.length && (
+                <p className="rounded-lg bg-[#FAFBFC] px-3 py-4 text-center text-xs text-[#9CA3AF]">
+                  No tasks yet — add at least one below.
+                </p>
+              )}
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <Input
+                className="h-10"
+                value={newTask}
+                onChange={(event) => setNewTask(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addTask();
+                  }
+                }}
+                placeholder="Add a daily task and press Enter"
+              />
+              <Button
+                variant="outline"
+                className="h-10 shrink-0"
+                onClick={addTask}
+              >
+                <Plus className="mr-1 h-4 w-4" />
+                Add
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={save} disabled={busy}>
+            {busy ? "Saving…" : "Save changes"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -605,6 +814,7 @@ export default function SuperAdminMemberKra() {
   const [submissions, setSubmissions] = useState([]);
   const [mode, setMode] = useState("define");
   const [team, setTeam] = useState("all");
+  const [editing, setEditing] = useState(null);
   const load = () =>
     Promise.all([
       api("/users"),
@@ -736,6 +946,7 @@ export default function SuperAdminMemberKra() {
                         (member) => member.id === list.member_id,
                       )}
                       submissions={submissions}
+                      onEdit={setEditing}
                       onDelete={del}
                       onDuplicate={duplicate}
                     />
@@ -802,6 +1013,14 @@ export default function SuperAdminMemberKra() {
             </Table>
           </div>
         </Card>
+      )}
+      {editing && (
+        <EditChecklist
+          list={editing}
+          locations={locations}
+          onClose={() => setEditing(null)}
+          onSaved={load}
+        />
       )}
     </div>
   );

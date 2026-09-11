@@ -55,32 +55,16 @@ import {
   UserRound,
 } from "lucide-react";
 
+// "Resolved" is a legacy status kept only so historical tickets still land
+// in the closed bucket; new tickets use Open / In Progress / Closed / Cancelled.
 const EMPLOYEE_DONE_STATUSES = ["Resolved", "Closed", "Cancelled"];
-const EMPLOYEE_WAITING_STATUSES = [
-  "Approval Preparation",
-  "Pending Super Admin Approval",
-  "Clarification Required",
-  "Approval On Hold",
-  "Approval Rejected",
-  "Pending User Response",
-  "Pending Vendor",
-  "Pending Finance",
-  "Pending Material",
-  "On Hold",
-];
 
 const EMPLOYEE_KANBAN_COLUMNS = [
   {
     key: "raised",
-    label: "Raised / Pending",
+    label: "Open",
     color: "#6C5CE7",
     soft: "bg-[#F5F2FF]",
-  },
-  {
-    key: "assigned",
-    label: "Assigned",
-    color: "#2E7CD6",
-    soft: "bg-[#EEF5FD]",
   },
   {
     key: "progress",
@@ -89,14 +73,8 @@ const EMPLOYEE_KANBAN_COLUMNS = [
     soft: "bg-[#FFF8EA]",
   },
   {
-    key: "waiting",
-    label: "Waiting / Approval",
-    color: "#9B59B6",
-    soft: "bg-[#FAF3FC]",
-  },
-  {
     key: "done",
-    label: "Resolved / Closed",
+    label: "Closed",
     color: "#1E9E6A",
     soft: "bg-[#EFFAF5]",
   },
@@ -104,14 +82,7 @@ const EMPLOYEE_KANBAN_COLUMNS = [
 
 function employeeTicketStage(ticket) {
   if (EMPLOYEE_DONE_STATUSES.includes(ticket.status)) return "done";
-  if (EMPLOYEE_WAITING_STATUSES.includes(ticket.status)) return "waiting";
-  if (["In Progress", "Approved - Ready for Action"].includes(ticket.status))
-    return "progress";
-  if (
-    ticket.assignee_id ||
-    ["Assigned", "Acknowledged"].includes(ticket.status)
-  )
-    return "assigned";
+  if (ticket.status !== "Open" || ticket.assignee_id) return "progress";
   return "raised";
 }
 
@@ -135,19 +106,17 @@ function employeeStatusTime(ticket) {
 function EmployeeTicketProgress({ stage }) {
   const progressIndex = {
     raised: 0,
-    assigned: 1,
-    progress: 2,
-    waiting: 2,
-    done: 3,
+    progress: 1,
+    done: 2,
   }[stage];
-  const labels = ["Raised", "Assigned", "Working", "Resolved"];
+  const labels = ["Open", "In progress", "Closed"];
   return (
     <div className="mt-4">
       <div className="relative flex justify-between">
         <div className="absolute left-2 right-2 top-1.5 h-0.5 bg-[#E1E5EB]" />
         <div
           className="absolute left-2 top-1.5 h-0.5 bg-[#ED00ED] transition-all duration-500"
-          style={{ width: `${(progressIndex / 3) * 92}%` }}
+          style={{ width: `${(progressIndex / 2) * 92}%` }}
         />
         {labels.map((label, index) => (
           <div key={label} className="relative z-10 flex flex-col items-center">
@@ -367,17 +336,13 @@ export default function TicketsView({
       );
       let items = await api(`/tickets?${p.toString()}`);
       if (preset === "approvals") {
-        const APPR = [
-          "Pending Super Admin Approval",
-          "Clarification Required",
-          "Approval On Hold",
-          "Approval Rejected",
-          "Approved - Ready for Action",
-          "Approval Preparation",
-        ];
         items = {
           ...items,
-          items: items.items.filter((t) => APPR.includes(t.status)),
+          items: items.items.filter(
+            (t) =>
+              t.approval_required &&
+              !["Resolved", "Closed", "Cancelled"].includes(t.status),
+          ),
         };
       }
       setData(items);
@@ -415,20 +380,21 @@ export default function TicketsView({
             ["Total tickets", data.total, "text-[#111827]"],
             [
               "Open",
-              data.items.filter(
-                (ticket) =>
-                  !["Resolved", "Closed", "Cancelled"].includes(ticket.status),
-              ).length,
+              data.items.filter((ticket) => ticket.status === "Open").length,
               "text-[#2E7CD6]",
             ],
             [
               "In progress",
-              data.items.filter((ticket) => ticket.status === "In Progress")
-                .length,
+              data.items.filter(
+                (ticket) =>
+                  !["Open", "Resolved", "Closed", "Cancelled"].includes(
+                    ticket.status,
+                  ),
+              ).length,
               "text-[#E8930C]",
             ],
             [
-              "Resolved",
+              "Closed",
               data.items.filter((ticket) =>
                 ["Resolved", "Closed"].includes(ticket.status),
               ).length,
@@ -755,8 +721,19 @@ const locationSite = (value) => {
   return null;
 };
 
+// IT and Admin members raise tickets only for their own department.
+const OWN_DEPARTMENT_BY_ROLE = { it: "IT", admin: "Admin" };
+
+// Mirrors the server: laptop/hardware categories map to an issued machine,
+// but a procurement request is for new kit and maps to nothing.
+const isLaptopCategory = (category = "") =>
+  /laptop|hardware|device configuration|asset/i.test(category) &&
+  !/procurement/i.test(category);
+
 export function RaiseTicket({ user, onCreated }) {
+  const lockedDepartment = OWN_DEPARTMENT_BY_ROLE[user.role] || null;
   const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [cats, setCats] = useState([]);
   const [locs, setLocs] = useState([]);
@@ -766,7 +743,7 @@ export function RaiseTicket({ user, onCreated }) {
   const [categorySearch, setCategorySearch] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [f, setF] = useState({
-    department: "IT",
+    department: lockedDepartment || "IT",
     category: "",
     title: "",
     description: "",
@@ -777,7 +754,56 @@ export function RaiseTicket({ user, onCreated }) {
     employee_id: "",
     email: "",
     assignee_id: "",
+    asset_serial_number: "",
   });
+  const [assetMatch, setAssetMatch] = useState(null);
+  const [assetAnalysis, setAssetAnalysis] = useState(null);
+  const [assetLookupPending, setAssetLookupPending] = useState(false);
+
+  // Live laptop lookup: an entered serial number (or, failing that, the GRP
+  // code) resolves the issued laptop so the vendor mapping is visible before
+  // the ticket is raised.
+  useEffect(() => {
+    // Employees do not fill in an affected-employee block, so their own GRP
+    // code stands in and their issued laptop still maps.
+    const query =
+      f.asset_serial_number.trim() ||
+      f.employee_id.trim() ||
+      (user.role === "employee" ? (user.employee_id || "").trim() : "");
+    if (!query) {
+      setAssetMatch(null);
+      setAssetAnalysis(null);
+      setAssetLookupPending(false);
+      return undefined;
+    }
+    setAssetLookupPending(true);
+    const timer = setTimeout(() => {
+      api(`/assets/laptops?query=${encodeURIComponent(query)}`)
+        .then((result) => {
+          setAssetMatch(result.items?.[0] || null);
+          setAssetAnalysis(result.analysis || null);
+        })
+        .catch(() => {
+          setAssetMatch(null);
+          setAssetAnalysis(null);
+        })
+        .finally(() => setAssetLookupPending(false));
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [f.asset_serial_number, f.employee_id, user.role, user.employee_id]);
+
+  // Auto-populate the serial number from the GRP-code match so the vendor
+  // mapping is recorded on the ticket without retyping it.
+  useEffect(() => {
+    if (!assetMatch?.serial_number) return;
+    if (f.asset_serial_number.trim()) return;
+    if (!isLaptopCategory(f.category)) return;
+    setF((current) =>
+      current.asset_serial_number.trim()
+        ? current
+        : { ...current, asset_serial_number: assetMatch.serial_number },
+    );
+  }, [assetMatch, f.category, f.asset_serial_number]);
 
   useEffect(() => {
     if (!open) return;
@@ -802,13 +828,19 @@ export function RaiseTicket({ user, onCreated }) {
         ),
       )
       .catch(() => {});
-    api("/tickets?limit=200")
+    api("/tickets?limit=1000")
       .then((result) => setExistingTickets(result.items || []))
       .catch(() => {});
   }, [open, f.department]);
 
+  const review = () => {
+    if (!f.category) return toast.error("Select a ticket category");
+    if (!f.title.trim()) return toast.error("Title required");
+    if (!f.description.trim()) return toast.error("Description required");
+    setConfirming(true);
+  };
+
   const submit = async () => {
-    if (!f.title) return toast.error("Title required");
     setBusy(true);
     try {
       const t = await api("/tickets", {
@@ -816,6 +848,7 @@ export function RaiseTicket({ user, onCreated }) {
         body: { ...f, attachment_ids: attachments.map((item) => item.id) },
       });
       toast.success(`Raised ${t.human_id}`);
+      setConfirming(false);
       setOpen(false);
       setAttachments([]);
       setF((current) => ({
@@ -828,7 +861,9 @@ export function RaiseTicket({ user, onCreated }) {
         employee_id: "",
         email: "",
         assignee_id: "",
+        asset_serial_number: "",
       }));
+      setAssetMatch(null);
       onCreated();
     } catch (e) {
       toast.error(e.message);
@@ -890,7 +925,13 @@ export function RaiseTicket({ user, onCreated }) {
   );
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setConfirming(false);
+      }}
+    >
       <DialogTrigger asChild>
         <Button size="sm">
           <Plus className="h-4 w-4 mr-1" />
@@ -908,19 +949,25 @@ export function RaiseTicket({ user, onCreated }) {
                 {f.department} department · routed automatically by category
               </p>
             </div>
-            <div className="flex w-full rounded-lg bg-[#EDF0F4] p-1 sm:ml-auto sm:w-auto">
-              {["IT", "Admin"].map((department) => (
-                <button
-                  key={department}
-                  onClick={() =>
-                    setF({ ...f, department, category: "", assignee_id: "" })
-                  }
-                  className={`flex-1 rounded-md px-5 py-2 text-sm font-semibold ${f.department === department ? "bg-white shadow-sm" : "text-[#4B5563]"}`}
-                >
-                  {department}
-                </button>
-              ))}
-            </div>
+            {lockedDepartment ? (
+              <div className="w-fit rounded-lg bg-[#EDF0F4] px-5 py-2 text-sm font-semibold sm:ml-auto">
+                {lockedDepartment} department
+              </div>
+            ) : (
+              <div className="flex w-full rounded-lg bg-[#EDF0F4] p-1 sm:ml-auto sm:w-auto">
+                {["IT", "Admin"].map((department) => (
+                  <button
+                    key={department}
+                    onClick={() =>
+                      setF({ ...f, department, category: "", assignee_id: "" })
+                    }
+                    className={`flex-1 rounded-md px-5 py-2 text-sm font-semibold ${f.department === department ? "bg-white shadow-sm" : "text-[#4B5563]"}`}
+                  >
+                    {department}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </DialogHeader>
         <div className="space-y-4">
@@ -1039,6 +1086,44 @@ export function RaiseTicket({ user, onCreated }) {
               placeholder="Describe the issue"
             />
           </div>
+          <div className="space-y-1">
+            <Label className="text-xs">
+              Laptop serial number{" "}
+              <span className="text-[#9CA3AF]">
+                (optional · for laptop / hardware issues)
+              </span>
+            </Label>
+            <Input
+              className="h-11 rounded-xl bg-[#FAFBFC] font-mono uppercase"
+              value={f.asset_serial_number}
+              onChange={(e) =>
+                setF({ ...f, asset_serial_number: e.target.value })
+              }
+              placeholder="e.g. CND1234N6Y"
+            />
+            {assetMatch ? (
+              <>
+                <div className="rounded-lg border border-[#DDE7E3] bg-[#F2FAF6] px-3 py-2 text-xs text-[#0E6B47]">
+                  💻 Mapped to <b>{assetMatch.brand}</b> · Serial{" "}
+                  <b className="font-mono">{assetMatch.serial_number}</b> ·
+                  Issued to <b>{assetMatch.name || "Unassigned"}</b>
+                  {assetMatch.employee_code && ` (${assetMatch.employee_code})`}{" "}
+                  · Vendor <b>{assetMatch.vendor}</b>
+                </div>
+                <LaptopAnalysis analysis={assetAnalysis} />
+              </>
+            ) : f.asset_serial_number.trim() && !assetLookupPending ? (
+              <p className="text-[11px] text-amber-700">
+                This serial number is not in the laptop inventory. The ticket
+                will still record it for the IT team.
+              </p>
+            ) : (
+              <p className="text-[11px] text-[#9CA3AF]">
+                Leave blank to auto-map from the employee&apos;s GRP code for
+                laptop-related categories.
+              </p>
+            )}
+          </div>
           {user.role !== "employee" && (
             <div className="rounded-xl border border-[#DDE7E3] bg-gradient-to-r from-[#F7FBF9] to-white p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1050,8 +1135,8 @@ export function RaiseTicket({ user, onCreated }) {
                     </span>
                   </Label>
                   <p className="mt-1 text-xs leading-5 text-[#697087]">
-                    Enter the employee details manually. If the email or GRP
-                    code matches a registered employee, the ticket will also
+                    Enter the affected employee&apos;s GRP code. If the email or
+                    GRP code matches a registered employee, the ticket will also
                     appear on their dashboard.
                   </p>
                 </div>
@@ -1100,7 +1185,9 @@ export function RaiseTicket({ user, onCreated }) {
                 </div>
               </div>
               <p className="mt-2 text-[10px] text-[#9CA3AF]">
-                Leave all three fields blank for an internal team ticket.
+                Leave all three fields blank for an internal team ticket. Adding
+                the GRP code on a laptop issue maps the ticket to the issued
+                machine and its vendor.
               </p>
             </div>
           )}
@@ -1213,10 +1300,151 @@ export function RaiseTicket({ user, onCreated }) {
           </Button>
           <Button
             className="bg-[#1B7F6E] hover:bg-[#14695B]"
-            onClick={submit}
+            onClick={review}
             disabled={busy}
           >
-            Submit ticket
+            Review &amp; submit
+          </Button>
+        </DialogFooter>
+        <ConfirmRaiseTicket
+          open={confirming}
+          onOpenChange={setConfirming}
+          form={f}
+          busy={busy}
+          attachmentCount={attachments.length}
+          assigneeName={selectedMember?.name}
+          assetVendor={assetMatch?.vendor}
+          onConfirm={submit}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// Shown once a GRP code or serial resolves an issued laptop: this machine's own
+// fault history and how its vendor's fleet is performing, so a repeat problem is
+// visible before the ticket is filed.
+function LaptopAnalysis({ analysis }) {
+  if (!analysis) return null;
+  const { laptop, vendor_summary: vendor } = analysis;
+  const repeat = (laptop?.tickets_total || 0) > 0;
+  return (
+    <div className="mt-2 rounded-lg border border-[#E5E9EF] bg-[#FAFBFC] px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
+        <span className="font-semibold uppercase tracking-wide text-[#9CA3AF]">
+          This laptop
+        </span>
+        <span className={repeat ? "font-semibold text-[#8A5A06]" : "text-[#4B5563]"}>
+          {laptop.tickets_total} previous issue
+          {laptop.tickets_total === 1 ? "" : "s"}
+          {laptop.tickets_open ? ` · ${laptop.tickets_open} still open` : ""}
+        </span>
+        {laptop.last_issue_at && (
+          <span className="text-[#697087]">
+            last {fmtDate(laptop.last_issue_at)}
+          </span>
+        )}
+      </div>
+      {laptop.recent?.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {laptop.recent.map((ticket) => (
+            <span
+              key={ticket.id}
+              title={ticket.title}
+              className="rounded-full bg-white px-2 py-0.5 font-mono text-[10px] text-[#4B5563] ring-1 ring-[#E5E9EF]"
+            >
+              {ticket.human_id} · {ticket.status}
+            </span>
+          ))}
+        </div>
+      )}
+      {vendor && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-[#E5E9EF] pt-2 text-[11px]">
+          <span className="font-semibold uppercase tracking-wide text-[#9CA3AF]">
+            Vendor {analysis.vendor}
+          </span>
+          <span className="text-[#4B5563]">
+            {vendor.tickets_total} issue{vendor.tickets_total === 1 ? "" : "s"}{" "}
+            across {vendor.fleet_size} laptops
+          </span>
+          {vendor.issue_rate_per_100 != null && (
+            <span className="font-semibold tabular-nums text-[#111827]">
+              {vendor.issue_rate_per_100} per 100
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConfirmRaiseTicket({
+  open,
+  onOpenChange,
+  form,
+  busy,
+  attachmentCount,
+  assigneeName,
+  assetVendor,
+  onConfirm,
+}) {
+  const rows = [
+    ["Department", `${form.department} team`],
+    ["Category", form.category || "—"],
+    ["Priority", form.priority],
+    ["Location", form.location],
+    ["Assigned to", assigneeName || `Auto-route to ${form.department} team`],
+    ["Affected employee", form.raised_for_name.trim() || "Internal ticket"],
+    ["GRP code", form.employee_id.trim() || "From your profile"],
+    [
+      "Laptop / vendor",
+      form.asset_serial_number.trim()
+        ? `${form.asset_serial_number.trim()}${assetVendor ? ` · ${assetVendor}` : ""}`
+        : "Not a laptop issue",
+    ],
+    ["Attachments", attachmentCount ? `${attachmentCount} file(s)` : "None"],
+  ];
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[calc(100dvh-1rem)] max-w-[520px] overflow-y-auto rounded-2xl p-6">
+        <DialogHeader>
+          <DialogTitle className="text-xl font-bold">
+            Send this ticket to the {form.department} team?
+          </DialogTitle>
+          <p className="mt-1 text-sm font-medium text-[#9CA3AF]">
+            Check the details below. Cancel to go back and make changes.
+          </p>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="rounded-xl border border-[#E5E9EF] bg-[#FAFBFC] p-4">
+            <p className="text-sm font-semibold">{form.title}</p>
+            <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-[#697087]">
+              {form.description}
+            </p>
+          </div>
+          <dl className="grid gap-2 text-xs">
+            {rows.map(([label, value]) => (
+              <div key={label} className="flex justify-between gap-4">
+                <dt className="text-[#9CA3AF]">{label}</dt>
+                <dd className="text-right font-semibold">{value}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
+          >
+            Cancel &amp; edit
+          </Button>
+          <Button
+            className="bg-[#1B7F6E] hover:bg-[#14695B]"
+            onClick={onConfirm}
+            disabled={busy}
+          >
+            {busy ? "Sending…" : `Confirm & send to ${form.department}`}
           </Button>
         </DialogFooter>
       </DialogContent>

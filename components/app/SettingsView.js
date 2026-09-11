@@ -32,6 +32,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { KeyRound, Search, Settings2, ShieldCheck, Users } from "lucide-react";
 import { toast } from "sonner";
+import CategoryManager from "@/components/app/CategoryManager";
 
 const blank = {
   id: "",
@@ -114,6 +115,7 @@ export default function SettingsView() {
   };
   return (
     <div className="space-y-5 text-[#111827]">
+      <CategoryManager departments={["IT", "Admin"]} />
       <div className="flex flex-wrap items-center gap-3">
         <div>
           <h2 className="text-lg font-bold">Member settings</h2>

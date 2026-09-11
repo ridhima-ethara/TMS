@@ -1,0 +1,925 @@
+S.No.,Brand,Serial Number,Name,Emp. code,Ethara Email ID,Vendor Name
+1,Lenovo,PF3MJ8ZB,Anshumaan Singh,GRP1520,anshumaan.singh@ethara.ai,Green PC
+2,Lenovo,PC2A1GJ5,Kingshuk Kalita,GRP1559,kingshuk.kalita@ethara.ai,Green PC
+3,HP,CND1234N6Y,Rajeev Goyal,,rajeev.goyal@ethara.ai,Green PC
+4,HP,CND1234ZH4,Neha Gaur (Intern),GRP1835,neha.gaur@ethara.ai,Green PC
+5,HP,CND1361V23,Lalit Sharma,GRP1250,lalit.sharma@ethara.ai,Green PC
+6,HP,CND1365DBD,Komal Sheoran,GRP1264,komal@ethara.ai,Green PC
+7,HP,CND1404C9L,Rikta Gupta,GRP1385,rikta.gupta@ethara.ai,Green PC
+8,Lenovo,PF2NAWWB,Yugal Lohani,GRP1408,yugal.lohani17@ethara.ai,Green PC
+9,Lenovo,PF2NAHBE,NIkita Khedar,GRP2041,Nikita.khedar@ethara.ai,Green PC
+10,Lenovo,PF2TANKS,Niharika Mudgal,GRP1206,niharika.mudgal03@ethara.ai,Green PC
+11,Lenovo,PF2W05SZ,Kushal Soni,GRP1388,kushal.soni@ethara.ai,Green PC
+12,Lenovo,PF2HCZHA,Ajay Jangid,GRP1244,ajay.jangid@ethara.ai,Green PC
+13,Lenovo,PF2NAAFB,Arun Yadav,GRP1423,arun.yadav@ethara.ai,Green PC
+14,Lenovo,PF2NAX9A,Priya Kumari (Intern),GRP1851,priya.kumari2004@ethara.ai,Green PC
+15,Lenovo,PF2TANK7,Aditi Jha Intern,GRP1850,aditi.jha2305@ethara.ai,Green PC
+16,Lenovo,PF2TAS38,Deeksha Pathak,GRTP1090,deeksha.pathak@ethara.ai,Green PC
+17,Lenovo,PF2NAAKA,Vivek Panchal,GRP2044,vivek.panchal2044@ethara.ai,Green PC
+18,Lenovo,PF2N9KYG,Kunal Dutta,GRP2040,kunal.dutta@ethara.ai,Green PC
+19,Lenovo,PF2NAJKF,Rishabh Tiwari,GRP1258,rishabh.tiwari@ethara.ai,Green PC
+20,Lenovo,PF33QZ56,Prashant Priyadarshi,GRP1379,prashant.priyadarshi@ethara.ai,Green PC
+21,Lenovo,PF2JMRRY,Mritunjay Mishra,GRP1420,mritunjay.mishra@ethara.ai,Green PC
+22,Lenovo,PG02NDCW,Aman Singh Gurjar,GRP1281,aman.singh@ethara.ai,Green PC
+23,Lenovo,PG02ND9G,Kunal Yadav,GRP1327,kunal.yadav@ethara.ai,Green PC
+24,Lenovo,PG02NDE0,Akansha Kaushal Intern,GRP1909,aakanksha.kaushal2829@ethara.ai,Green PC
+25,Lenovo,PF300X0Q,Ishaan Dixit,GRP1075,ishaan.dixit@ethara.ai,Green PC
+26,Lenovo,PF3791TM,Hemant Hazra,GRP1303,hemant.hazra@ethara.ai,Green PC
+27,Lenovo,PF378X76,Shraddha Pandey,GRP1335,shraddha.pandey@ethara.ai,Green PC
+28,Lenovo,PF2ZYT5V,Yogeshwar Tyagi,GRP1339,Yogeshwar.tyagi@ethara.ai,Green PC
+29,Lenovo,PF2VY8LX,Ayush Kumar Singh,GRP1447,ayush.singh2@ethara.ai,Green PC
+30,Lenovo,PF2XSHDJ,Dhruv Agrawal,GRP1451,dhruv.agarwal@ethara.ai,Green PC
+31,Dell,FJY5SL3,Utsav Pokharna,GRP1153,utsav.pokharna@ethara.ai,Green PC
+32,Dell,18Z5SL3,Abhishek Bhatia,GRP1199,abhishek.bhatia@ethara.ai,Green PC
+33,Lenovo,PF23RQ3G,Aman Sharma Kuberha,,aman.sharma@ethara.ai,Green PC
+34,HP,CND1234MVM,Aashima Aggarwal,GRP1371,aashima.aggarwal@ethara.ai,Green PC
+35,Lenovo,PF3F8FX2,Alka Kumari,GRTP1072,kumari.alka@ethara.ai,Green PC
+36,Lenovo,PF2N985J,Subodh Kumar,GRP1458,subodh.kumar@ethara.ai,Green PC
+37,Lenovo,PF2NC6PK,Neeraj Pandey,GRT1262,neeraj.pandey@ethara.ai,Green PC
+38,Lenovo,PF34ZSKM,Ashwin Sankla,GRP1374,ashwin.sankla@ethara.ai,Green PC
+39,Lenovo,PF3379YX,Sakshi Singh,GRTP1064,sakshi.singh@ethara.ai,Green PC
+40,Lenovo,PF337VQH,Avinash Yadav,GRP1417,avinash.yadav@ethara.ai,Green PC
+41,Lenovo,PF3FE9ZE,Abhishek Piplani,GRP1007,abhishek.piplani@ethara.ai,Green PC
+42,Lenovo,PF33R24M,AYUSH MEENA,GRTP1098,ayush.meena@ethara.ai,Green PC
+43,Lenovo,PF339FLX,Adarsh Shukla,GRP1896,adarsh.shuklaint17@ethara.ai,Green PC
+44,Lenovo,PF33REEA,Akash vishwakarma/Kuberha,,akash.viswakarma@ethara.ai,Green PC
+45,Lenovo,PF3397W2,Harshit Singh,GRP1115,harshit.singh2021@ethara.ai,Green PC
+46,Lenovo,PF3NYX5Z,Hukum,GRP1134,hukum@ethara.ai,Green PC
+47,Lenovo,PF37H9G7,Dev kumar Dahiya,GRP1466,dev.dahiya@ethara.ai,Green PC
+48,Lenovo,PF38PD2Y,Durva Khataokar,GRP1364,durva.khataokar@ethara.ai,Green PC
+49,Lenovo,PF33RA68,Pranay Jain,GRT1259,pranay.jain@ethara.ai,Green PC
+50,Lenovo,PF33RCA9,Muskaan Qureshi,GRP1329,muskaan.qureshi@ethara.ai,Green PC
+51,Lenovo,PF3P4J60,Shubham Pandey,GRP1031,shubham.kumar@ethara.ai,Green PC
+52,Lenovo,PF33RXMW,Raja Kumar,GRP1956,raja.kumarint17@ethara.ai,Green PC
+53,Lenovo,PF3D00XZ,Ashish Singh,GRP1337,prince.mishra@ethara.ai,Green PC
+54,Lenovo,PF3E06NC,Uddeshya Kumar,GRP1523,uddeshya.kumar@ethara.ai,Green PC
+55,Lenovo,PF34ZKRC,MD Danish Samir,GRTP1159,danish.samir@ethara.ai,Green PC
+56,Lenovo,PF34J1VB,Madhur Varma,GRP1288,madhur.verma@ethara.ai,Green PC
+57,Lenovo,PF38CD3F,Anuj Soni,GRTP1099,anuj.soni@ethara.ai,Green PC
+58,Lenovo,PF34K6Z1,Sajan Sharma,Intern,sajan.sharma.int7@ethara.ai,Green PC
+59,Lenovo,PF37QZGN,Divyanshi Singh Thapa,GRP1560,divyanshi.thapa@ethara.ai,Green PC
+60,Lenovo,PF3BZR8L,Sunil Rathore,GRP1271,sunil.rathore@ethara.ai,Green PC
+61,Lenovo,PF3ATY40,Rishu Kumar,GRP1422,rishu.kumar@ethara.ai,Green PC
+62,Lenovo,PF3BQ7NP,Vyom Sahu,GRP1077,vyom.sahu@ethara.ai,Green PC
+63,Lenovo,PF3GAHR3,Mansa Gupta,GRP1283,mansa.gupta@ethara.ai,Green PC
+64,Lenovo,PF3P6TL9,Ravi Ranjan Kumar,GRTP1092,ravi.ranjan@ethara.ai,Green PC
+65,Lenovo,PF3S34MT,Tanmay Bhadoria,GRP1282,tanmay.bhadoria@ethara.ai,Green PC
+66,Lenovo,PF3S2SFF,Tamanna Bartwal,GRP1273,tamanna.bartwal@ethara.ai,Green PC
+67,Lenovo,PF3NXYQ6,Dhruva Shinde,GRP1241,durva.shinde@ethara.ai,Green PC
+68,Dell,2DVB3J3,Sakshi Rana,GRP1362,sakshi.rana@ethara.ai,Green PC
+69,Dell,66HD3J3,Bhumika Aggarwal,GRP1572,bhumika.aggarwal@ethara.ai,Green PC
+70,Dell,FCVR4M3,Ketan Patel,GRP1242,ketan.patel@ethara.ai,Green PC
+71,HP,CND1362VH5,Madhav Khode,GRP1306,madhav.khode@ethara.ai,Green PC
+72,HP,CND1362WBY,Shreya Aggarwal,GRP1060,shreya.agrawal@ethara.ai,Green PC
+73,Lenovo,PF3FPZ2J,Samarth Dubey,GRP1059,samarth.dubey@ethara.ai,Green PC
+74,Lenovo,PF1TZDY4,Vatsal Jain,GRP1042,vatsal.jain@ethara.ai,Green PC
+75,Lenovo,PF339XT8,Chetan Prajapati,GRP1304,chetan.prajapati@ethara.ai,Green PC
+76,HP,CND1362VLH,Sarthak nandre,GRP1286,sarthak.nandre@ethara.ai,Green PC
+77,HP,CND20912BJ,Nitin,GRP1267,nitin@ethara.ai,Green PC
+78,HP,CND1361VB9,Tanishq singh,GRP1279,tanishq.singh@ethara.ai,Green PC
+79,HP,CND1361V56,Saket Kukatkar,GRP1269,saket.kukatkar@ethara.ai,Green PC
+80,HP,CND1362W48,Pihu Bhardwaj,GRP1409,pihu.bhardwaj9@ethara.ai,Green PC
+81,HP,CND20911SW,Gunjit Arora,GRP1266,gunjit.Arora@ethara.ai,Green PC
+82,HP,CND20912V7,Hardika,GRP1272,hardika@ethara.ai,Green PC
+83,HP,CND1234NG6,Sanyam Sehrawat,GRP1265,sanyam.sehrawat@ethara.ai,Green PC
+84,HP,CND12362VMM,Sonu Prajapati,GRP1291,sonu.prajapati@ethara.ai,Green PC
+85,HP,CND1234Z6M,Rahul Debnath,GRP1293,rahul.debnath@ethara.ai,Green PC
+86,HP,CND1365D8Q,Priyanshu Kumar,GRP1284,priyanshu.kumar@ethara.ai,Green PC
+87,HP,CND1362VX3,Pranay Agrawal,GRP1285,pranay.agrawal1285@ethara.ai,Green PC
+88,HP,CND1365CMH,Neelesh Agarwal,GRP1296,neelesh.agarwal@ethara.ai,Green PC
+89,Lenovo,PF3RA7V2,Aman Rajput,GRP1317,aman.1317@ethara.ai,Green PC
+90,Lenovo,PF3RAEL8,Aman,GRP1311,aman.1311@ethara.ai,Green PC
+91,Lenovo,PF37QG1R,Ankit,GRP1312,ankit.1312@ethara.ai,Green PC
+92,Lenovo,PF3RAJQF,Mansoor Alam,GRP1318,mansoor.alam@ethara.ai,Green PC
+93,Lenovo,PF3Q8RKN,shreya kushwaha,GRP1294,shreya.kushwaha@ethara.ai,Green PC
+94,Lenovo,PF37QS9A,Sumit Chaudhary,Intern,sumit.chaudhary.int18@ethara.ai,Green PC
+95,Lenovo,PF3RB0HT,Nishant,GRP1389,nishant.1389@ethara.ai,Green PC
+96,Lenovo,PF3RKY13,Akul Malviya,GRP1328,akul.malviya@ethara.ai,Green PC
+97,Lenovo,PF3RB9LS,Varshaj Chouhan,GRTP1145,varshaj.chouhan@ethara.ai,Green PC
+98,Lenovo,PF33QZ5H,Faiyaz Ahmad,GRP1344,faiyaz.ahmad@ethara.ai,Green PC
+99,Lenovo,PF33T098,Sanskar,GRP1375,sanskar.1375@ethara.ai,Green PC
+100,Lenovo,PF3RA5G3,Priya,GRP1314,priya.1314@ethara.ai,Green PC
+101,HP,CND1365D22,Prashant Rajput,GRP1324,prashant.1324@ethara.ai,Green PC
+102,HP,CND1365CL8,Vartika Gautam,GRP1313,vartika.gautam@ethara.ai,Green PC
+103,HP,CND1362VGT,Anuj Mishra,GRP1982,anuj.mishra2005@ethara.ai,Green PC
+104,HP,CND1262L3Y,Parihar anjali,GRP1305,parihar.anjali@ethara.ai,Green PC
+105,HP,CND1365D0K,Himanshu Singh,GRP1419,himanshu.singh03@ethara.ai,Green PC
+106,HP,CND1362WF5,Vaibhav,GRP1319,vaibhav.1319@ethara.ai,Green PC
+107,HP,CND1234NSH,Shivani Dhankar,GRP1391,shivani.dhankar@ethara.ai,Green PC
+108,HP,CND1361VCM,Shubham Laxman Pawar,GRTP1157,shubham.pawar@ethara.ai,Green PC
+109,HP,CND13612WDV,Vidit Mujumdar,GRP1355,vidit.mujumdar@ethara.ai,Green PC
+110,HP,CND1361TXN,Atharv Joshi,GRP1253,atharv.joshi@ethara.ai,Green PC
+111,HP,CND1365D15,Neeraj Chaudhary,GRP1348,tanya.shrivastava@ethara.ai,Green PC
+112,HP,CND12403CF,Mohit Singh Sisodiya,GRP1357,mohit.singh@ethara.ai,Green PC
+113,HP,CND12350HH,Abhishek Kumar,GRP1334,abhishek.kumar09@ethara.ai,Green PC
+114,HP,CND1362VJX,Sumit,GRP1325,sumit.1325@ethara.ai,Green PC
+115,HP,CND1365CLD,Pankaj Rathore,GRP1354,pankaj.rathore@ethara.ai,Green PC
+116,HP,CND1240409,Harshal Khairnar,GRP1251,harshal.khairnar@ethara.ai,Green PC
+117,HP,CND1362W33,Utkarsh Singhal,GRP1341,utkarsh.singhal09@ethara.ai,Green PC
+118,Lenovo,PF33RC8Q,Modassarah Nusrat,GRTP1412,modassarah.nusrat13@ethara.ai,Green PC
+119,Lenovo,PF3RDVMG,Shreed Vyas,GRP1360,shreed.vyas@ethara.ai,Green PC
+120,Lenovo,PF339WY6,Adarsh Raghuwanshi,GRP1248,adarsh.raghuwanshi@ethara.ai,Green PC
+121,Lenovo,PF3RBE8B,Kalpesh Wani,GRP1331,kalpesh.wani@ethara.ai,Green PC
+122,Lenovo,PF3RA9FQ,Aditri Sharma,GRP1334,aditri.sharma@ethara.ai,Green PC
+123,Lenovo,PF3RAQH1,Apurv Krishna,GRP1342,apurv.krishna@ethara.ai,Green PC
+124,Lenovo,PF3RA7VR,Rishi Paliwal,GRP1341,rishi.paliwal@ethara.ai,Green PC
+125,Lenovo,PF3RPVLM,Sugandh Sharma,GRP1340,sugandh.sharma@ethara.ai,Green PC
+126,Lenovo,PF3RKSFC,Deepanshu,GRP1333,deepanshu.d@ethara.ai,Green PC
+127,Lenovo,PF3394E9,Aditya Joshi,GRP1254,aditya.joshi@ethara.ai,Green PC
+128,Dell,5SR72L3,Parinidhi,GRP1369,parinidhi.jian@ethara.ai,Green PC
+129,Dell,GPPPZD3,Amber Paul,GRP1450,amber.paul@ethara.ai,Green PC
+130,Lenovo,PF31TTEL,Himanshu jay prakash,GRTP1157,himanshu.jayprakash@ethara.ai,Green PC
+131,Lenovo,PF3P0GPF,Bhavna Dhatrak,GRP1114,bhavna.dhatrak@ethara.ai,Green PC
+132,HP,5CD1069L5Z,Abhishek kumar,GRP1330,abhishek.kumar1330@ethara.ai,Green PC
+133,Lenovo,PF2NA10F,Devansh Kakwani,GRP1396,devansh.kakwani18@ethara.ai,Green PC
+134,Lenovo,PF2N7TN0,Yogesh Dhaka,Intern,yogesh.dhaka.int19@ethara.ai,Green PC
+135,Lenovo,PF2T1XXX,Prashant Ethara,GRP1463,prashant.ethara@ethara.ai,Green PC
+136,Lenovo,PF2NCE07,Aahan Trikha,GRP1393,aahan.trikha21@ethara.ai,Green PC
+137,Lenovo,PF34ZHGK,Prabhav Sharma,GRP1404,prabhav.sharma89@ethara.ai,Green PC
+138,Lenovo,PF2VBDJY,Gurtej,GRP1380,gurtej.singh@ethara.ai,Green PC
+139,Lenovo,PF3RBE6Q,Jatin Singh,GRP1448,jatin.singh@ethara.ai,Green PC
+140,Lenovo,PC2AHC42,Mehak,GRP1401,mehak.ethara18@ethara.ai,Green PC
+141,Lenovo,PC22TF0W,Ayush Rawat,GRP1395,ayush.rawat19@ethara.ai,Green PC
+142,Lenovo,PC2A1GHE,Laxman Singh,GRP1399,laxman.singh13@ethara.ai,Green PC
+143,Lenovo,PF2AK2ZX,Mohsin Raza,GRP1402,mohsin.raza344@ethara.ai,Green PC
+144,Lenovo,PC248D6P,Nandani Bisht,GRP1403,nandani.bisht88@ethara.ai,Green PC
+145,Lenovo,PC22TF1B,Shanvi Mathuria,GRP1405,shanvi.mathuria8@ethara.ai,Green PC
+146,Lenovo,PC2AHC46,jasleen kaur,GRP1398,jasleen.kaur@ethara.ai,Green PC
+147,Lenovo,PC22TF1V,Udit Parashar,GRP1270,udit.parashar@ethara.ai,Green PC
+148,Lenovo,PC22TF0V,Vinay Saraswat,GRP1406,vinay.saraswat32@ethara.ai,Green PC
+149,Lenovo,PC1TLBCQ,Yash Singla,GRP1407,yash.singla67@ethara.ai,Green PC
+150,Lenovo,PC2AHC48,Khushi Thakur,GRP1340,khushi.thakur09@ethara.ai,Green PC
+151,Lenovo,PC20CED0,Muskaan,GRP1414,muskaan.jain16@ethara.ai,Green PC
+152,Lenovo,PC29WZ4D,Sukrati Tripathi,GRP1411,sukrati.tripathi16@ethara.ai,Green PC
+153,Lenovo,PF3FEPGN,Kushal Girdhar,GRP1268,kushal.Girdhar@ethara.ai,Green PC
+154,Lenovo,PC22TF0S,Gargi Shukla,GRP1397,gargi.shukla75@ethara.ai,Green PC
+155,Lenovo,PC2AHC45,Rahul Guard,,security.guard@ethara.ai,Green PC
+156,Lenovo,PF2AHTHN,Pragya Sharma,Interm,pragya.sharma@ethara.ai,Green PC
+157,Lenovo,PF3P4J55,Rishabh kavachale,GRP1358,rishabh.kavachale@ethara.ai,Green PC
+158,Lenovo,PF2PSJNF,Parul Choudhary,GRP1392,parul.choudhary@ethara.ai,Green PC
+159,Lenovo,PF3FQ2CQ,Jatin Wadhwani,GRP1261,jatin.wadhwani@ethara.ai,Green PC
+160,Lenovo,PF2R17N1,Minakshi Rawat,GRP1443,minakshi.rawat@ethara.ai,Green PC
+161,Lenovo,PF2X6KHZ,Tushar Grover,GRP1440,tushar.grover@ethara.ai,Green PC
+162,Lenovo,PF329TY9,Neyaj ahmad,GRP1465,neyaj.ahmed@ethara.ai,Green PC
+163,Lenovo,PF2KDFEA,Aryan Dabas,GRP1430,aryan.dabas@ethara.ai,Green PC
+164,Lenovo,PF2KBW3M,Akash tiwari,GRP1467,akash.tiwary@ethara.ai,Green PC
+165,Lenovo,PF2T22SM,Yash Bansal,GRP1453,yash.bansal@ethara.ai,Green PC
+166,Lenovo,PF2R1LWE,Om Prakash,GRP1442,om.prakash@ethara.ai,Green PC
+167,Lenovo,PF335C7K,Insha Quamar,GRP1461,insha.quamar@ethara.ai,Green PC
+168,Lenovo,PF2NCDCJ,Aditya Raj,GRP1459,aditya.raj@ethara.ai,Green PC
+169,Lenovo,PF22B0L6,Vaibhav Kumar,GRP1438,vaibhav.kumar@ethara.ai,Green PC
+170,Lenovo,PF2NAR02,Ashish reliable,GRP1462,ashish.reliable@ethara.ai,Green PC
+171,Lenovo,PF2N7WWV,Parijat Sen,GRP1424,parijat.sen@ethara.ai,Green PC
+172,Lenovo,PF2NC4M3,Garv sahani,GRP1469,garv.sahani@ethara.ai,Green PC
+173,Lenovo,PF2NCCGZ,Mohd Raftey,GRP1456,mohd.rafey@ethara.ai,Green PC
+174,Lenovo,PF2JN451,Ayush Parasher,GRP1428,ayush.parasher@ethara.ai,Green PC
+175,Lenovo,PF2NANP3,Kunal Maurya,GRP1593,kunal.maurya@ethara.ai,Green PC
+176,Lenovo,PF2TAV30,Abhishek Shukla,GRP1434,abhishek.shukla@ethara.ai,Green PC
+177,Lenovo,PF2L08TY,Aman Asthana,GRP1436,aman.asthana@ethara.ai,Green PC
+178,Lenovo,PF2HDJZK,Vaibhav Gupta,GRP1444,vaibhav.gupta@ethara.ai,Green PC
+179,Lenovo,PF3011MV,saswat kumar das,GRP1431,saswat.das@ethara.ai,Green PC
+180,Lenovo,PF2Z1WFD,Mahak Aggrawal,GRP1441,mahak.agrawal@ethara.ai,Green PC
+181,Lenovo,PF2R29D1,Ujala singh,GRP1452,ujala.singh@ethara.ai,Green PC
+182,Lenovo,PF2R1KC8,Yug Patidar,GRP1455,yug.patidar@ethara.ai,Green PC
+183,Lenovo,PF2NATK8,Prince Kumar,GRP1425,prince.kumar@ethara.ai,Green PC
+184,Lenovo,PF2HD849,Shreya Gupta,GRP1437,shreya.gupta@ethara.ai,Green PC
+185,Lenovo,PF2JN441,Ayushi katiyal,GRP1445,ayushi.katiyar@ethara.ai,Green PC
+186,Lenovo,PF333J8L,Tushar Gautam,GRP1454,tushar.gautam@ethara.ai,Green PC
+187,Lenovo,PF2JSTFR,Priyesh Mishra,GRP1446,priyesh.mishra@ethara.ai,Green PC
+188,HP,5CD034CM3K,Smriti Singh,GRP1493,smriti.singh@ethara.ai,Green PC
+189,Dell,GC32R73,Hani Kumar,GRP1503,hani.kumar@ethara.ai,Green PC
+190,HP,5CD34CM43,Akshat Aggarwal,GRP1477,akshat.agarwal@ethara.ai,Green PC
+191,DELL,J880R73,Arpit Jain,GRP1531,arpit.jain@ethara.ai,Green PC
+192,DELL,4DWNP73,Nirmal Gandhwani,GRP1506,nirmal.gandhwani@ethara.ai,Green PC
+193,DELL,64K3R73,Farhan Abid,GRP1502,farhan.abid@ethara.ai,Green PC
+194,DELL,BT87573,Durgesh Singh Chouhan,GRP1526,durgesh.chauhan@ethara.ai,Green PC
+195,DELL,J1X6R73,Sunil Kumar,GRP1532,sunil.kumar@ethara.ai,Green PC
+196,DELL,JBKWQ73,Kumail Mujtaba,GRP1525,kumail.mujtaba@ethara.ai,Green PC
+197,DELL,87QRPP3,Vivek Kumar,GRP1524,vivek.kumar@ethara.ai,Green PC
+198,DELL,BFLQ1F3,Ansh Gupta,GRP1521,ansh.gupta12@ethara.ai,Green PC
+199,DELL,DCZ8R73,Sakshi Kumari,GRP1481,sakshi.kumari@ethara.ai,Green PC
+200,DELL,2LN3DB3,Aman Chaturvedi,GRP1505,aman.chaturvedy@ethara.ai,Green PC
+201,DELL,59HNL63,Ayush Shah,GRP1514,ayush.sah@ethara.ai,Green PC
+202,LENOVO,PF2B2E6X,Harshit Pal,GRP1484,harshit.pal@ethara.ai,Green PC
+203,DELL,1620573,Ayush Kumar,GRP1482,ayush.kumar@ethara.ai,Green PC
+204,LENOVO,PF2CLQGS,Sakshi Agrawal,GRP1516,sakshi.agrawal@ethara.ai,Green PC
+205,LENOVO,PC1N1DPZ,Punit Yadav,GRP1537,punit.yadav@ethara.ai,Green PC
+206,LENOVO,PF2B126B,Tarun Nautiyal,GRP1534,tarun.nautiyal@ethara.ai,Green PC
+207,LENOVO,PF271QXY,Aman Singh,GRP1509,aman.singh2@ethara.ai,Green PC
+208,LENOVO,PF2B1ZM6,Akarash Kumar,GRP1489,aakarsh.kumar@ethara.ai,Green PC
+209,DELL,9KT8Q73,Abhishek,GRP1483,abhishek.ethara@ethara.ai,Green PC
+210,DELL,66N0R73,Sudhanshu Gupta,GRP1478,sudhanshu.gupta@ethara.ai,Green PC
+211,DELL,3XCWQ73,Naina Aggarwal,GRP1490,naina.agarwal@ethara.ai,Green PC
+212,LENOVO,PF2B1TL5,Avinash Singh,GRP1474,avinash.singh@ethara.ai,Green PC
+213,LENOVO,PF272ANJ,Priyanshu,GRP1501,priyanshu.ethara@ethara.ai,Green PC
+214,DELL,80YPCB3,Aakanksha Sharma,GRP1497,aakanksha.sharma@ethara.ai,Green PC
+215,LENOVO,PF33QWZW,Rachi Singh,GRP1486,rachi.singh@ethara.ai,Green PC
+216,LENOVO,PF273XVS,Gaurav,GRP1367,gaurav.ethara02@ethara.ai,Green PC
+217,LENOVO,PF2B1X50,Astik Gupta,GRP1535,astik.gupta@ethara.ai,Green PC
+218,LENOVO,PF2CKHR8,Ridhima Pandey,GRP1536,ridhim.apandey@ethara.ai,Green PC
+219,LENOVO,PF2CKQ40,RajKumar Sharma,GRP1533,rajkumar.sharma@ethara.ai,Green PC
+220,LENOVO,PC1QB0FR,Rohan Godha,GRTP1161,rohan.godha@ethara.ai,Green PC
+221,LENOVO,PF2B1TLD,Aryan Gupta,GRP1485,aryan.gupta@ethara.ai,Green PC
+222,HP,5CD0398QY9,Gaurav siradhana (Intern),GRP1899,gaurav.siradhana@ethara.ai,Green PC
+223,HP,5CD034L6B6,Karun Raj Chauhan (Intern),GRP1900,karun.raj@ethara.ai,Green PC
+224,HP,5CD0381PFK,Charitra,GRP1487,charitra.ethara@ethara.ai,Green PC
+225,HP,5CD0384L0Y,Atharv Mahalwar,GRP1496,atharv.mahalwar@ethara.ai,Green PC
+226,HP,5CD0381PF2,Priyanshi Rana,GRP1492,priyanshi.rana@ethara.ai,Green PC
+227,HP,5CD0381PFJ,Mayank Shekhar,GRP1499,mayank.shekhar@ethara.ai,Green PC
+228,DELL,CWSNZ33,Sapna Sriadhana (Intern),GRP1902,sapna.siradhna@ethara.ai,Green PC
+229,LENOVO,PF39MAQJ,Ravi Sharma,GRP1512,ravi.sharma@ethara.ai,Green PC
+230,LENOVO,PF2B2BEW,Harshit Kumar,GRP1475,harshit.kumar@ethara.ai,Green PC
+231,DELL,7J0K403,Priyansh Mishra,GRP1515,priyansh.mishra@ethara.ai,Green PC
+232,DELL,5CD0381PF3,Saurabh Baghel (Intern),GRP1898,saurabh.baghel@ethara.ai,Green PC
+233,DELL,4SMY573,Pratyush Kumar Dubey,GRP1488,pratyush.dubey@ethara.ai,Green PC
+234,LENOVO,PC2AJXYK,Vikas Gupta,GRP1543,vikas.gupta@ethara.ai,Green PC
+235,LENOVO,PC1V9QC2,VANAM PRASHANTH,GRP1549,vanam.prashanth@ethara.ai,Green PC
+236,LENOVO,PC22TF1S,Mohit Kumar Saraswat,GRP1541,mohit.saraswat@ethara.ai,Green PC
+237,LENOVO,PC1QB0F3,Shivansh Gupta,GRP1545,shivansh.gupta@ethara.ai,Green PC
+238,LENOVO,PC2A1GHG,B HARISH GANDHI,GRP1548,Harish.gandhi@ethara.ai,Green PC
+239,LENOVO,PC1V9NY7,Nishant Dubey,GRP1539,nishant.dubey@ethara.ai,Green PC
+240,LENOVO,PC22TF1F,Abhinav Bhatera,GRP1546,abhinav.bhatera@ethara.ai,Green PC
+241,LENOVO,PC1V9NXM,Kethavath Charan Nayak,GRP1538,kethavath.nayak@ethara.ai,Green PC
+242,LENOVO,PC22TF0F,Abhishek Singh,GRP1510,abhishek.singh2@ethara.ai,Green PC
+243,LENOVO,PC21KYA4,Swayam Agarwal,GRP1542,swayam.agarwal@ethara.ai,Green PC
+244,LENOVO,PC2AHC3W,Dommati Likhitha,GRP1547,dommati.likhitha@ethara.ai,Green PC
+245,LENOVO,PC1V9PGG,Uday Bhatnagar,GRP1540,uday.bhatnagar@ethara.ai,Green PC
+246,LENOVO,PC209TZE,Apoorva Dixit,GRP1544,apoorva.dixit@ethara.ai,Green PC
+247,LENOVO,PC1X48DP,Priyanshu Singh,GRP1550,priyanshu.singh12@ethara.ai,Green PC
+248,LENOVO,PC1VYD9C,Piyush Sharma,GRP1554,piyush.sharma@ethara.ai,Green PC
+249,LENOVO,PF20V656,Ram Chandra Sharma,GRP1473,ram.sharma@ethara.ai,Green PC
+250,LENOVO,R90XV3E9,Nisha,Intern,nisha.sharma.int1@ethara.ai,Green PC
+251,LENOVO,PF2RNWBA,Pawan Kumar (IT),GRP1278,pawan.kumar@ethara.ai,Green PC
+252,LENOVO,PF20RQQK,Sanchit Kumar Mishra,GRP1498,sanchit.mishra@ethara.ai,Green PC
+253,LENOVO,PF45WCHZ,Neha Kumari,GRP1561,neha.kumari@ethara.ai,Green PC
+254,LENOVO,PF2VS6ZJ,Stuti Nair,GRP1558,stuti.nair@ethara.ai,Green PC
+255,LENOVO,PF3PB7B8,Ayushmaan Diwedi,GRP1435,ayushmaan.dwivedi@ethara.ai,Green PC
+256,LENOVO,PF2HDBR3,shivom sharma,GRP1350,shivom.sharma09@ethara.ai,Green PC
+257,LENOVO,PF2W0JN6,Priyanshu Jaiswal,GRP1552,priyanshu.jaiswal@ethara.ai,Green PC
+258,LENOVO,PF2Z1KN0,Ankita Gajra,GRP1563,ankita.gajra@ethara.ai,Green PC
+259,LENOVO,PF2W0LN0,Sonal Pal,GRP1564,sonal.pal@ethara.ai,Green PC
+260,LENOVO,PF2N9MJP,Himanshi Upadhyay,GRP1562,himanshi.upadhyay@ethara.ai,Green PC
+261,LENOVO,PF2HDA6V,Ayush Sharma,GRP2039,ayush.sharma1@ethara.ai,Green PC
+262,LENOVO,PF2JN8LN,Piyush Chauhan,GRP1432,piyush.chauhan@ethara.ai,Green PC
+263,HP,5CG1382TVG,Ajeet Kumar,GRP1129,ajeet.kumar@ethara.ai,Green PC
+264,HP,5CG1382V7C,Itisha goyal,GRP1660,itisha.goyal@ethara.ai,Green PC
+265,HP,5CG1382V0P,Virendra Shukla_IT,GRTP1160,virendra.shukla@ethara.ai,Green PC
+266,HP,5CG14681GY,MD AREEB INAM,GRTP1158,areeb.inam@ethara.ai,Green PC
+267,HP,5CG1382W02,Kaushika Rakesh,GRP1390,kaushika.rakesh@ethara.ai,Green PC
+268,HP,5CG12993RF,Jaskaran,GRP1476,jaskaran.oberoi@ethara.ai,Green PC
+269,HP,5CG1382VVJ,Utsav Jain,GRP1081,utsav.jain@ethara.ai,Green PC
+270,HP,5CG129935V,Aniket Tyagi,GRP1377,aniket.tyagi24@ethara.ai,Green PC
+271,LENOVO,PF2NAT33,Jatin Bhandari,GRP1588,jatin.bhandari@ethara.ai,Green PC
+272,LENOVO,PF2HBJ6M,Shrijee Gupta,GRP1568,shrijee.gupta@ethara.ai,Green PC
+273,HP,5CG129933V,Divya Tripathi,GRP1596,divyatripathi.tripathi@ethara.ai,Green PC
+274,HP,5CG1381JM5,Ayushi Sachan,Intern,ayushi.sachan@ethara.ai,Green PC
+275,HP,5CG129937K,Mahek Singhal,GRP1570,mahek.singhal@ethara.ai,Green PC
+276,HP,5CG1381K7Y,Gurbani tagra,GRP1583,gurbani.tagra@ethara.ai,Green PC
+277,HP,5CG12991RS,Shreyansh Dahiya,GRP1580,shreyansh.dahiya@ethara.ai,Green PC
+278,HP,5CG1381JT7,Sunidhi tiwari,GRP1600,sunidhi.tiwari@ethara.ai,Green PC
+279,HP,5CG1382W00,Manav Goyal,GRP1582,manav.goyal@ethara.ai,Green PC
+280,HP,5CG1236J4T,Priyanshu Sharma,GRP1891,priyanshu.sharma5445@ethara.ai,Green PC
+281,HP,5CG1382VJY,Hiya Sanganeria,GRP1584,hiya.sanganeria@ethara.ai,Green PC
+282,HP,5CG1382TVS,Khushi Mohunta,GRP1569,khushi.mohunta@ethara.ai,Green PC
+283,HP,5CG129935Z,Vanshika Gupta,GRP1598,vanshika.gupta@ethara.ai,Green PC
+284,HP,5CG14681L7,Palak Bansal,GRP1573,palak.bansal@ethara.ai,Green PC
+285,HP,5CG12992L8,Himanshu Arya,GRP1585,himanshu.arya@ethara.ai,Green PC
+286,HP,5CG0347F7R,Aditya Gupta,GRP1586,aditya.gupta@ethara.ai,Green PC
+287,HP,5CG1236J1R,Disha Jeswani,GRP1587,disha.jeswani@ethara.ai,Green PC
+288,HP,5CG1381JKC,Mohammad Adnan,GRP1439,mohammad.adnan@ethara.ai,Green PC
+289,LENOVO,PF2JNKX9,Deepika Singh,GRP1599,deepika.singh@ethara.ai,Green PC
+290,LENOVO,PF2T1ZQR,Vibhav Bhardwaj,GRP1594,vibhav.bhardwaj@ethara.ai,Green PC
+291,LENOVO,PF2JSR71,Sonali Satrate,GRP1597,sonali.satrate@ethara.ai,Green PC
+292,LENOVO,PF2QN3PE,Khushi Gupta,GRP1579,khushi.gupta@ethara.ai,Green PC
+293,LENOVO,PF229ZPG,Vaishnavi Gaur,GRP1591,vaishnavi.gaur@ethara.ai,Green PC
+294,LENOVO,PC2AHC3Z,Bhipendar Kumar,GRP1595,bhipendar.kumar@ethara.ai,Green PC
+295,LENOVO,PF2KD2VG,Ashish Abhisek Parida,GRP1576,ashish.parida@ethara.ai,Green PC
+296,LENOVO,PF331VRH,Vineet Singh,GRP1798,vineet.1798@ethara.ai,Green PC
+297,LENOVO,PF2R122P,Shashank Sinha,GRP1577,shashank.sinha@ethara.ai,Green PC
+298,LENOVO,PC209TZZ,Anchal Bharti,GRP1571,anchal.bharti@ethara.ai,Green PC
+299,Lenovo,PF3LN1W4,Hrithik Kumar,GRP1624,hrithik.kumar@ethara.ai,Green PC
+300,Lenovo,PF3RATDX,Sahil vyas,Inten,sahil.vyas@ethara.ai,Green PC
+301,Lenovo,PF3VKHRM,Abhishek Singh,GRP1415,abhishek.singh23@ethara.ai,Green PC
+302,Lenovo,PF39ETEC,Fanindra Kumar (IT),GRP1555,fanindra.kumar@ethara.ai,Green PC
+303,Lenovo,PF2Z1JE7,Priya Rani,GRP1680,priya.rani@ethara.ai,Green PC
+304,Lenovo,PF3BZP25,Ritik Jaiswal,GRP1504,ritik.jaiswal@ethara.ai,Green PC
+305,Lenovo,PF2JMJYX,Md Nishan Nur,GRP1631,nishan.nur@ethara.ai,Green PC
+306,Lenovo,PF2TAM73,Uday Panthari,GRP1653,uday.panthari@ethara.ai,Green PC
+307,Lenovo,PF334THC,Aditi Sagar,GRP1677,aditi.sagar@ethara.ai,Green PC
+308,Lenovo,PF3360XE,Pratham Bothra,GRP1655,pratham.bothra@ethara.ai,Green PC
+309,Lenovo,PF2T28Y4,Rachna,GRP1656,rachna.1656@ethara.ai,Green PC
+310,Dell,HQBNP73,Anurag sharma,GRP1669,anurag.sharma@ethara.ai,Green PC
+311,Dell,GZCCDB3,Kartik Jaiswal,GRP1694,kartik.jaiswal@ethara.ai,Green PC
+312,Dell,FRJ2R73,Aman Bhardwaj,GRP1608,aman.bhardwaj@ethara.ai,Green PC
+313,Dell,183YQ73,Nadarvir Singh,GRP1634,nadarvir.singh@ethara.ai,Green PC
+314,Dell,F5XXQ73,Sidharth singh,GRP1650,sidharth.singh@ethara.ai,Green PC
+315,Dell,1LJD6J3,Sushmita kumari,GRP1663,sushmita.kumari@ethara.ai,Green PC
+316,Dell,8T6K3F3,Himanshu Chaudhary,GRP1692,himanshu.chaudhary@ethara.ai,Green PC
+317,Lenovo,PF33659Q,Pranav Swarnkar,GRP1638,pranav.swarnkar@ethara.ai,Green PC
+318,HP,5CG2146JTS,Sumit Pathania,GRP1651,sumit.pathania@ethara.ai,Green PC
+319,HP,5CG213B2RP,Shubhika,GRP1648,shubhika.surira@ethara.ai,Green PC
+320,HP,5CG24935NX,Garvit Yadav,GRP1657,garvit.yadav@ethara.ai,Green PC
+321,HP,5CG24935NQ,Isha jaryal,GRP1625,isha.jaryal@ethara.ai,Green PC
+322,Lenovo,PF2VR89E,Siddhika raj jain,GRP1696,siddhika.jain@ethara.ai,Green PC
+323,Lenovo,PF33449AD,Kumari Payal,GRP1628,payal.kumari@ethara.ai,Green PC
+324,Dell,44G0R73,Siddharth Vikram Singh,GRP1649,siddharth.singh@ethara.ai,Green PC
+325,HP,5CG2333CMX,Michelle Levi,GRP1699,michelle.levi@ethara.ai,Green PC
+326,HP,5CG31287MN,sayma Fatima,GRP1644,sayma.fatima@ethara.ai,Green PC
+327,HP,5CG312874S,Bhawana Bhakuni,GRP1615,bhawana.bhakuni@ethara.ai,Green PC
+328,HP,5CG213DL3V,Gurdit Singh,GRP1679,gurdit.singh@ethara.ai,Green PC
+329,HP,5CG3125RRH,Shivangi rathore,GRP1687,shivangi.rathore@ethara.ai,Green PC
+330,Dell,JNJ2R73,Chelsi jain,GRP1686,chelsi.jain@ethara.ai,Green PC
+331,Lenovo,PC20CE72,Kunal Gulati,GRP1629,kunal.gulati@ethara.ai,Green PC
+332,Lenovo,PF335YQQ,Mudrika dhona,GRP1633,mudrika.dhona@ethara.ai,Green PC
+333,Lenovo,PF3RAANE,Krishna Rohilla,GRP1675,krishna.rohilla@ethara.ai,Green PC
+334,Lenovo,PF2TWSWR,Ritika,GRP1640,ritika.1640@ethara.ai,Green PC
+335,HP,5CG24935ZR,Ritika Khess,GRP1641,ritika.khess@ethara.ai,Green PC
+336,HP,5CG249359K,Aparna,GRP1683,aparna.1683@ethara.ai,Green PC
+337,HP,5CG2146J6V,Abhishek Jaswal,GRP1603,abhishek.jaswal@ethara.ai,Green PC
+338,HP,5CG3125WWR,Abhishek Kumar,GRP1604,abhishek.1604@ethara.ai,Green PC
+339,HP,5CG213DL92,Saritha Kumari,GRP1642,saritha.kumari@ethara.ai,Green PC
+340,HP,5CG2320Z5V,Juhi Kumari,GRP1626,juhi.kumari@ethara.ai,Green PC
+341,HP,5CG2320X7K,Bhumi Sharma,GRP1616,bhumi.sharma@ethara.ai,Green PC
+342,HP,5CG2139ZTD,Nitish Kumar Choudhary,GRP1637,nitish.choudhary@ethara.ai,Green PC
+343,HP,5CG103B7WP,Parth Chadha,GRP1672,parth.chadha@ethara.ai,Green PC
+344,HP,5CG2451KXX,Khushi Srivastava,GRP1627,khushi.srivastava2@ethara.ai,Green PC
+345,HP,5CG2230CJ5,Akrit Singh,GRP1606,akrit.singh@ethara.ai,Green PC
+346,HP,5CG2146J7C,Tanisha,GRP1652,tanisha.1652@ethara.ai,Green PC
+347,HP,5CG2320YSL,Nandini Sharma,GRP1635,nandini.grp1635@ethara.ai,Green PC
+348,HP,5CG2451KX0,Prerna deshwal,GRTP1128,prerna.deshwal@ethara.ai,Green PC
+349,HP,5CG24935D1,Junaid Basaad,GRP1916,junaid.basaad67@ethara.ai,Green PC
+350,HP,5CG2146JDL,Monuranjan saikia,GRP1632,monuranjan.saikia@ethara.ai,Green PC
+351,HP,5CG3125S30,Sanyam Agarwal,GRP1662,sanyam.agarwal@ethara.ai,Green PC
+352,HP,5CG10400MX,Tincle Kumari,GRP1682,tincle.kumari@ethara.ai,Green PC
+353,HP,5CG103B7K5,Priya Kumari,GRP1639,priya.kumari@ethara.ai,Green PC
+354,HP,5CG2320X6P,Ankita Shrama,GRP1611,ankita.sharma@ethara.ai,Green PC
+355,HP,5CG213B13W,Ashutosh Kumar,GRP1614,ashutosh.kumar@ethara.ai,Green PC
+356,HP,5CG24935Z7,Fathima Rasheed,GRP1620,fathima.rasheed@ethara.ai,Green PC
+357,HP,5CG213DKW6,Pratishtha Sharma,GRP1704,pratishtha.sharma@ethara.ai,Green PC
+358,HP,5CG2443QVJ,Shiwani Kumari,GRP1667,shiwani.kumari@ethara.ai,Green PC
+359,HP,5CG2443QFG,Dhara Joshi,GRP1619,dhara.joshi@ethara.ai,Green PC
+360,HP,5CG24801XX,Akansh Goel,GRP1670,akansh.goel@ethara.ai,Green PC
+361,HP,5CG2443QJ3,Manvendra singh Rautela,GRP1630,manvendra.rautela@ethara.ai,Green PC
+362,HP,5CG213B58W,Aastha Dahiya,GRP1601,aastha.dahiya@ethara.ai,Green PC
+363,HP,5CG24934V4,Garvita andhiwal,GRP1703,garvita.andhiwal@ethara.ai,Green PC
+364,HP,5CG213B210,Nupur Jamwal,GRP1681,nupur.jamwal@ethara.ai,Green PC
+365,HP,5CG24934VJ,Annie,GRP1676,annie.1676@ethara.ai,Green PC
+366,HP,5CG2320X6J,Ananya Vashisth,GRP1610,ananya.vashisth@ethara.ai,Green PC
+367,HP,5CG213DKQQ,Aripriya Mishra,GRP1668,aripriya.mishra@ethara.ai,Green PC
+368,HP,5CG211BQGR,Satvik Tandon,GRP1643,satvik.tandon@ethara.ai,Green PC
+369,HP,5CG31287D8,Arth Popli,GRP1612,arth.popli@ethara.ai,Green PC
+370,HP,5CG2146JQ6,Tanish Gupta,GRP1671,tanish.gupta@ethara.ai,Green PC
+371,HP,5CG1382VNB,Runjhun Singh,GRP1678,runjhun.singh@ethara.ai,Green PC
+372,HP,5CG2230XJP,Poorva Harchandani,GRP1685,poorva.harchandani@ethara.ai,Green PC
+373,HP,5CG2320YDH,Shubhi Mundra,GRP1673,shubhi.mundra@ethara.ai,Green PC
+374,HP,5CG231444Z,Sudhanshu Gupta,GRP1698,sudhanshu.1698@ethara.ai,Green PC
+375,HP,5CG2281WYG,Rashi chauhan,GRP1674,rashi.chauhan@ethara.ai,Green PC
+376,HP,5CG2320PVC,Shristi Sharma,GRP1705,shristi.sharma@ethara.ai,Green PC
+377,HP,5CG213DLHK,Shashank Jugran,GRP1707,shashank.jugran@ethara.ai,Green PC
+378,HP,5CG213B4ZZ,Aman Parmar,GRP1609,aman.parmar@ethara.ai,Green PC
+379,HP,5CG211BQFV,Keshav Singh,GRP1691,keshav.singh@ethara.ai,Green PC
+380,HP,5CG312859L,Akhil Kumar,GRP1605,akhil.kumar@ethara.ai,Green PC
+381,HP,5CG2443QRH,Birut Guchhait,GRP1617,birut.guchhait@ethara.ai,Green PC
+382,HP,5CG231445C,Shubham Tumane,GRP1647,shubham.tumane@ethara.ai,Green PC
+383,HP,5CG2146J75,Shivani Verma,GRP1494,shivani.verma@ethara.ai,Green PC
+384,HP,5CG2230XJW,Vedika Pandey,GRP1316,vedika.1316@ethara.ai,Green PC
+385,HP,5CG2320QKW,Arpita Singhal,GRP1702,arpita.singhal@ethara.ai,Green PC
+386,HP,5CG2333J2V,Sparsh Gupta,GRP1664,sparsh.gupta@ethara.ai,Green PC
+387,HP,5CG213B53B,Pratham jain,GRP1684,pratham.jain@ethara.ai,Green PC
+388,HP,5CG2139Z2D,Shivam Sharma,GRP1646,shivam.sharma@ethara.ai,Green PC
+389,HP,CND1362W6Y,Shatakshee Mane,GRP1743,shatakshee.mane@ethara.ai,Green PC
+390,HP,CND12350JT,Beauty Kashyap,GRP1779,beauty.kashyap@ethara.ai,Green PC
+391,HP,CND1362WBS,Anmol Soni,GRP1769,anmol.soni@ethara.ai,Green PC
+392,HP,CND1234NFG,Mukul Bhardwaj,GRP1828,mukul.bhardwaj@ethara.ai,Green PC
+393,HP,CND1260XYJ,Aishwarya Sharma,GRP1690,aishwarya.sharma@ethara.ai,Green PC
+394,HP,CND12403K7,Priyanshi Yadav,GRP1756,priyanshi.yadav@ethara.ai,Green PC
+395,HP,CND1234ZMW,Aryan Kahar,GRP1770,aryan.kahar@ethara.ai,Green PC
+396,HP,CND1362W61,Prem Shankar,GRP1714,prem.shankar@ethara.ai,Green PC
+397,HP,CND1362W9C,Srishti Dwivedi,GRP1697,srishti.dwivedi@ethara.ai,Green PC
+398,HP,CND1260XLF,Avantika,GRP1394,avantika.ethara33@ethara.ai,Green PC
+399,HP,CND1361VB1,Gunisha Gupta,GRP1659,gunisha.gupta@ethara.ai,Green PC
+400,HP,CND1361TPR,Kajal,GRP1706,kajal.1706@ethara.ai,Green PC
+401,HP,CND1260XTX,Sunrender Kumar,GRP1351,surender.kumar09@ethara.ai,Green PC
+402,HP,CND1362WFM,Prerna,GRP1701,prerna.1701@ethara.ai,Green PC
+403,HP,CND1362VP3,Priya Kumari,GRP1688,priya.1688@ethara.ai,Green PC
+404,HP,CND20912SY,Chitransh Shrivastava,GRP1934,chitransh.shrivastava43@ethara.ai,Green PC
+405,HP,CND20911YW,Husain Yawar,GRP1859,husain.yawar14@ethara.ai,Green PC
+406,HP,CND20912YW,Sharuti,GRP1645,sharuti.1645@ethara.ai,Green PC
+407,HP,CND2092RMG,Sanjeev Kumar,GRP1862,sanjeev.kumar30@ethara.ai,Green PC
+408,HP,CND20912QD,Aman Tiwari,GRP1873,aman.tiwari@ethara.ai,Green PC
+409,HP,CND1365D20,Bhoomika Rajput,GRP1845,bhoomika.rajputint17@ethara.ai,Green PC
+410,HP,CND20911DS,Sachin singh,GRP1666,sachin.singh@ethara.ai,Green PC
+411,HP,CND3061L45,Akshat Kumar,GRP1943,akshat.kumar436@ethara.ai,Green PC
+412,HP,CND305103X,Faiz Khan,GRP1939,faiz.khan26@ethara.ai,Green PC
+413,HP,CND20912R8,Lokesh Kumar Yadav,Intern,lokesh.yadav@ethara.ai,Green PC
+414,HP,CND20911NB,Niharika Chauhan,GRP1658,niharika.chauhan@ethara.ai,Green PC
+415,HP,CND20911XB,Uday Pratap Singh,GRP1906,uday.pratap4682@ethara.ai,Green PC
+416,HP,CND20911CR,Bhabyanjali,Intern,bhabyanjali.ethara@ethara.ai,Green PC
+417,HP,CND20912LV,Aditya Kumar,GRP1976,aditya.kumar97@ethara.ai,Green PC
+418,HP,CND20912K2,Kirteesh Akhil Singh,GRP1827,kirteesh.akhil87@ethara.ai,Green PC
+419,HP,CND3051041,Bhargavi Joshi,GRP1807,bhargavi.joshi@ethara.ai,Green PC
+420,HP,CND209128T,Yukti Patwal,GRP1768,yukti.patwal@ethara.ai,Green PC
+421,HP,CND20912WD,Gunjan Kumar,GRP1519,gunjan.kumar@ethara.ai,Green PC
+422,HP,CND2092RMH,Anuj Singh,GRP1480,anuj.singh2@ethara.ai,Green PC
+423,HP,CND209126N,Vansh Talwar,GRP1472,vansh.talwar@ethara.ai,Green PC
+424,HP,CND20912FM,Parth pandey,GRP1712,parth.pandey@ethara.ai,Green PC
+425,HP,CND1234N3R,MD Nayeem,GRP1400,md.nayeem@ethara.ai,Green PC
+426,HP,CND1361V1X,Gurpreet Singh,GRP2037,gurpreet.singh2037@ethara.ai,Green PC
+427,HP,CND20912DN,Atik Chhaparia,GRP2049,atik.chhaparia1@ethara.ai,Green PC
+428,HP,CND20911Q4,Udit Sathe,GRP1711,udit.sathe@ethara.ai,Green PC
+429,HP,CND20912VL,Raghav Sharma,GRP1820,raghav.sharmasm@ethara.ai,Green PC
+430,HP,CND20911D2,Praval Kukreti,GRP1817,praval.kukreti4@ethara.ai,Green PC
+431,HP,CND20911KT,Chirag Rastogi,GRP1715,chirag.rastogi@ethara.ai,Green PC
+432,HP,CND20912M3,Priyanshu Sheoran,GRP1716,priyanshu.sheoran@ethara.ai,Green PC
+433,HP,CND30510F5,Aditya Kashyap,GRP1983,aditya.kashyap@ethara.ai,Green PC
+434,HP,CND20912Z0,Ashmi Naik,GRP1945,ashmi.naik20@ethara.ai,Green PC
+435,HP,CND20911FT,Mohd Ayan Akhtar,GRP1886,mohd.ayan72@ethara.ai,Green PC
+436,HP,CND20912X8,Ansh Gupta,GRP1981,ansh.gupta@ethara.ai,Green PC
+437,HP,CND20912NC,Sazhuni P,GRP1846,sazhuni.p@ethara.ai,Green PC
+438,HP,CND3061KXL,Riya Pandey,GRP1744,riya.pandey@ethara.ai,Green PC
+439,HP,CND3061L70,SHUBH SHUKLA,GRP1433,shubh.shukla@ethara.ai,Green PC
+440,HP,CND20911SB,Mehul Singhal,GRP1965,mehul.singhalint17@ethara.ai,Green PC
+441,HP,CND2105DPY,Sumit Gupta,GRP1948,sumit.gupta39@ethara.ai,Green PC
+442,HP,CND305103N,Rakesh Kumar Modi,Intern,rakesh.kumar143@ethara.ai,Green PC
+443,HP,CND209123C,Yasir Ali,GRP1944,yasir.aliint17@ethara.ai,Green PC
+444,HP,5CG213B23K,Ansh Kumar,GRP1757,ansh.kumar@ethara.ai,Green PC
+445,HP,5CG213B1S7,Rajukumar,GRP1796,rajkumar.1796@ethara.ai,Green PC
+446,HP,5CG2320XJV,Jiya Patel,GRP1771,jiya.patel@ethara.ai,Green PC
+447,HP,5CG2320QPJ,Abhinav Pratap Shahi,GRP1974,abhinav.pratap19@ethara.ai,Green PC
+448,HP,5CG2333JFJ,Annanya Singh,GRP1803,annanya.singh@ethara.ai,Green PC
+449,HP,5CG2320XYL,Adarsh Mishra,GRP1932,adarsh.mishraint17@ethara.ai,Green PC
+450,HP,5CG211BPVL,Aditi Negi,GRP1787,aditi.negi@ethara.ai,Green PC
+451,HP,5CG2333DKX,Aditya Choubey,GRP1927,aditya.choubey2004@ethara.ai,Green PC
+452,HP,5CG213B015,Ritika Gosain,GRP1789,ritika.gosain@ethara.ai,Green PC
+453,HP,5CG2139W1R,Nishtha Jain,GRP1736,nishtha.jain@ethara.ai,Green PC
+454,HP,5CG211BQVT,Aanchal Gupta,GRP1737,aanchal.gupta@ethara.ai,Green PC
+455,HP,5CG213B311,Arshiya Verma,GRP1800,arshiya.verma@ethara.ai,Green PC
+456,HP,5CG2320Z4P,Preeti Dey,GRP1742,preeti.dey@ethara.ai,Green PC
+457,HP,5CG213DL72,Kuldeep Kumar,GRP1824,kuldeep.kumarjorn@ethara.ai,Green PC
+458,HP,5CG213DLSX,Utkarsh Tripathi,GRP1896,utkarsh.tripathi.int@ethara.ai,Green PC
+459,HP,5CG31286NL,Harsh Kumar Gupta,GRP1882,harsh.kumar2605@ethara.ai,Green PC
+460,HP,5CG2333JG5,Ramandeep Singh,GRP1856,ramandeep.singh@ethara.ai,Green PC
+461,HP,5CG103B7KY,Anuj Mishra,GRP1982,anuj.mishra2005@ethara.ai,Green PC
+462,HP,5CG24934JG,Vaibhav Chauhan,GRP1888,vaibhav.chauhan610@ethara.ai,Green PC
+463,HP,5CG213DLML,Ojas Nimaje,GRP1794,ojas.nimaje@ethara.ai,Green PC
+464,HP,5CG2320XJ2,Hasan Dawar,GRP1857,hasan.dawar4184@ethara.ai,Green PC
+465,HP,5CG2320QP3,Kushika Kumari,GRP1883,kushika.kumari265@ethara.ai,Green PC
+466,HP,5CG211BQG9,Tanu Shishodia,GRP1863,tanu.shishodia@ethara.ai,Green PC
+467,HP,5CG2320QH1,Sweta Rani,GRP1795,sweta.rani@ethara.ai,Green PC
+468,HP,5CG2139WJ3,Krishna Kumar,GRP1871,krishna.kumar68@ethara.ai,Green PC
+469,HP,CND1260RJF,Saransh Malik,GRP1792,saransh.malik@ethara.ai,Green PC
+470,HP,CND1234LZQ,Sandra P,GRP1733,sandra.saravan@ethara.ai,Green PC
+471,HP,CND1362VNO,Hammaad Gour,GRP1720,hammaad.gour@ethara.ai,Green PC
+472,HP,CND1234Z5B,Nakul Poswal,GRP1928,nakul.poswalint17@ethara.ai,Green PC
+473,HP,CND1234NYK,Riya Manaktala,GRP1786,riya.manaktala@ethara.ai,Green PC
+474,HP,CND1365D9P,Anushka Jaiswal,GRP1723,anushka.jaiswal@ethara.ai,Green PC
+475,HP,CND1234NSY,Devansh Gusain,GRP1776,devansh.gusain@ethara.ai,Green PC
+476,HP,CND1234ZMP,Sahil Saifi,Intern,sahil.saifi@ethara.ai,Green PC
+477,HP,CND1234MPJ,Aryan,GRP1479,aryan.ethara@ethara.ai,Green PC
+478,HP,CND1260S2R,Kushal Srivastav,GRP1821,kushal.srivastava285@ethara.ai,Green PC
+479,HP,CND1234MWG,Shivam Tiwari,GRP1889,shivam.tiwari@ethara.ai,Green PC
+480,HP,CND1365D3V,Aryan Kumar,GRP1933,aryan.kumar220@ethara.ai,Green PC
+481,HP,CND1361V8Z,Siddhant Dwivedi,GRP1989,siddhant.dwivedi@ethara.ai,Green PC
+482,HP,CND1260RLL,Shailee,Intern,shailee.ethara@ethara.ai,Green PC
+483,HP,CND1362W0G,Sneha Sadhukhan,GRP1848,sneha.sadhukhanint17@ethara.ai,Green PC
+484,HP,5CG3125RKT,Gauri Mittal,GRP1747,gauri.mittal@ethara.ai,Green PC
+485,HP,5CG2320WTY,Chetna,GRP1727,chetna.asm@ethara.ai,Green PC
+486,HP,5CG2320QNY,Rishav Raj,GRP1924,rishav.raj621@ethara.ai,Green PC
+487,HP,5CG2333F8B,Nargis Vats,GRP1949,nargis.vats2017@ethara.ai,Green PC
+488,HP,5CG2146J0M,Bhavik Jain,GRP1988,bhavik.jain86@ethara.ai,Green PC
+489,HP,5CG2320Q9Z,Deepanshi Agarwal,GRP1994,deepanshi.agarwal1994@ethara.ai,Green PC
+490,HP,5CG2333H27,Antriksh Singh Rawat,GRP1955,antriksh.singhint17@ethara.ai,Green PC
+491,HP,5CG2320QFV,Yash Handa,GRP1920,yash.handaint17@ethara.ai,Green PC
+492,HP,5CG2281X70,Abdus Samad Ali,GRP1954,abdus.samadint17@ethara.ai,Green PC
+493,HP,5CG2451KX1,Aniket Datta,GRP1926,aniket.dattaint17@ethara.ai,Green PC
+494,HP,5CG2333FPM,Umang,GRP1903,umang.ethara15@ethara.ai,Green PC
+495,HP,5CG24935JL,Avinash Mahadik,GRP2000,avinash.mahadik2000@ethara.ai,Green PC
+496,HP,5CG2320NML,Deepanshu Agrawal,GRP1950,deepanshu.agrawal40@ethara.ai,Green PC
+497,HP,5CG213DLMH,Anuja Abraham,GRP1912,anuja.abraham@ethara.ai,Green PC
+498,HP,5CG2281X6F,Tejus Pandey,GRP1970,tejus.pandey284@ethara.ai,Green PC
+499,HP,5CG2333DL6,Sneha Kalra,GRP1565,sneha.kalra@ethara.ai,Green PC
+500,HP,5CG213DKN3,Akanksha Harsh,GRP1581,akanksha.harsh@ethara.ai,Green PC
+501,HP,5CG213B2R6,Anshul Rawat,GRP1861,anshul.rawat.int3@ethara.ai,Green PC
+502,HP,5CG2139YGQ,Yashika Aggarwal,GRP1812,yashika.agagarwal@ethara.ai,Green PC
+503,HP,5CG2320WW1,Aryan Mehta,GRP1929,aryan.mehtaint17@ethara.ai,Green PC
+504,HP,5CG213DK4Y,Aditya Patel,GRP1985,aditya.patelint17@ethara.ai,Green PC
+505,HP,5CG213B47N,Kanika Yadav,GRP1881,kanika.yadav.int@ethara.ai,Green PC
+506,HP,5CG213B5GL,Prakhar,GRP1971,prakhar.ethara71@ethara.ai,Green PC
+507,HP,5CG2146JTN,Aditya Kumar Jha,GRP1966,aditya.jha@ethara.ai,Green PC
+508,HP,5CG2443QHD,Gaurav Ramola,GRP1745,gaurav.ramola@ethara.ai,Green PC
+509,HP,5CG2333DKQ,Sohaib Ahmad,GRP1953,sohaib.ahmad07@ethara.ai,Green PC
+510,HP,5CG2333GHC,Shreyanshu Kumar,GRP1937,shreyanshu.kumar@ethara.ai,Green PC
+511,HP,5CG2333B04,Bharat Bhushan,GRP1938,bharat.bhushan14@ethara.ai,Green PC
+512,HP,5CG2146J0C,Prity Kumari,GRP2016,prity.kumari2016@ethara.ai,Green PC
+513,HP,5CG213B1KY,Riya Kumari,GRP1967,riya.k@ethara.ai,Green PC
+514,HP,5CG2146HZV,Rucchika Kapoor,GRP2024,rucchika.kapoor2024@ethara.ai,Green PC
+515,HP,5CG2320Y8W,Varsha,GRP1998,varsha.yadav1998@ethara.ai,Green PC
+516,HP,5CG2333HR3,Bhavesh Parihar,GRP2026,bhavesh.parihar2026@ethara.ai,Green PC
+517,HP,5CG2333GHW,Shruti Bansal,GRP1384,shruti.bansal@ethara.ai,Green PC
+518,HP,5CG213B2RC,Shivani,GRP1913,shivani.ethara76@ethara.ai,Green PC
+519,HP,5CG24935BH,Vansh Gupta,GRP2023,vansh.gupta2023@ethara.ai,Green PC
+520,HP,5CG21993DN,Somya Shreya,GRP2043,somya.shreya@ethara.ai,Green PC
+521,HP,5CG2443QFM,Rakshita,GRP1760,rakshita.sharma@ethara.ai,Green PC
+522,HP,5CG213B0DR,Ankit Kumar,GRP1969,ankit.kumar381@ethara.ai,Green PC
+523,HP,5CG2333HSH,Aditi Tripathi,GRP1289,aditi.tripathi@ethara.ai,Green PC
+524,HP,5CG3125S2Z,Nikhil Shukla,GRP1925,nikhil.shukla41@ethara.ai,Green PC
+525,HP,5CG213B3QJ,Nikhil Satyam,GRP1960,nikhil.satyam02@ethara.ai,Green PC
+526,HP,5CG3125WWX,Saumya Vatsa,GRP1958,saumya.vatsaint17@ethara.ai,Green PC
+527,HP,5CG2146J6X,Mohamad Zakaria,GRP2035,mahamad.zakari2035@ethara.ai,Green PC
+528,HP,5CG2146J77,Madhushree Ray,GRP1995,madhushree.ray1995@ethara.ai,Green PC
+529,HP,5CG2320Y8Z,Parimal Prakhar Shukla,GRP1762,parimal.shukla@ethara.ai,Green PC
+530,HP,5CG213B0L6,E Logeshwaran,GRP2002,e.logeshwaran2002@ethara.ai,Green PC
+531,HP,CND14334MV,Avinash Yadav,GRP1417,avinash.yadav@ethara.ai,Green PC
+532,HP,CND1291TCP,Chirag Jain,GRP1112,chirag.jain@ethara.ai,Green PC
+533,HP,CND1312YRJ,Pradyumn Bhardwaj,GRP1553,pradyumn.bhardwaj@ethara.ai,Green PC
+534,HP,CND1312YZ1,Ruchi Kumari,GRP1416,ruchi.kumari@ethara.ai,Green PC
+535,HP,CND101BVNW,Isha Meshram,GRP1999,isha.meshram1999@ethara.ai,Green PC
+536,Lenovo,PF1W4K23,,,,Green PC
+537,HP,CND1291TGJ,Riya Singhal,GRP1471,riya.singhal@ethara.ai,Green PC
+538,HP,CND1291SGZ,Ayush Gupta,GRP1470,ayush.gupta@ethara.ai,Green PC
+539,HP,CND11313H9,Shreya,Intern,shreya.ethara.int32@ethara.ai,Green PC
+540,Lenovo,PC22TF11,Rishab Gupta,GRP1884,rishab.gupta643@ethara.ai,Green PC
+541,Lenovo,PC1TLBBX,Shashwat Suman,GRP1460,shashwat.suman@ethara.ai,Green PC
+542,Lenovo,PC22TF1E,PURVANSHI Joshi,GRP1347,purvanshi.joshi@ethara.ai,Green PC
+543,HP,CND1291SDF,Priyanshu,Intern,priyanshu.ethara26@ethara.ai,Green PC
+544,HP,CND113150W,Adarsh Agarwal,Intern,adarsh.agarwal6966@ethara.ai,Green PC
+545,HP,CND143348Q,Amit Tiwari,Intern,amit.tiwari@ethara.ai,Green PC
+546,HP,CND14334M9,Sahil kumar,Intern,sahil.kumar.int11@ethara.ai,Green PC
+547,HP,CND1312YSZ,Abhishek Yadav,Intern,abhishek.yadav.int11@ethara.ai,Green PC
+548,HP,CND101BX2D,Priyanshu Ranjan,Intern,priyanshu.ranjan@ethara.ai,Green PC
+549,HP,CND14333ZF,Shruti Thakur,GRP1793,shruti.thakur@ethara.ai,Green PC
+550,HP,CND14334LS,Mohammad Nek,Intern,mohammad.nek468@ethara.ai,Green PC
+551,HP,CND14333Z7,Sakshi Baisoya,GRP1661,Sakshi.Baisoya@ethara.ai,Green PC
+552,HP,CND14334HS,Alka Kumari,Intern,alka.kumari@ethara.ai,SICPL
+553,HP,CND14334FC,vaishnavi saini,GRP1865,vaishnavi.saini18@ethara.ai,Green PC
+554,HP,CND0533654,Harsh Kumar,GRP1323,harsh.1323@ethara.ai,Green PC
+555,HP,CND143346D,Gursimar Preet Singh,Intern,gursimarpreet.singhint17@ethara.ai,SICPL
+556,HP,CND1281XW0,Babloo Kumar,Intern,babloo.kumar@ethara.ai,SICPL
+557,HP,CND1312Z6D,Riya Kumari,GRP1914,riya.kumari40@ethara.ai,SICPL
+558,HP,CND14334HG,Jatin Sihag,GRP1491,jatin.sihag@ethara.ai,SICPL
+559,HP,CND143347Z,Aayush Dhama,GRP1602,aayush.dhama@ethara.ai,SICPL
+560,HP,CND11313HL,Pragati Yadav,GRP1517,pragati.yadav@ethara.ai,SICPL
+561,HP,CND14334L7,Pushkar Kumar Jha,Intern,pushkar.kumar.int47@ethara.ai,SICPL
+562,HP,CND14334L2,Vijay Kumar,Intern,vijay.kumar7488@ethara.ai,SICPL
+563,HP,CND1312ZDF,koshki raghuwanshi,GRP1721,koshki.raghuwanshi@ethara.ai,SICPL
+564,HP,CND3051Q02,,,,Green PC
+565,HP,CND20911CY,Sunny,GRP1365,sunny.ethara@ethara.ai,SICPL
+566,HP,CND3061KY6,,,,Green PC
+567,HP,CND3051040,Sidhant Singh Bhaisora,GRP1763,siddhant.bhaisora@ethara.ai,SICPL
+568,HP,CND1281XNJ,Vasu Rohilla,Intern,vasu.rohilla@ethara.ai,SICPL
+569,HP,CND14334T2,Sparsh Sharma,Intern,sparsh.sharmaint17@ethara.ai,SICPL
+570,HP,CND143342W,Shalu,Intern,shalu.bhardwaj.int40@ethara.ai,SICPL
+571,HP,CND1312YXS,Vasu Bansal,GRP1654,vasu.bansal@ethara.ai,SICPL
+572,HP,CND14334M1,Shalini Rai,GRP1813,shalini.rai@ethara.ai,SICPL
+573,HP,CND305100H,Samyak Jain,GRP1500,samyak.jain2@ethara.ai,SICPL
+574,HP,CND3061KLB,Lucky Singh,Intern,lucky.singh.int11@ethara.ai,SICPL
+575,HP,CND3061L1M,Aditya Rai,GRP1978,aditya.raj.int17@ethara.ai,SICPL
+576,HP,CND20911KW,Garvita Singh,Intern,garvita.singh.int25@ethara.ai,SICPL
+577,HP,CND30510BR,Aditya Jain,Intern,aditya.jainint17@ethara.ai,SICPL
+578,HP,CND30510QV,Neeraj Masiwal,Intern,neeraj.masiwal@ethara.ai,SICPL
+579,HP,CND1365CNF,Mayank Kumar,Intern,mayank.kumar@ethara.ai,SICPL
+580,HP,CND30510ND,Piyush Pal,Intern,piyush.pal2004@ethara.ai,SICPL
+581,HP,CND3061KMP,FAIZ ALI RAZA,Intern,faiz.raja.int@ethara.ai,SICPL
+582,HP,CND20912TM,Anurag Singh,GRP1513,anurag.singh2@ethara.ai,SICPL
+583,HP,CND1362VMP,Ali mohammad uabid,GRP1607,ali.ubaid@ethara.ai,SICPL
+584,HP,CND3061KS5,Parag Malik,Intern,parag.malik@ethara.ai,SICPL
+585,HP,CND30510GJ,Arjun Bhardwaj,Intern,arjun.bhardwaj.int4@ethara.ai,SICPL
+586,HP,CND3061KW5,vaishnavi hada,Intern,vaishnavi.hadaint17@ethara.ai,SICPL
+587,HP,CND3061LHP,Akansha Shukla,Intern,akansha.shukla123@ethara.ai,SICPL
+588,HP,CND305107C,Ankit Kumar Jha,Intern,kumar.ankit@ethara.ai,SICPL
+589,HP,CND1362VWC,Mayank Singh,GRP1429,mayank.singh@ethara.ai,SICPL
+590,HP,CND305102R,Rajlaxmi Kumari,GRP1739,rajlaxmi.kumari@ethara.ai,SICPL
+591,HP,CND1234ZTP,divyansh sriwastawa,GRP2033,divyansh.sriwastawa2033@ethara.ai,SICPL
+592,HP,CND30510L0,Priyanshu,Intern,priyanshu@ethara.ai,SICPL
+593,HP,CND30510M9,Suhani Kumari,Intern,suhani.kumariint17@ethara.ai,SICPL
+594,HP,CND3060R5J,Vidhi Singh,Intern,vidhi.singhint17@ethara.ai,SICPL
+595,HP,CND30510J2,Ankit Vashishtha,Intern,ankit.vashishtha@ethara.ai,SICPL
+596,HP,CND1361TXJ,Varsha,Intern,varsha.singhint17@ethara.ai,SICPL
+597,HP,CND2091244,Vansh singh,Intern,Vansh.singh.int@ethara.ai,SICPL
+598,HP,CND1362WGW,Ankit Yadav,GRP1426,ankit.yadav@ethara.ai,SICPL
+599,HP,CND3061KQB,Apurva Kashyap Ojha,Intern,apurva.ojha.int13@ethara.ai,SICPL
+600,HP,CND30517DP,Neeraj Patel,Intern,neeraj.patelint17@ethara.ai,SICPL
+601,HP,CND3061LJM,Suruchi Kumari,Intern,suruchi.kumari72@ethara.ai,SICPL
+602,HP,CND20911D8,Vaishali,Intern,vaishali.vaishali@ethara.ai,SICPL
+603,HP,CND30510DC,Kajal Baluni,GRP1746,kajal.baluni@ethara.ai,SICPL
+604,HP,CND20912KS,Ojasaw Verma,Intern,ojasaw.verma.int21@ethara.ai,SICPL
+605,HP,CND2092RN1,Vivek Kumar Singh,Intern,vivek.singh.int@ethara.ai,SICPL
+606,HP,CND14334GY,Nikit,GRP1761,nikit.tiwari@ethara.ai,SICPL
+607,HP,CND053363J,Divya,GRP1947,divya@ethara.ai,SICPL
+608,HP,CND113150D,Ayush Kumar,GRP1749,ayush.1749@ethara.ai,SICPL
+609,HP,CND14334LC,Jatin Singh Chauhan,GRP1917,jatin.chauhan@ethara.ai,SICPL
+610,HP,CND14334WJ,Kanika Badaya,GRP1722,kanika.badaya@ethara.ai,SICPL
+611,HP,CND1433422,Riya Sharma,GRP1782,riya.sharma@ethara.ai,SICPL
+612,HP,CND05335ZB,Anmol Bucha jain,GRP1919,anmol.jain.int3@ethara.ai,SICPL
+613,HP,CND14334LP,Ritika Arora,GRP1961,ritika.arora.int31@ethara.ai,SICPL
+614,HP,CND143349G,Dishita Arya,GRP1980,dishita.aryaint17@ethara.ai,SICPL
+615,HP,CND14333ZN,Ishita Pandey,GRP1758,ishita.pandey@ethara.ai,SICPL
+616,HP,CND14334LN,Md shahnawaz Akhtar,GRP1991,md.shahnawaz1312@ethara.ai,SICPL
+617,HP,CND101BX0X,Shivam Soni,GRP1719,Shivam.soni@ethara.ai,SICPL
+618,HP,CND1433K411,Namrata Singh,GRP1839,namrata.mukesh.singh@ethara.ai,SICPL
+619,HP,CND1312Z6X,Safura Hasan,GRP1765,safura.hasan@ethara.ai,SICPL
+620,HP,CND1433418,Vedika pandey,GRP1316,vedika.1316@ethara.ai,SICPL
+621,HP,CND143340B,Ankit Shah,GRP1921,ankit.shahint17@ethara.ai,SICPL
+622,HP,CND143341X,Bhoomika Chauhan,GRP2036,bhoomika.chauhan2036@ethara.ai,SICPL
+623,HP,CND101BWSH,Parna Ray,Intern,parna.rayint17@ethara.ai,SICPL
+624,HP,CND14334P2,Suraj Kumar Mishra,GRP1775,suraj.mishra@ethara.ai,SICPL
+625,HP,CND14334NX,Aditi Bansal,GRP1785,aditi.bansal@ethara.ai,SICPL
+626,HP,CND101BVHX,Achumi W,GRP1783,achumi.shitiri@ethara.ai,SICPL
+627,HP,CND1312YSB,Madhur Jain,GRP1811,madhur.jain@ethara.ai,SICPL
+628,HP,CND101BX34,Tushar Sharma,GRP1449,Tushar.sharma@ethara.ai,SICPL
+629,HP,CND1433424,Arav Jain,GRP1797,arav.jain@ethara.ai,SICPL
+630,HP,CND14334H1,Gaurav Singh,GRP1905,gaurav.singh@ethara.ai,SICPL
+631,HP,CND14334T3,Kritika Rai,GRP1854,kritika.rai@ethara.ai,SICPL
+632,HP,CND101BVQQ,Kashish,GRP1740,kashish.sindwani@ethara.ai,SICPL
+633,HP,CND14334ST,Aakriti Sanwal,GRP1734,aakriti.sanwal@ethara.ai,SICPL
+634,HP,CND113151B,Ananya Tandon,GRP1904,ananya.tandon.int43@ethara.ai,SICPL
+635,HP,CND053360D,Annu Kumari,GRP1838,annu.kumariint17@ethara.ai,SICPL
+636,HP,CND1281XV4,Atul Kumar Singh,GRP1872,atul.singh@ethara.ai,SICPL
+637,HP,CND14334L4,Raunak Bhatiya,GRP1887,raunak.bhatiya@ethara.ai,SICPL
+638,HP,CND143349P,Divyanshi Sikarwar,GRP1918,divyanshi.sikarwar@ethara.ai,SICPL
+639,HP,CND053365L,AKANSHU KAUSHIK,GRP1366,akanshu.kaushik01@ethara.ai,SICPL
+640,HP,CND101BVNH,Akash Pandey,GRP1322,akash.1322@ethara.ai,SICPL
+641,HP,CND14334K5,Tannu Kumari,GRP1870,Tannu.kumari.int@ethara.ai,SICPL
+642,HP,CND14334P9,Pragati Sharma,GRP1832,pragati.sharmacontact@ethara.ai,SICPL
+643,HP,CND1451LV3,Saili Nitin Shinde,GRP2042,saili.shinde@ethara.ai,SICPL
+644,HP,CND101BVL2,Umang Kumar Pasole,GRP1922,umang.kumar@ethara.ai,SICPL
+645,Lenovo,PC1Q287W,Chinmayee Sahu,GRP1618,chinmayee.sahu@ethara.ai,SICPL
+646,Lenovo,PF2Z1Q5D,Afreen Manzoor,GRP1718,afreen.manzoor@ethara.ai,SICPL
+647,Lenovo,PF34ZF7T,Kunal Singh,GRP1910,kunal.singh.int5@ethara.ai,SICPL
+648,Lenovo,PF2B1JWV,Samkit Jain,GRP1934,samkit.jaiint17@ethara.ai,SICPL
+649,Lenovo,PF2B22GR,Sankalp Goel,GRP1963,sankalp.goel5@ethara.ai,SICPL
+650,Lenovo,PF2VRA68,Riya Dobhal,GRP1728,riya.dobhal@ethara.ai,SICPL
+651,Lenovo,PF32APYV,Prashant Kumar Patel,GRP1528,prashant.patel@ethara.ai,SICPL
+652,Lenovo,PC1VSJ1F,Ritika,GRP1830,ritika@ethara.ai,SICPL
+653,HP,CND1433430,Tamanna Sharma,GRP1819,tamanna.sharma@ethara.ai,SICPL
+654,HP,CND1281Y58,HImanshu Rai,GRP1621,himanshu.rai@ethara.ai,SICPL
+655,HP,5CG2451KWH,Sarthak Vaid,GRP1775,sarthak.vaid@ethara.ai,SICPL
+656,HP,5CG2146JKY,Niraj Kumar,GRP1766,niraj.kumar@ethara.ai,SICPL
+657,HP,5CG3125WW4,Tripurari Mishra,GRP1805,tripurari.mishra@ethara.ai,SICPL
+658,HP,5CG213B2MQ,Sejal Pal,GRP2021,sejal.pal2021@ethara.ai,SICPL
+659,HP,5CG1382VX1,Sidharth R Nain,GRP2008,sidharth.nain2008@ethara.ai,SICPL
+660,HP,5CG213B5Q1,Siddhi,GRP2005,siddhi.2005@ethara.ai,SICPL
+661,HP,5CG2333J3L,Minu Kumari,GRP1936,minu.kumari@ethara.ai,SICPL
+662,HP,5CG213B2B4,Neha Singh,GRP1292,neha.singh@ethara.ai,SICPL
+663,HP,CND14334JX,Nishtha Bhatia,GRP1853,nishtha.bhatia833@ethara.ai,SICPL
+664,Lenovo,PF2CLMJL,Nirbhay Kumar,Intern,nirbhay.kumar1@ethara.ai,SICPL
+665,Lenovo,PC1V9NXE,Shyam,GRP1841,shyam@ethara.ai,SICPL
+666,Lenovo,PC22TF1K,Harsh Gupta,GRP1973,harsh.gupta14@ethara.ai,SICPL
+667,Lenovo,PC1V9NXV,Krrish Kumar Singh,GRP1894,krrish.singh.int3@ethara.ai,SICPL
+668,Lenovo,PC20A426,Manish Patel,GRP1923,manish.patelint17@ethara.ai,SICPL
+669,Lenovo,PC1V9PHD,Vishal Kumar Sharma,GRP1713,vishal.sharma@ethara.ai,SICPL
+670,Lenovo,PF33WELL,Divjyot Singh,GRP1741,divjyot.singh@ethara.ai,SICPL
+671,Lenovo,PC1QB0FE,Shashwat Suman,GRP1460,shashwat.suman@ethara.ai,SICPL
+672,Lenovo,PF2R3FZ2,Khushi Papola,GRP1759,khushi.papola@ethara.ai,SICPL
+673,Lenovo,PF31BD13,Lakshya Jain,GRP1977,lakshay.jainint17@ethara.ai,SICPL
+674,Lenovo,PC21KYA2,Ragini Piplani,GRP1731,ragini.piplani@ethara.ai,SICPL
+675,Lenovo,PC1V9NY6,Abhishek Kumar,GRP1774,abhishek.grp1774@ethara.ai,SICPL
+676,HP,5CG2139ZC5,Kartikey Sharma,GRP2017,kartikey.sharma2017@ethara.ai,SICPL
+677,Dell,5ZVF593,Yash Kumar,GRP1868,yash.kumar@ethara.ai,SICPL
+678,Lenovo,PF2NA0YB,Akanksha Sood,GRP1788,akanksha.sood@ethara.ai,SICPL
+679,Lenovo,PF331AWA,Smriti Sharma,GRP1752,msriti.sharma@ethara.ai,SICPL
+680,Lenovo,PF2B28NG,Madhav Vashistha,GRP1748,madhav.vashistha@ethara.ai,SICPL
+681,Lenovo,PF20RNQL,Harsh Anand,GRP1309,harsh.anand@ethara.ai,SICPL
+682,HP,CND1451LVN,Kanak Yadav,GRP1987,kanak.yadav@ethara.ai,SICPL
+683,HP,CND1131BH1,Geetika Tyagi,GRP1946,geetika.tyagi.int17@ethara.ai,SICPL
+684,HP,CND1362VX5,Shreshtha Vashishtha,GRP 1908,shreshtha.vashishtha.int48@ethara.ai,SICPL
+685,HP,CND14334VN,Kushagra,GRP2009,kushagra.2009@ethara.ai,SICPL
+686,HP,CND1362VH0,Akshay Pratap Singh,GRP1951,akshay.pratap12@ethara.ai,SICPL
+687,HP,CND101BW7C,Dikshika Kamboj,GRP1750,dikshika.kamboj@ethara.ai,SICPL
+688,HP,CND1362VWW,Khushi Arora,GRP2025,khushi.arora2025@ethara.ai,SICPL
+689,HP,CND12350JS,Sushant,GRP1911,sushant.kumar2003@ethara.ai,SICPL
+690,HP,CND101BW92,Aftab Hasan Mansoori,GRP1836,aftab.mansoori@ethara.ai,SICPL
+691,HP,CND101BWBT,Anuradha Priyadarshini,GRP1773,anuradha.priyadarshini@ethara.ai,SICPL
+692,HP,CND101BVHD,Vishal Chand,GRP1738,vishal.chand@ethara.ai,SICPL
+693,HP,CND1312YZ2,Abhishek Kumar,GRP1895,abhishek.kumar.int@ethara.ai,SICPL
+694,HP,CND053366C,Nitin Kumar,GRP1941,nitin.kumar@ethara.ai,SICPL
+695,HP,CND1362VLN,Leena Gupta,GRP1730,leena.gupta@ethara.ai,SICPL
+696,HP,CND1234MJG,Tanu Rana,GRP1855,tanu.ethara2@ethara.ai,SICPL
+697,HP,CND1291SK8,Atukuti Praneetha,GRP2013,Atukuti.Praneetha2013@ethara.ai,SICPL
+698,HP,CND1361VCB,Thanniru Amrutha,GRP2011,thanniru.amrutha2011@ethara.ai,SICPL
+699,HP,CND101BX2W,Bhuvaneswari Thirunamalli,GRP2012,bhuvaneswari.thirunamalli@ethara.ai,SICPL
+700,HP,CND3061LJ6,Kunche Dhanushka,GRP2007,kunche.dhanushka2007@ethara.ai,SICPL
+701,HP,CND1234ZXW,M.Hema Satyaveni,GRP2029,midathana.satyaveni2029@ethara.ai,SICPL
+702,HP,CND1038C5X,Nalamothu Kavya,GRP2018,nalamothu.kavya2018@ethara.ai,SICPL
+703,HP,CND1234MBK,Anchal Bharti,GRP2034,Anchal.bharti2034@ethara.ai,SICPL
+704,HP,CND14334NM,Sahil Tak,GRP1689,sahil.tak@ethara.ai,SICPL
+705,HP,CND101BVKW,Hitesh Kumar,GRP1847,hitesh.kumar25@ethara.ai,SICPL
+706,HP,CND1281Y7W,Kritika Kumari,GRP2019,kritika.kumari2019@ethara.ai,SICPL
+707,HP,CND1281XWX,Bulbul Singh,GRP2006,bulbul.singh2006@ethara.ai,SICPL
+708,HP,CND1281Y78,Chinne akeshay kumar,GRP2032,Akshey.kumar2032@ethara.ai,SICPL
+709,HP,CND11313GF,Himanshu Kumar,GRP1874,himanshu.kumar.int@ethara.ai,SICPL
+710,HP,CND1312Z2P,Kavya Namdev,GRP2027,kavya.namdev2027@ethara.ai,SICPL
+711,HP,CND101BW5H,Arohi Malviya,GRP2010,arohi.malviya2010@ethara.ai,SICPL
+712,HP,CND1312YSF,Shreya sawal,GRP2020,shreya.sawal2020@ethara.ai,SICPL
+713,Lenovo,PF2VS2KL,Adarsh Sikarwar,GRP1840,adarsh.sikarwar.int6@ethara.ai,SICPL
+714,Lenovo,PC2A1GJ7,Madhu Kushwaha,GRP1818,madhu.kushwaha@ethara.ai,SICPL
+715,Lenovo,PC22TF1C,Nitesh Kumar Das,GRP1829,nitesh.kumardas@ethara.ai,SICPL
+716,Lenovo,PC2A1GJP,Rimi Mandal,GRP1724,rimi.mandal@ethara.ai,SICPL
+717,Lenovo,PC22TF0Y,Neelabh Sharma,GRP2031,neelabh.sharma2031@ethara.ai,SICPL
+718,Lenovo,PC22TF1W,Aashutosh Mathur,GRP1815,Aashutosh.Mathur1815@ethara.ai,SICPL
+719,Lenovo,PC2A1GHV,Debarjya Ray,GRP2004,debarjya.ray2004@ethara.ai,SICPL
+720,Lenovo,PF2AJ2J9,Harshank Kanunjo,GRP1992,harshank.kanunjo@ethara.ai,SICPL
+721,Lenovo,PC22TF10,Harshit bisht,GRP1784,harshal.bisht@ethara.ai,SICPL
+722,Lenovo,PC1TLBB3,Shreya Shrivastava,Intern,shreya.srivastava@ethara.ai,SICPL
+723,Lenovo,PF2XS830,Kumari Anjali,GRP1997,anjali.kumari1997@ethara.ai,SICPL
+724,HP,CND1433489,Kunwar balender singh,GRP1915,kunwar.singh@ethara.ai,SICPL
+725,HP,CND1312Z1G,Vishal Singh,GRP1772,vishal.singh@ethara.ai,SICPL
+726,HP,CND0514T9J,Deepanshu,GRP1332,deepanshu@ethara.ai,SICPL
+727,HP,CND053360M,Vipul Dev,GRP1952,vipul.dev@ethara.ai,SICPL
+728,HP,CND1312ZBB,Diya bhatt,GRP1781,diya.bhatt@ethara.ai,SICPL
+729,HP,CND1312Z1P,Kritika Singh,GRP1979,Kritika.singh33@ethara.ai,SICPL
+730,Lenovo,PC2A1GHM,Jatin Sharma,GRP1940,jatin@ethara.ai,SICPL
+731,Lenovo,PC22TFTD,Pranav Verma,GRP1875,pranav.verma@ethara.ai,SICPL
+732,Lenovo,PC1Q4TPY,Ayush Teotia,GRP1986,ayush.teotia.int17@ethara.ai,SICPL
+733,Lenovo,PC1QB0FF,Sumit Kumar Jayant,GRP1809,Sumit.jayant@ethara.ai,SICPL
+734,HP,CND14334JL,Nidhi Tomar,Intern,nidhi.tomar@ethara.ai,SICPL
+735,HP,CND1260RLK,Adnan Rashid,GRP1962,adnan.rashid@ethara.ai,SICPL
+736,HP,CND1365D46,Sanskriti Chauhan,GRP2001,sanskriti.chaouhan2001@ethara.ai,SICPL
+737,HP,CND143347H,Riya Bhatt,GRP1780,riya.bhatt@ethara.ai,SICPL
+738,HP,CND11313N1,Shreya Gautam,Intern,shreya.g@ethara.ai,SICPL
+739,HP,CND1291SJS,VISHAL MAURYA,Intern,vishal.maurya@ethara.ai,SICPL
+740,HP,CND11313ZG,Gautam,Intern,gautam@ethara.ai,SICPL
+741,HP,CND1291SCJ,Farkansh gupta,Intern,farkansh.gupta22@ethara.ai,SICPL
+742,HP,CND11313XG,Ritik singh,Intern,ritik.singh06@ethara.ai,SICPL
+743,HP,CND11313YQ,Khushi,Intern,khushi.vishnoiint17@ethara.ai,SICPL
+744,HP,CND11313LX,Anuj Raghav,Intern,anuj.raghavint17@ethara.ai,SICPL
+745,HP,CND11313L9,Ravi Prajapati,Intern,ravi.prajapati9325@ethara.ai,SICPL
+746,HP,CND1291SG1,Jyoti singh,Intern,jyoti.singh@ethara.ai,SICPL
+747,HP,CND053360S,Aditya Porwal,Intern,aditya.porwal57@ethara.ai,SICPL
+748,HP,CND1291SM6,Harshit Chaurasiya,Intern,harshit.chaurasiya.int24@ethara.ai,SICPL
+749,HP,CND1087L57,Mohammad Ansar,Intern,mohd.ansar@ethara.ai,SICPL
+750,HP,CND1291SFD,Randhir Kumar,Intern,randhir.kumar977@ethara.ai,SICPL
+751,HP,CND113145S,Surya J,GRP1735,surya.jayakumar@ethara.ai,SICPL
+752,HP,CND1291TFD,Shubham,,shubham.skvatas@ethara.ai,SICPL
+753,HP,CND053364S,Tushar tiwari,Intern,tushar.tiwari@ethara.ai,SICPL
+754,HP,CND101BVSL,Piyush Chauhan,GRP1432,piyush.chauhan@ethara.ai,SICPL
+755,HP,CND113144Z,Ishita,GRP2028,ishita.garg2028@ethara.ai,SICPL
+756,HP,CND1291SC5,Ali Ashraf,Intern,ali.ashraf439@ethara.ai,SICPL
+757,HP,CND11158J8,Tarun kumar,Intern,tarun.kumar6634@ethara.ai,SICPL
+758,HP,CND1131430,Atul Tomar,Intern,atul.tomar@ethara.ai,SICPL
+759,HP,CND1291SQT,Roshan Rana,,roshan.rana@ethara.ai,SICPL
+760,HP,CND11313G0,Areesha Khan,Intern,areesha.khan.int23@ethara.ai,SICPL
+761,HP,CND113141H,Anjali Singh,Intern,anjali.singh.int10@ethara.ai,SICPL
+762,HP,CND11313YF,Poonam Negi,GRP1751,poonam.negi@ethara.ai,SICPL
+763,HP,CND11313H7,Anurag,Intern,anurag.s@ethara.ai,SICPL
+764,HP,CND0514SB2,Abhishek,Intern,abhishek.nain1000@ethara.ai,SICPL
+765,HP,CND101BWZG,Aayush Varshney,Intern,aayush.varshney2004@ethara.ai,SICPL
+766,HP,CND101BWRG,Jishan Ansari,Intern,jishan.ansari@ethara.ai,SICPL
+767,HP,CND1291TFH,LAKSHAY CHHABRA,Intern,lakshay.chhabra@ethara.ai,SICPL
+768,HP,CND10527PX,Mayank Kaliraman,Intern,mayank.ethara.int2@ethara.ai,SICPL
+769,HP,CND0514T9S,Saurabh kumar,Intern,saurabh.kumar43@ethara.ai,SICPL
+770,HP,CND101BVK3,Priya Kumari Singh,Intern,priya.kumari007@ethara.ai,SICPL
+771,HP,CND113140V,Animesh Agarwal,Intern,animesh.agarwal.int20@ethara.ai,SICPL
+772,HP,CND101BWN1,Sneha Singh,Intern,sneha.singhint17@ethara.ai,SICPL
+773,HP,CND11313VY,Vishal Kumar,Intern,vishal.kumar230@ethara.ai,SICPL
+774,HP,CND113152W,Jigyashu raj,Intern,jigyashu.raj.int@ethara.ai,SICPL
+775,HP,CND113142G,Sidharth Kumar,Intern,sidharth.kumar@ethara.ai,SICPL
+776,HP,CND1312Z6K,Sajal,Intern,sajal.ethara.int16@ethara.ai,SICPL
+777,HP,CND1291TG9,Ekank Bhatia,Intern,ekank.bhatia@ethara.ai,SICPL
+778,HP,CND143348R,Harsh Vardhan Chaudhary,Intern,harsh.vardhan5853@ethara.ai,SICPL
+779,HP,CND101BWV8,Arbaz Ahmed,Intern,arbaz.ahmed62@ethara.ai,SICPL
+780,HP,CND113141X,Manish yadav,Intern,manish.yadav.int42@ethara.ai,SICPL
+781,HP,CND11313P9,Himanshu Jha,Intern,himanshu.jha800@ethara.ai,SICPL
+782,HP,CND11313KM,Chirag Aggarwal,Intern,chirag.aggarwal@ethara.ai,SICPL
+783,HP,CND0533625,Shreya Sharma,Intern,shreya.sharma.int17@ethara.ai,SICPL
+784,HP,CND1433482,Bhavya Thakur,Intern,bhavya.thakurint17@ethara.ai,SICPL
+785,HP,CND11158CZ,Kanneboina Pradhyudh Yadav,GRP2015,kanneboina.yadav2015@ethara.ai,SICPL
+786,HP,CND1291SMM,Rishiraj,GRP1518,rishi.raj@ethara.ai,SICPL
+787,HP,CND11158L6,Ananya Gupta,Intern,ananya.gupta@ethara.ai,SICPL
+788,HP,CND11158HR,Pranjul Mani Gupta,GRP1695,pranjul.gupta@ethara.ai,SICPL
+789,HP,CND1291SJJ,Vasu Sharma,GRP1363,vasu.sharma@ethara.ai,SICPL
+790,HP,CND10527RR,Jaahanvi,Intern,jaahanvi.ethara16@ethara.ai,SICPL
+791,HP,CND1442HV7,Arun pratab singh,GRP1530,arun.singh@ethara.ai,SICPL
+792,HP,CND11313PY,Deeksha Singh,Intern,deeksha.singh.int4@ethara.ai,SICPL
+793,HP,CND11313YB,Ankit Vishwakarma,Intern,ankit.vishwakarma.int@ethara.ai,SICPL
+794,HP,CND11313RX,Saurav Kumar Saini,Intern,saurav.kumar27@ethara.ai,SICPL
+795,HP,CND1291SJ4,Manish Kumar,Intern,manish.kumar@ethara.ai,SICPL
+796,HP,CND11158L4,Sunny Raj,Intern,sunny.raj7865@ethara.ai,SICPL
+797,HP,CND0514T6Y,Gaurav Kumar,Intern,gaurav.kumar.int@ethara.ai,SICPL
+798,HP,CND11158B1,Astha Singh,Intern,astha.singh@ethara.ai,SICPL
+799,HP,CND1442HPC,Himanshu Singh,GRP1860,himanshu.singhint17@ethara.ai,SICPL
+800,HP,CND0533614,Vedant Tiwari,Intern,vedant.tiwaritw@ethara.ai,SICPL
+801,HP,CND1291TD2,Kartik Shanwal,Intern,kartik.shanwal.int@ethara.ai,SICPL
+802,HP,CND11158JL,Rahul Kumar,Intern,rahul.kumar.int@ethara.ai,SICPL
+803,HP,CND101BVL5,Saksham Kumar,Intern,saksham.kumar.int24@ethara.ai,SICPL
+804,HP,CND1131BHV,Tushar Jangid,Intern,tushar.jangid.int33@ethara.ai,SICPL
+805,HP,CND1312YXV,Shivam Dwivedi,Intern,shivam.dwivedi.int37@ethara.ai,SICPL
+806,HP,CND11313WL,Vaibhav Vaid,Intern,vaibhav.vaid64@ethara.ai,SICPL
+807,HP,CND1131BHN,Monika Raghav,Intern,monika.raghav.int27@ethara.ai,SICPL
+808,HP,CND113147Z,Monideepa Das,Intern,monideepa.das.int9@ethara.ai,SICPL
+809,HP,CND1291SL1,Kaushal Kishor,Intern,kaushal.kishor.int@ethara.ai,SICPL
+810,HP,CND101BVJT,Rohini Dhankhar,Intern,rohini.dhankhar61@ethara.ai,SICPL
+811,HP,CND11158FX,RIYA RAJ,Intern,riya.raj8595@ethara.ai,SICPL
+812,HP,CND11158GQ,Nandini Sharma,Intern,nandini.sharma.int6@ethara.ai,SICPL
+813,HP,CND1291SN2,Raman Kumar,Intern,raman.kumar47@ethara.ai,SICPL
+814,HP,CND053363V,Akshay Mohan Srivastava,Intern,akshay.mohan1003@ethara.ai,SICPL
+815,HP,CND101BWTC,Vikram Kumar,Intern,vikram.kumar003@ethara.ai,SICPL
+816,HP,CND1291TFP,Vibhor Tyagi,Intern,vibhor.tyagi778@ethara.ai,SICPL
+817,HP,CND11313HB,Pankaj,Intern,pankaj.ethara.int7@ethara.ai,SICPL
+818,HP,CND1131405,Vishu Porwal,Intern,vishu.porwal10@ethara.ai,SICPL
+819,HP,CND1291SF3,Alok Kumar Jaiswal,Intern,alok.jaiswal11@ethara.ai,SICPL
+820,HP,CND111F8CT,Swayam Singh,Intern,swayam.singh.int12@ethara.ai,SICPL
+821,HP,CND11313QS,Pooja Jha,Intern,pooja.jha2003@ethara.ai,SICPL
+822,HP,CND11313PJ,Amit Sharma,Intern,amit.sharma.int34@ethara.ai,SICPL
+823,HP,CND1291SKT,Kapil Sharma,Intern,kapil.sharma55@ethara.ai,SICPL
+824,HP,CND101BW24,Aadarsh Dwivedi,Intern,aadarsh.dwivediint17@ethara.ai,SICPL
+825,HP,CND1291TCK,Vanshika jain,Intern,vanshika.jain603@ethara.ai,SICPL
+826,HP,CND11313ZN,Gaurav Yadav,Intern,gaurav.yadav4664@ethara.ai,SICPL
+827,HP,CND101BX7P,Sanya Gautam,Intern,sanya.gautamint17@ethara.ai,SICPL
+828,HP,CND101BW2D,Avinash,Intern,avinash.yadavint17@ethara.ai,SICPL
+829,HP,CND113143V,Sneha pandit,Intern,sneha.pandit.int@ethara.ai,SICPL
+830,HP,CND1291SBT,Nibha kumari,Intern,nibha.kumari.int8@ethara.ai,SICPL
+831,HP,CND113142C,Shivani Kumari,Intern,shivani.kumari1984@ethara.ai,SICPL
+832,HP,CND11313S2,Naman Gupta,Intern,naman.guptaint17@ethara.ai,SICPL
+833,HP,CND1291SHF,Vishnu Srivastava,Intern,vishnu.srivastavaint17@ethara.ai,SICPL
+834,HP,CND11313RC,Anurag Singh,Intern,anurag.singh@ethara.ai,SICPL
+835,HP,CND10527TK,Vicky Kumar,Intern,vicky.kumar58@ethara.ai,SICPL
+836,HP,CND11313L4,ujjawal kumar singh,Intern,ujjawal.singh@ethara.ai,SICPL
+837,HP,CND113141Y,Praveen Kumar,Intern,praveen.kumarint17@ethara.ai,SICPL
+838,HP,CND11313Q9,Kundan Kumar,GRP1507,kundan.kumar@ethara.ai,SICPL
+839,HP,CND1131BPY,Sharandeep Kaur,Intern,sharandeep.kaur27@ethara.ai,SICPL
+840,HP,CND1131455,satyendra kumar,Intern,satyendra.kumar@ethara.ai,SICPL
+841,HP,CND1291SDM,Jamuna Debnath,Intern,jamuna.debnath@ethara.ai,SICPL
+842,HP,CND101BX92,lokesh deshwal,Intern,lokesh.deshwal66@ethara.ai,SICPL
+843,HP,CND0514T6K,Abubakar,GRP1964,abubakar.18652@ethara.ai,SICPL
+844,HP,CND11313Y0,Harsh Saharawat,Intern,harsh.saharawat0001@ethara.ai,SICPL
+845,HP,CND1291TFR,Mitali Varshney,Intern,mitali.varshney@ethara.ai,SICPL
+846,HP,CND113152N,Nikhil Chaudhary,GRP1636,nikhil.chaudhary@ethara.ai,SICPL
+847,HP,CND1291TB2,Aditi Agarwal,GRP1589,aditi.agarwal@ethara.ai,SICPL
+848,HP,CND113150V,Vivek Rawat,Intern,vivek.rawat83@ethara.ai,SICPL
+849,HP,CND11158HY,Prince Mishra,GRP1337,prince.mishra@ethara.ai,SICPL
+850,HP,CND1312Z0T,Anjali kumari,Intern,anjali.kumariint17@ethara.ai,SICPL
+851,HP,CND113142N,Dhawal Pandey,Intern,dhawal.pandey8239@ethara.ai,SICPL
+852,HP,CND11313TT,Kalash Dwivedi,Intern,kalash.dwivedi@ethara.ai,SICPL
+853,HP,CND11313VX,Bhavishya,Intern,bhavishya@ethara.ai,SICPL
+854,HP,CND1131357,Dev,Intern,dev.ethara.int21@ethara.ai,SICPL
+855,HP,CND11158L0,Ankit Negi,Intern,ankit.negi.int@ethara.ai,SICPL
+856,HP,CND10527PS,Pankaj Kumar,Intern,pankaj.kumar12@ethara.ai,SICPL
+857,HP,CND113140F,mansi agarwal,Intern,mansi.agarwal101@ethara.ai,SICPL
+858,HP,CND11158L2,Sagar Sharma,Intern,sagar.sharma112@ethara.ai,SICPL
+859,HP,CND1131BQP,Tushar,Intern,tushar@ethara.ai,SICPL
+860,HP,CND1291SLK,Riya,Intern,riya.srivastav.int41@ethara.ai,SICPL
+861,HP,CND113143Q,Priyanshu Kumar,Intern,priyanshu.kumar5674@ethara.ai,SICPL
+862,HP,CND1291SF2,Kushagra Pandey,Intern,kushagra.pandeyint17@ethara.ai,SICPL
+863,HP,CND11313HY,Farman Ahsan,Intern,farman.ahsan@ethara.ai,SICPL
+864,HP,CND11313Z3,Harsh Pal,Intern,harsh.pal@ethara.ai,SICPL
+865,HP,CND1131BLY,Dhruv Yadav,Intern,dhruv.yadav@ethara.ai,SICPL
+866,HP,CND11313GK,Shubhi Goyal,Intern,shubhi.goyal.int@ethara.ai,SICPL
+867,HP,CND11313FH,Srishti,Intern,srishti.srishti@ethara.ai,SICPL
+868,HP,CND11313GN,Anurag Kumar,Intern,anurag.kumar@ethara.ai,SICPL
+869,HP,CND101BX7X,Ansh Dixit,GRP1274,ansh.dixit@ethara.ai,SICPL
+870,HP,CND1291SB8,Dipender,Intern,dipender.int@ethara.ai,SICPL
+871,HP,CND1131BH3,Rajan Kumar Gupta,Intern,rajan.kumar264@ethara.ai,SICPL
+872,HP,CND113140S,Bandana Kumari,Intern,bandana.kumari114@ethara.ai,SICPL
+873,HP,CND1291SNG,Manu Kumar,Intern,manu.kumar@ethara.ai,SICPL
+874,HP,CND11313XO,Manish Kumar,Intern,kumar.manish@ethara.ai,SICPL
+875,HP,CND1291SGD,Rohit Sharma,Intern,rohit.sharma@ethara.ai,SICPL
+876,HP,CND101BWDJ,Shreya Chaturvedi,Intern,shreya.chaturvedi.int19@ethara.ai,SICPL
+877,HP,CND0514T3F,Ashish Kumar Prajapati,Intern,ashish.kumar218@ethara.ai,SICPL
+878,HP,CND1291SKQ,Shubham Raj,Intern,shubham.raj@ethara.ai,SICPL
+879,HP,CND11158J6,Rajan Kumar,Intern,rajan.kumar13@ethara.ai,SICPL
+880,HP,CND1281Y5N,Tanya Shrivastava,GRP1336,tanya.shrivastava@ethara.ai,SICPL
+881,HP,CND0514SN8,Rakshit Kumar,GRP1551,rakshit.kumar@ethara.ai,SICPL
+882,HP,CND101BX8R,Sakshi Raj,Intern,sakshi.raj030@ethara.ai,SICPL
+883,HP,CND101BWPR,Mayank,Intern,mayank@ethara.ai,SICPL
+884,HP,CND11158JZ,Ansh Mahendru,Intern,ansh.mahendru.int@ethara.ai,SICPL
+885,HP,CND1281XJZ,Alok Tiwari,GRP2050,alok.tiwari79@ethara.ai,SICPL
+886,HP,CND11314ZY,Raj Savita,Intern,raj.savita992@ethara.ai,SICPL
+887,HP,CND1131433,Radhika Bansal,Intern,radhika.bansal@ethara.ai,SICPL
+888,HP,CND1291TBT,Palak,Intern,palak.kumari.int14@ethara.ai,SICPL
+889,HP,CND1291SCH,Amal V Biju,Intern,amal.v@ethara.ai,SICPL
+890,HP,CND101NWVD,Madhwan pratap,Intern,madhwan.pratap.int26@ethara.ai,SICPL
+891,HP,CND1087L4P,Khushbu Yadav,Intern,khushbu.yadav.int@ethara.ai,SICPL
+892,HP,CND11313YY,Diksha Pal,Intern,diksha.pal.int@ethara.ai,SICPL
+893,HP,CND101BVVL,Ojas Sharma,Intern,ojas.sharma@ethara.ai,SICPL
+894,HP,CND101CLGG,Ravi Raj,Intern,ravi.rajdp@ethara.ai,SICPL
+895,HP,CND113141Q,Jai Kataria,GRP1880,jai.kataria@thara.ai,SICPL
+896,HP,CND101BW29,Abhay Gandotra,Intern,abhay.gandotra.int12@ethara.ai,SICPL
+897,HP,CND1291TD8,Ammar Haider,Intern,ammar.haider@ethara.ai,SICPL
+898,HP,CND1131484,Anshu Raj,Intern,anshu.raj@ethara.ai,SICPL
+899,HP,CND101BX9Z,Abu Bakar,Intern,abu.bakar2011@ethara.ai,SICPL
+900,HP,CND11158JT,Shreyansh Pandey,Intern,shreyansh.pandey@ethara.ai,SICPL
+901,HP,CND1291SCC,Md Muzammil Abdin,Intern,md.muzammil@ethara.ai,SICPL
+902,HP,CND113151R,Manish kumar,Intern,manish.kumar.int44@ethara.ai,SICPL
+903,HP,CND101BWF9,Prince Kumar,Intern,prince.kumar45@ethara.ai,SICPL
+904,HP,CND11158DM,Chhavi Tomar,Intern,chhavi.tomar.int4@ethara.ai,SICPL
+905,HP,CND11313PC,Dhananjay Kumar Pandey,Intern,dhananjay.kumar16@ethara.ai,SICPL
+906,HP,CND11158FJ,Ayush kumar,Intern,ayush.kumar72133@ethara.ai,SICPL
+907,HP,CND1131468,Aman Sharma,Intern,aman.sharma981@ethara.ai,SICPL
+908,HP,CND1291SJ0,sumit kumar,Intern,sumit.k@ethara.ai,SICPL
+909,HP,CND1291SF8,Amardeep Sahrawat,Intern,amardeep.sharawat418@ethara.ai,SICPL
+910,HP,CND1291TDQ,Shreya Aggarwal,Intern,shreya.aggarwal.int2@ethara.ai,SICPL
+911,HP,CND1291SJ8,Ankita Kumari,Intern,ankita.kumari52@ethara.ai,SICPL
+912,HP,CND11313NS,Harshit singh,Intern,harshit.singh32@ethara.ai,SICPL
+913,HP,CND11313P0,Shivam Sharma,Intern,shivam.s@ethara.ai,SICPL
+914,HP,CND11158LR,Rahul,Intern,rahul@ethara.ai,SICPL
+915,HP,CND11313VV,Ashish Kumar,GRP1613,ashish.kumar3@ethara.ai,SICPL
+916,HP,CND1291T9H,Ashutosh Kumar,Intern,ashutosh.kumar29@ethara.ai,SICPL
+917,HP,CND1291S1N,Jitesh Kumar,Intern,jitesh.kumarint17@ethara.ai,SICPL
+918,HP,CND11158GV,Haidar Raza,Intern,haidar.raza@ethara.ai,SICPL
+919,HP,CND101BWSB,Harsh Jakhar,Intern,harsh.jakharint17@ethara.ai,SICPL
+920,HP,CND0514SJR,Manish Kumar Singh,Intern,manish.kumar3@ethara.ai,SICPL
+921,HP,CND1291TBQ,Chandar Prakash,Intern,chandar.prakash6789@ethara.ai,SICPL
+922,HP,CND101BVVW,ashish sunil,Intern,ashish.sunilint17@ethara.ai,SICPL
+923,HP,CND1291TBN,Aakriti singh,Intern,aakriti.singh28@ethara.ai,SICPL
+924,HP,CND1131MW,Sahil Singh BIsht,Intern,sahil.singh623@ethara.ai,SICPL

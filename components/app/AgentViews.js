@@ -61,6 +61,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { RaiseTicket } from "@/components/app/TicketsView";
+import TeamPerformance from "@/components/app/TeamPerformance";
+import CategoryManager from "@/components/app/CategoryManager";
 
 const DONE = ["Resolved", "Closed", "Cancelled"];
 const roleMeta = (user) =>
@@ -92,13 +94,21 @@ function AgentKpis({ tickets, stats }) {
     ? slaRemaining(oldest.sla_resolution_due).text.replace("Overdue ", "")
     : "—";
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
       {[
         [
           "Assigned to me",
-          tickets.length,
-          `of ${stats.total} team tickets`,
+          active.length,
+          `${tickets.length - active.length} closed`,
           "",
+        ],
+        // Tickets now start in Open rather than In Progress, so without this
+        // tile freshly raised or newly claimed work appears in no count.
+        [
+          "Open",
+          active.filter((ticket) => ticket.status === "Open").length,
+          "not started yet",
+          "text-[#6C5CE7]",
         ],
         [
           "Overdue",
@@ -108,8 +118,8 @@ function AgentKpis({ tickets, stats }) {
         ],
         [
           "In progress",
-          tickets.filter((ticket) => ticket.status === "In Progress").length,
-          "active queue",
+          active.filter((ticket) => ticket.status === "In Progress").length,
+          "work started",
           "text-[#2E7CD6]",
         ],
         [
@@ -275,7 +285,7 @@ function QueueCategories({ tickets, accent }) {
 }
 
 function AgentWeek({ tickets, accent, soft }) {
-  const [calendarView, setCalendarView] = useState("week");
+  const [calendarView, setCalendarView] = useState("month");
   const [selectedDay, setSelectedDay] = useState(null);
   const now = new Date();
   const weekDays = Array.from({ length: 7 }, (_, index) => {
@@ -314,17 +324,17 @@ function AgentWeek({ tickets, accent, soft }) {
         <div className="ml-auto flex rounded-lg bg-[#EDF0F4] p-1 text-xs font-semibold">
           <button
             type="button"
-            onClick={() => setCalendarView("week")}
-            className={`rounded-md px-4 py-2 transition ${calendarView === "week" ? "bg-white text-[#111827] shadow-sm" : "text-[#4B5563]"}`}
-          >
-            Week
-          </button>
-          <button
-            type="button"
             onClick={() => setCalendarView("month")}
             className={`rounded-md px-4 py-2 transition ${calendarView === "month" ? "bg-white text-[#111827] shadow-sm" : "text-[#4B5563]"}`}
           >
             Month
+          </button>
+          <button
+            type="button"
+            onClick={() => setCalendarView("week")}
+            className={`rounded-md px-4 py-2 transition ${calendarView === "week" ? "bg-white text-[#111827] shadow-sm" : "text-[#4B5563]"}`}
+          >
+            Week
           </button>
         </div>
       </div>
@@ -493,23 +503,29 @@ export function AgentDashboard({ user, onGoTickets, onGoKra }) {
     const load = () =>
       Promise.all([
         api("/dashboard"),
-        api(`/tickets?assignee_id=${user.id}&limit=200`),
-        api("/tickets?limit=200"),
+        api(`/tickets?assignee_id=${user.id}&limit=1000`),
+        api("/tickets?limit=1000"),
         api("/member-checklists"),
+        // Team heads see their own department's member performance; the
+        // endpoint scopes to their department and refuses other roles.
+        user.is_team_head
+          ? api("/reports/member-sla").catch(() => null)
+          : Promise.resolve(null),
       ])
-        .then(([stats, queue, teamQueue, lists]) =>
+        .then(([stats, queue, teamQueue, lists, memberSla]) =>
           setData({
             stats,
             tickets: queue.items,
             teamTickets: teamQueue.items,
             lists,
+            memberSla,
           }),
         )
         .catch(() => {});
     load();
     const timer = setInterval(load, 30000);
     return () => clearInterval(timer);
-  }, [user.id]);
+  }, [user.id, user.is_team_head]);
   if (!data)
     return <div className="h-96 animate-pulse rounded-xl bg-[#EDF0F4]" />;
   const overdue = data.tickets
@@ -577,6 +593,17 @@ export function AgentDashboard({ user, onGoTickets, onGoKra }) {
         accent={meta.accent}
         soft={meta.soft}
       />
+      {user.is_team_head && data.memberSla?.members?.length > 0 && (
+        <TeamPerformance
+          department={meta.department}
+          members={data.memberSla.members}
+          tickets={data.teamTickets}
+          title="Team performance"
+        />
+      )}
+      {user.is_team_head && (
+        <CategoryManager departments={[meta.department]} />
+      )}
     </div>
   );
 }
@@ -590,13 +617,30 @@ function RaiseAgentTicket({ user, onCreated }) {
     category: "",
     priority: "Medium",
     description: "",
+    asset_serial_number: "",
   });
+  const [assetMatch, setAssetMatch] = useState(null);
   useEffect(() => {
     if (open)
       api(`/categories?department=${meta.department}`)
         .then((rows) => setCategories(rows.map((row) => row.name)))
         .catch(() => {});
   }, [open, meta.department]);
+  // Resolve an entered laptop serial to its inventory record so the vendor
+  // mapping is confirmed before the ticket is raised.
+  useEffect(() => {
+    const query = form.asset_serial_number.trim();
+    if (!query) {
+      setAssetMatch(null);
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      api(`/assets/laptops?query=${encodeURIComponent(query)}`)
+        .then((result) => setAssetMatch(result.items?.[0] || null))
+        .catch(() => setAssetMatch(null));
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [form.asset_serial_number]);
   const submit = async () => {
     if (!form.title) return toast.error("Title is required");
     try {
@@ -682,6 +726,24 @@ function RaiseAgentTicket({ user, onCreated }) {
               }
             />
           </div>
+          <div>
+            <Label>Laptop serial number (optional)</Label>
+            <Input
+              className="mt-1 font-mono uppercase"
+              value={form.asset_serial_number}
+              onChange={(event) =>
+                setForm({ ...form, asset_serial_number: event.target.value })
+              }
+              placeholder="Maps the ticket to the issued laptop and vendor"
+            />
+            {assetMatch && (
+              <p className="mt-1 text-xs text-emerald-700">
+                💻 {assetMatch.brand} · {assetMatch.name || "Unassigned"}
+                {assetMatch.employee_code && ` (${assetMatch.employee_code})`} ·
+                Vendor {assetMatch.vendor}
+              </p>
+            )}
+          </div>
         </div>
         <DialogFooter>
           <Button onClick={submit}>Submit</Button>
@@ -740,11 +802,9 @@ function TicketActionMenu({ ticket, done, user, onOpenTicket, onUpdated }) {
       ? "Claim ticket"
       : ticket.assignee_id !== user.id && !user.is_team_head
         ? "View"
-        : {
-            Acknowledged: "Acknowledged",
-            "In Progress": "In progress",
-            "Pending User Response": "Awaiting user",
-          }[ticket.status] || "Resolve";
+        : ticket.status === "In Progress"
+          ? "In progress"
+          : "Resolve";
   const canWorkTicket =
     !ticket.assignee_id ||
     ticket.assignee_id === user.id ||
@@ -765,20 +825,15 @@ function TicketActionMenu({ ticket, done, user, onOpenTicket, onUpdated }) {
         {canWorkTicket && (
           <>
             <DropdownMenuItem
-              disabled={ticket.status === "Acknowledged" && !!ticket.assignee_id}
+              disabled={!!ticket.assignee_id}
               onSelect={() =>
                 update(
-                  {
-                    status: "Acknowledged",
-                    assignee_id: ticket.assignee_id || user.id,
-                  },
-                  ticket.assignee_id
-                    ? `${ticket.human_id} acknowledged`
-                    : `${ticket.human_id} claimed and acknowledged`,
+                  { assignee_id: user.id },
+                  `${ticket.human_id} claimed — in progress`,
                 )
               }
             >
-              {ticket.assignee_id ? "Acknowledge" : "Claim for myself"}
+              Claim for myself
             </DropdownMenuItem>
             <DropdownMenuItem
               disabled={!ticket.assignee_id || ticket.status === "In Progress"}
@@ -790,17 +845,6 @@ function TicketActionMenu({ ticket, done, user, onOpenTicket, onUpdated }) {
               }
             >
               Start progress
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={!ticket.assignee_id || ticket.status === "Pending User Response"}
-              onSelect={() =>
-                update(
-                  { status: "Pending User Response" },
-                  `${ticket.human_id} is awaiting user response`,
-                )
-              }
-            >
-              Await user response
             </DropdownMenuItem>
             {!!ticket.assignee_id &&
               (ticket.assignee_id === user.id || user.is_team_head) && (
@@ -859,7 +903,7 @@ export function AgentTickets({ user, onOpenTicket }) {
   const load = () => {
     setLoading(true);
     api(
-      `/tickets?${scope === "mine" ? `assignee_id=${user.id}&` : ""}limit=200`,
+      `/tickets?${scope === "mine" ? `assignee_id=${user.id}&` : ""}limit=1000`,
     )
       .then((result) => setTickets(result.items))
       .catch((error) => toast.error(error.message))
@@ -914,23 +958,27 @@ export function AgentTickets({ user, onOpenTicket }) {
         ),
     )
     .reverse();
+  // Unallocated -> Open -> In progress -> Closed. Open means a member has
+  // claimed the ticket but has not started; moving it to In progress is what
+  // stamps work_started_at, so active time measures real work.
   const kanbanColumns = [
     {
-      key: "new",
-      label: "Pending / Unallocated",
+      key: "unallocated",
+      label: "Unallocated",
       color: "#6C5CE7",
       soft: "bg-[#F4F2FF]",
       matches: (ticket) =>
         !ticket.assignee_id && !DONE.includes(ticket.status),
     },
     {
-      key: "acknowledged",
-      label: "Allocated / Acknowledged",
+      key: "open",
+      label: "Open",
       color: "#2E7CD6",
-      soft: "bg-[#EEF5FD]",
+      soft: "bg-[#EAF2FC]",
       matches: (ticket) =>
         Boolean(ticket.assignee_id) &&
-        ["Open", "Assigned", "Acknowledged"].includes(ticket.status),
+        !DONE.includes(ticket.status) &&
+        ticket.status === "Open",
     },
     {
       key: "progress",
@@ -939,31 +987,12 @@ export function AgentTickets({ user, onOpenTicket }) {
       soft: "bg-[#FFF8EA]",
       matches: (ticket) =>
         Boolean(ticket.assignee_id) &&
-        ["In Progress", "Approved - Ready for Action"].includes(ticket.status),
-    },
-    {
-      key: "waiting",
-      label: "Waiting / Approval",
-      color: "#9B59B6",
-      soft: "bg-[#FAF3FC]",
-      matches: (ticket) =>
-        Boolean(ticket.assignee_id) &&
-        [
-          "Approval Preparation",
-          "Pending Super Admin Approval",
-          "Clarification Required",
-          "Approval On Hold",
-          "Approval Rejected",
-          "Pending User Response",
-          "Pending Vendor",
-          "Pending Finance",
-          "Pending Material",
-          "On Hold",
-        ].includes(ticket.status),
+        !DONE.includes(ticket.status) &&
+        ticket.status !== "Open",
     },
     {
       key: "done",
-      label: "Resolved / Closed",
+      label: "Closed",
       color: "#1E9E6A",
       soft: "bg-[#EFFAF5]",
       matches: (ticket) => DONE.includes(ticket.status),
@@ -976,13 +1005,12 @@ export function AgentTickets({ user, onOpenTicket }) {
       user.is_team_head);
   const movePayload = (ticket, columnKey) => {
     const assigneeId = ticket.assignee_id || user.id;
-    if (columnKey === "new") return { assignee_id: null };
-    if (columnKey === "acknowledged")
-      return { assignee_id: assigneeId, status: "Acknowledged" };
+    if (columnKey === "unallocated") return { assignee_id: null };
+    // Claiming a ticket without starting it: assign, stay Open.
+    if (columnKey === "open")
+      return { assignee_id: assigneeId, status: "Open" };
     if (columnKey === "progress")
       return { assignee_id: assigneeId, status: "In Progress" };
-    if (columnKey === "waiting")
-      return { assignee_id: assigneeId, status: "Pending User Response" };
     if (columnKey === "done")
       return {
         assignee_id: assigneeId,
@@ -1025,7 +1053,7 @@ export function AgentTickets({ user, onOpenTicket }) {
         body: payload,
       });
       toast.success(`${ticket.human_id} moved to ${column.label}`);
-      handleTicketUpdated({ returnedToTeam: column.key === "new" });
+      handleTicketUpdated({ returnedToTeam: column.key === "unallocated" });
     } catch (error) {
       toast.error(error.message);
       load();
@@ -1063,7 +1091,7 @@ export function AgentTickets({ user, onOpenTicket }) {
         {[
           ["overdue", "Overdue", "bg-red-100 text-red-800"],
           ["progress", "In progress", "bg-blue-100 text-blue-800"],
-          ["resolved", "Resolved", "bg-green-100 text-green-800"],
+          ["resolved", "Closed", "bg-green-100 text-green-800"],
         ].map(([value, label, style]) => (
           <button
             key={value}

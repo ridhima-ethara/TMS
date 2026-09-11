@@ -1,7 +1,9 @@
 import { cpSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-const buildDir = ".next-build";
+// Honour NEXT_DIST_DIR so a release can be built into a staging directory
+// without touching the tree the live server is reading from.
+const buildDir = process.env.NEXT_DIST_DIR || ".next-build";
 const standaloneDir = join(buildDir, "standalone");
 
 if (!existsSync(standaloneDir)) {
@@ -20,4 +22,4 @@ if (existsSync("public")) {
   });
 }
 
-console.log("Prepared standalone static and public assets");
+console.log(`Prepared standalone static and public assets in ${buildDir}`);

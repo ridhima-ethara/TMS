@@ -120,9 +120,19 @@ export default function TicketDrawer({
   useEffect(() => {
     if (!open || !isStaff || !t?.department) return;
     api(`/categories?department=${t.department}`)
-      .then(setCategoryOptions)
+      .then((rows) => {
+        // A ticket raised before its department's category list changed keeps
+        // its stored category. Include it so the select shows the real value
+        // instead of falling back to an empty placeholder.
+        const current = t.category;
+        const missing =
+          current && !rows.some((row) => row.name === current)
+            ? [{ id: `current:${current}`, name: current }]
+            : [];
+        setCategoryOptions([...missing, ...rows]);
+      })
       .catch(() => {});
-  }, [open, isStaff, t?.department]);
+  }, [open, isStaff, t?.department, t?.category]);
 
   const patch = async (body, msg) => {
     setBusy(true);
@@ -386,6 +396,41 @@ export default function TicketDrawer({
                   />
                 </div>
 
+                {t.asset_serial_number && (
+                  <div className="rounded-md border bg-slate-50 p-3 text-sm">
+                    <p className="mb-2 font-medium text-slate-800">
+                      💻 Mapped laptop
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <Info
+                        label="Serial number"
+                        value={
+                          <span className="font-mono">
+                            {t.asset_serial_number}
+                          </span>
+                        }
+                      />
+                      <Info
+                        label="Vendor"
+                        value={
+                          t.asset_matched
+                            ? t.asset_vendor
+                            : "Not in inventory"
+                        }
+                      />
+                      {t.asset_brand && (
+                        <Info label="Model" value={t.asset_brand} />
+                      )}
+                      {t.asset_owner_name && (
+                        <Info
+                          label="Issued to"
+                          value={`${t.asset_owner_name}${t.asset_employee_code ? ` (${t.asset_employee_code})` : ""}`}
+                        />
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {t.resolution && (
                   <div className="rounded-md border bg-green-50 p-3 text-sm space-y-1">
                     <p className="font-medium text-green-800">Resolution</p>
@@ -586,12 +631,10 @@ export default function TicketDrawer({
                       </div>
                     </Bar>
                     {t.approval_required &&
-                      ![
-                        "Approved - Ready for Action",
-                        "In Progress",
-                        "Resolved",
-                        "Closed",
-                      ].includes(t.status) && (
+                      !["Approved", "Partially Approved"].includes(
+                        t.approval?.status,
+                      ) &&
+                      !["Closed", "Cancelled"].includes(t.status) && (
                         <p className="text-xs flex items-center gap-1 text-amber-700">
                           <Lock className="h-3.5 w-3.5" />
                           Execution locked until Super Admin approval.

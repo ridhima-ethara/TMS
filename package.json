@@ -7,6 +7,7 @@
         "dev:no-reload": "NEXT_DIST_DIR=.next-dev-3004 next dev --hostname 127.0.0.1 --port 3004",
         "dev:webpack": "NEXT_DIST_DIR=.next-dev-3004 next dev --hostname 127.0.0.1 --port 3004",
     "build": "NEXT_DIST_DIR=.next-build next build",
+    "deploy": "bash scripts/deploy.sh",
     "cleanup:demo": "node --no-warnings --env-file=.env.local scripts/clear-demo-business-data.mjs --apply",
         "postbuild": "node scripts/prepare-standalone.mjs",
         "demo:passwords": "node --no-warnings --env-file=.env.local scripts/set-demo-passwords.mjs",

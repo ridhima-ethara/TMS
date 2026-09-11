@@ -89,3 +89,7 @@ node_modules/@next/swc-linux-arm64-musl/next-swc.linux-arm64-musl.node
 
 # oh-my-claudecode session state
 .omc/
+
+# Local build snapshots / nested checkout
+/.next-build.*/
+/TMS/

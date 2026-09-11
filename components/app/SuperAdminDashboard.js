@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { workingHoursBetween } from "@/lib/sla";
+import TeamPerformance from "@/components/app/TeamPerformance";
 
 const DONE = ["Resolved", "Closed", "Cancelled"];
 const deptMeta = {
@@ -106,6 +107,24 @@ const makeStats = (tickets) => {
   }, {});
   return {
     total: tickets.length,
+    // Open = raised or claimed but not started (covers the Unallocated and
+    // Open board columns); working = every other active status. The two are
+    // disjoint, so Open never double-counts tickets already being worked on.
+    open: count((ticket) => ticket.status === "Open"),
+    active: count((ticket) => !DONE.includes(ticket.status)),
+    working: count(
+      (ticket) => !DONE.includes(ticket.status) && ticket.status !== "Open",
+    ),
+    working_breakdown: Object.entries(
+      tickets.reduce((map, ticket) => {
+        if (!DONE.includes(ticket.status) && ticket.status !== "Open")
+          map[ticket.status] = (map[ticket.status] || 0) + 1;
+        return map;
+      }, {}),
+    )
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, value]) => `${name}: ${value}`)
+      .join(" · "),
     in_progress: count((ticket) => ticket.status === "In Progress"),
     // Completed work: tickets auto-close when no user confirmation is
     // required, so "Resolved" must count Closed tickets too.
@@ -170,14 +189,19 @@ const rangeMembers = (members, tickets) =>
         new Date(ticket.acknowledged_at || ticket.first_response_at) <=
           new Date(ticket.sla_response_due),
     ).length;
+    // Only about a quarter of tickets record an explicit work_started_at, so
+    // active time falls back to when the member picked the ticket up.
+    // Without this the figure reads as zero on most ranges.
     const workingTimes = resolved
-      .filter((ticket) => ticket.work_started_at)
-      .map((ticket) =>
-        workingHoursBetween(
-          ticket.work_started_at,
-          ticket.resolved_at || ticket.resolution.resolved_date,
-        ),
-      );
+      .map((ticket) => ({
+        from:
+          ticket.work_started_at ||
+          ticket.acknowledged_at ||
+          ticket.first_response_at,
+        to: ticket.resolved_at || ticket.resolution.resolved_date,
+      }))
+      .filter((span) => span.from && span.to)
+      .map((span) => workingHoursBetween(span.from, span.to));
     const responseTimes = assigned
       .filter((ticket) => ticket.acknowledged_at || ticket.first_response_at)
       .map((ticket) =>
@@ -301,7 +325,7 @@ function PriorityMix({ stats, open }) {
           <div className="grid h-14 w-14 place-items-center rounded-full bg-white text-center sm:h-16 sm:w-16">
             <span>
               <b className="block text-xl">{open}</b>
-              <small className="text-[#9CA3AF]">open</small>
+              <small className="text-[#9CA3AF]">active</small>
             </span>
           </div>
         </div>
@@ -396,7 +420,6 @@ function MemberPerformance({ rows, color, unassigned = 0 }) {
 function DeskCard({ department, stats, tickets, members }) {
   const meta = deptMeta[department];
   const Icon = meta.icon;
-  const open = tickets.filter((ticket) => !DONE.includes(ticket.status)).length;
   return (
     <Card className="overflow-hidden border-[#E5E9EF] shadow-none">
       <div
@@ -422,13 +445,24 @@ function DeskCard({ department, stats, tickets, members }) {
       </div>
       <div className="grid grid-cols-2 border-b border-[#E5E9EF] sm:grid-cols-4">
         {[
-          ["Open", open, "#111827"],
-          ["In progress", stats.in_progress, meta.color],
-          ["Escalated", stats.escalated, "#A32D2D"],
-          ["Resolved", stats.resolved, "#087017"],
-        ].map(([label, value, color], index) => (
+          [
+            "Open",
+            stats.open,
+            "#111827",
+            "Status Open — raised or claimed, but work has not started",
+          ],
+          ["In progress", stats.working, meta.color, stats.working_breakdown || "No active work"],
+          [
+            "Escalated",
+            stats.escalated,
+            "#A32D2D",
+            "Active tickets past response or resolution SLA — live across all dates, not the selected range",
+          ],
+          ["Closed", stats.resolved, "#087017", "Completed tickets"],
+        ].map(([label, value, color, tip], index) => (
           <div
             key={label}
+            title={tip}
             className={`py-4 text-center ${index < 3 ? "border-r border-[#E5E9EF]" : ""}`}
           >
             <p className="text-2xl font-bold tabular-nums" style={{ color }}>
@@ -465,7 +499,7 @@ function DeskCard({ department, stats, tickets, members }) {
         </div>
       </div>
       <div className="grid gap-6 px-5 py-5 md:grid-cols-[225px_minmax(0,1fr)]">
-        <PriorityMix stats={stats} open={open} />
+        <PriorityMix stats={stats} open={stats.active} />
         <CategoryRows
           rows={stats.by_category}
           tickets={tickets}
@@ -490,17 +524,33 @@ function UserIssueInsights({ tickets, onOpenTicket }) {
   const users = useMemo(() => {
     const groups = new Map();
     for (const ticket of tickets) {
-      const key =
-        ticket.issue_user_id ||
-        (ticket.issue_user_name
-          ? `name:${ticket.issue_user_name.toLowerCase()}`
-          : null) ||
-        ticket.issue_user_email ||
-        ticket.email ||
-        ticket.raised_by_id ||
+      // Group by the most stable identifier available so one person never
+      // splits into multiple rows: email → employee code → user id → name.
+      const email = (ticket.issue_user_email || ticket.email || "")
+        .trim()
+        .toLowerCase();
+      const employeeCode = (
+        ticket.issue_user_employee_code ||
+        ticket.employee_id ||
+        ""
+      )
+        .toString()
+        .trim()
+        .toLowerCase();
+      const name = (
         ticket.issue_user_name ||
         ticket.raised_for_name ||
-        ticket.raised_by_name;
+        ticket.raised_by_name ||
+        ""
+      )
+        .trim()
+        .toLowerCase();
+      const key =
+        (email && `email:${email}`) ||
+        (employeeCode && `code:${employeeCode}`) ||
+        ticket.issue_user_id ||
+        (name && `name:${name}`) ||
+        `ticket:${ticket.id}`;
       if (!groups.has(key)) groups.set(key, {
         key,
         name: ticket.issue_user_name || ticket.raised_for_name || ticket.raised_by_name || "Unknown user",
@@ -509,6 +559,7 @@ function UserIssueInsights({ tickets, onOpenTicket }) {
         location: ticket.location || "",
         total: 0,
         open: 0,
+        inProgress: 0,
         overdue: 0,
         responseMet: 0,
         responseBreached: 0,
@@ -518,7 +569,8 @@ function UserIssueInsights({ tickets, onOpenTicket }) {
       });
       const row = groups.get(key);
       row.total++;
-      if (!DONE.includes(ticket.status)) row.open++;
+      if (ticket.status === "Open") row.open++;
+      else if (!DONE.includes(ticket.status)) row.inProgress++;
       if (!DONE.includes(ticket.status) && ticket.sla_resolution_due && new Date(ticket.sla_resolution_due) < new Date()) row.overdue++;
       const responseAt = ticket.acknowledged_at || ticket.first_response_at;
       if (responseAt) {
@@ -548,9 +600,9 @@ function UserIssueInsights({ tickets, onOpenTicket }) {
   const responseBreaches = users.reduce((sum, user) => sum + user.responseBreached, 0);
   const overdue = users.reduce((sum, user) => sum + user.overdue, 0);
   return <Card className="overflow-hidden border-[#E5E9EF] shadow-none">
-    <div className="flex flex-wrap items-center gap-3 border-b border-[#E5E9EF] px-4 py-4 sm:px-5"><div className="mr-auto"><h2 className="font-bold">Issues by requesting user</h2><p className="text-xs text-[#8B93A1]">Repeat issues, open workload and response SLA mapped to the employee who requested support.</p></div><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search user, code, location or issue…" className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-[#FAFBFC] px-3 text-sm sm:min-w-72 sm:w-auto" /></div>
-    <div className="grid gap-px bg-[#E5E9EF] sm:grid-cols-2 lg:grid-cols-4">{[["Users with issues", users.length], ["Repeat-issue users", repeatUsers], ["Response SLA breaches", responseBreaches], ["Overdue active issues", overdue]].map(([label, value]) => <div key={label} className="bg-white p-4"><p className="text-[10px] font-semibold uppercase tracking-wider text-[#8B93A1]">{label}</p><b className={`mt-1 block text-2xl ${/breach|overdue/i.test(label) && value ? "text-red-600" : ""}`}>{value}</b></div>)}</div>
-    <div className="overflow-x-auto"><table className="w-full min-w-[1050px] text-left text-sm"><thead className="bg-[#FAFBFC] text-[10px] uppercase tracking-wider text-[#8B93A1]"><tr><th className="px-4 py-3">User</th><th className="px-4 py-3">Issues</th><th className="px-4 py-3">Top issue categories</th><th className="px-4 py-3 text-center">Response SLA</th><th className="px-4 py-3 text-center">Breached / pending</th><th className="px-4 py-3">Latest issue</th><th className="px-4 py-3" /></tr></thead><tbody>{rows.map((user) => <tr key={user.key} className="border-t border-[#EDF0F4]"><td className="px-4 py-3"><b>{user.name}</b><p className="text-xs text-[#69738B]">{user.employeeId || "No employee code"} · {user.location || "No location"}</p><p className="text-[10px] text-[#9CA3AF]">{user.email}</p></td><td className="px-4 py-3"><b>{user.total} total</b><p className="text-xs text-[#69738B]">{user.open} open · {user.overdue} overdue</p>{user.repeatIssue && <span className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">Repeat pattern</span>}</td><td className="px-4 py-3">{user.topCategories.slice(0, 3).map((category) => <span key={category.name} className="mr-1 inline-block rounded-md bg-[#F1F3F7] px-2 py-1 text-[11px]">{category.name} · {category.count}</span>)}</td><td className="px-4 py-3 text-center"><span className={`rounded-full px-2 py-1 text-xs font-bold ${user.responseCompliance >= 80 ? "bg-emerald-100 text-emerald-800" : user.responseCompliance >= 50 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-700"}`}>{user.responseCompliance}%</span><p className="mt-1 text-[10px] text-[#8B93A1]">{user.responseMet} within SLA</p></td><td className="px-4 py-3 text-center"><b className={user.responseBreached ? "text-red-600" : ""}>{user.responseBreached}</b><span className="px-1 text-[#B0B6C2]">/</span><b className="text-amber-600">{user.responsePending}</b></td><td className="max-w-64 px-4 py-3"><b className="block truncate text-xs">{user.latest?.human_id} · {user.latest?.title}</b><p className="text-[10px] text-[#8B93A1]">{user.latest?.created_at ? new Date(user.latest.created_at).toLocaleString("en-GB") : "—"}</p></td><td className="px-4 py-3"><Button variant="outline" size="sm" disabled={!user.latest?.id || !onOpenTicket} onClick={() => onOpenTicket?.(user.latest.id)}>Open latest</Button></td></tr>)}</tbody></table></div>
+    <div className="flex flex-wrap items-center gap-3 border-b border-[#E5E9EF] px-4 py-4 sm:px-5"><div className="mr-auto"><h2 className="font-bold">Issues raised by users</h2><p className="text-xs text-[#8B93A1]">Repeat issues, open and in-progress workload, and response SLA mapped to the user who raised each ticket.</p></div><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search user, code, location or issue…" className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-[#FAFBFC] px-3 text-sm sm:min-w-72 sm:w-auto" /></div>
+    <div className="grid gap-px bg-[#E5E9EF] sm:grid-cols-2 lg:grid-cols-4">{[["Users who raised issues", users.length], ["Repeat-issue users", repeatUsers], ["Response SLA breaches", responseBreaches], ["Overdue active issues", overdue]].map(([label, value]) => <div key={label} className="bg-white p-4"><p className="text-[10px] font-semibold uppercase tracking-wider text-[#8B93A1]">{label}</p><b className={`mt-1 block text-2xl ${/breach|overdue/i.test(label) && value ? "text-red-600" : ""}`}>{value}</b></div>)}</div>
+    <div className="overflow-x-auto"><table className="w-full min-w-[1050px] text-left text-sm"><thead className="bg-[#FAFBFC] text-[10px] uppercase tracking-wider text-[#8B93A1]"><tr><th className="px-4 py-3">User</th><th className="px-4 py-3">Issues</th><th className="px-4 py-3">Top issue categories</th><th className="px-4 py-3 text-center">Response SLA</th><th className="px-4 py-3 text-center">Response breached / pending</th><th className="px-4 py-3">Latest issue</th><th className="px-4 py-3" /></tr></thead><tbody>{rows.map((user) => <tr key={user.key} className="border-t border-[#EDF0F4]"><td className="px-4 py-3"><b>{user.name}</b><p className="text-xs text-[#69738B]">{user.employeeId || "No employee code"} · {user.location || "No location"}</p><p className="text-[10px] text-[#9CA3AF]">{user.email}</p></td><td className="px-4 py-3"><b>{user.total} total</b><p className="text-xs text-[#69738B]">{user.open} open · {user.inProgress} in progress{user.overdue ? ` · ${user.overdue} overdue` : ""}</p>{user.repeatIssue && <span className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">Repeat pattern</span>}</td><td className="px-4 py-3">{user.topCategories.slice(0, 3).map((category) => <span key={category.name} className="mr-1 inline-block rounded-md bg-[#F1F3F7] px-2 py-1 text-[11px]">{category.name} · {category.count}</span>)}</td><td className="px-4 py-3 text-center"><span className={`rounded-full px-2 py-1 text-xs font-bold ${user.responseCompliance >= 80 ? "bg-emerald-100 text-emerald-800" : user.responseCompliance >= 50 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-700"}`}>{user.responseCompliance}%</span><p className="mt-1 text-[10px] text-[#8B93A1]">{user.responseMet} within SLA</p></td><td className="px-4 py-3 text-center"><b className={user.responseBreached ? "text-red-600" : ""}>{user.responseBreached}</b><span className="px-1 text-[#B0B6C2]">/</span><b className="text-amber-600">{user.responsePending}</b></td><td className="max-w-64 px-4 py-3"><b className="block truncate text-xs">{user.latest?.human_id} · {user.latest?.title}</b><p className="text-[10px] text-[#8B93A1]">{user.latest?.created_at ? new Date(user.latest.created_at).toLocaleString("en-GB") : "—"}</p></td><td className="px-4 py-3"><Button variant="outline" size="sm" disabled={!user.latest?.id || !onOpenTicket} onClick={() => onOpenTicket?.(user.latest.id)}>Open latest</Button></td></tr>)}</tbody></table></div>
     {!rows.length && <p className="p-8 text-center text-sm text-[#69738B]">No matching user issues in the selected date range.</p>}
     {filtered.length > 0 && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#E5E9EF] bg-[#FAFBFC] px-5 py-3"><p className="text-xs text-[#69738B]">Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filtered.length)} of {filtered.length} users</p><div className="flex items-center gap-2"><Button variant="outline" size="sm" disabled={currentPage === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>Previous</Button><span className="text-xs font-semibold">Page {currentPage} of {pageCount}</span><Button variant="outline" size="sm" disabled={currentPage === pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>Next</Button></div></div>}
   </Card>;
@@ -569,8 +621,8 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
       Promise.all([
         api("/dashboard?department=IT"),
         api("/dashboard?department=Admin"),
-        api("/tickets?department=IT&limit=200"),
-        api("/tickets?department=Admin&limit=200"),
+        api("/tickets?department=IT&limit=1000"),
+        api("/tickets?department=Admin&limit=1000"),
         api("/reports/member-sla?department=IT"),
         api("/reports/member-sla?department=Admin"),
         api("/reports/daily-kra"),
@@ -600,12 +652,20 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
     const adminTickets = data.adminTickets.filter((ticket) =>
       inRange(ticket, from, to),
     );
+    // Volume and SLA averages describe the selected period, but escalation is
+    // a live operational state: a ticket breaches precisely because it is old,
+    // so range-filtering it would hide the tickets that most need attention.
+    // The server computes escalated over every ticket, unpaged; use that.
     return {
       ...data,
       itTickets,
       adminTickets,
-      it: makeStats(itTickets),
-      admin: makeStats(adminTickets),
+      allTickets: [...data.itTickets, ...data.adminTickets],
+      it: { ...makeStats(itTickets), escalated: data.it.escalated ?? 0 },
+      admin: {
+        ...makeStats(adminTickets),
+        escalated: data.admin.escalated ?? 0,
+      },
       itMembers: rangeMembers(data.itSla.members, itTickets),
       adminMembers: rangeMembers(data.adminSla.members, adminTickets),
     };
@@ -613,7 +673,9 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
 
   const attention = useMemo(() => {
     if (!view) return null;
-    const active = [...view.itTickets, ...view.adminTickets].filter(
+    // Overdue work is drawn from every loaded ticket, not the date-filtered
+    // view: the longest-overdue ticket is almost always older than the range.
+    const active = view.allTickets.filter(
       (ticket) =>
         !DONE.includes(ticket.status) &&
         ticket.sla_resolution_due &&
@@ -653,6 +715,16 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
       value ? new Date(value).toLocaleString("en-GB") : "";
     const ticketStatusCount = (tickets, status) =>
       tickets.filter((ticket) => ticket.status === status).length;
+    const statusCounts = (tickets) => [
+      ticketStatusCount(tickets, "Open"),
+      tickets.filter(
+        (ticket) => !DONE.includes(ticket.status) && ticket.status !== "Open",
+      ).length,
+      tickets.filter((ticket) =>
+        ["Resolved", "Closed"].includes(ticket.status),
+      ).length,
+      ticketStatusCount(tickets, "Cancelled"),
+    ];
     const resourceRows = (department, members, tickets) => {
       const rows = members.map((member) => {
         const assigned = tickets.filter(
@@ -670,28 +742,7 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
           member.email || "",
           member.location || "",
           assigned.length,
-          ticketStatusCount(assigned, "Open"),
-          ticketStatusCount(assigned, "Assigned"),
-          ticketStatusCount(assigned, "Acknowledged"),
-          ticketStatusCount(assigned, "In Progress"),
-          assigned.filter((ticket) =>
-            [
-              "Pending User Response",
-              "Pending Vendor",
-              "Pending Finance",
-              "Pending Material",
-              "On Hold",
-            ].includes(ticket.status),
-          ).length,
-          assigned.filter((ticket) =>
-            [
-              "Pending Super Admin Approval",
-              "Clarification Required",
-              "Approval On Hold",
-            ].includes(ticket.status),
-          ).length,
-          ticketStatusCount(assigned, "Resolved"),
-          ticketStatusCount(assigned, "Closed"),
+          ...statusCounts(assigned),
           overdue,
           `${member.sla_compliance || 0}%`,
           `${member.avg_response_hours || 0}h`,
@@ -707,18 +758,10 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
           "",
           "",
           unassigned.length,
-          ticketStatusCount(unassigned, "Open"),
-          ticketStatusCount(unassigned, "Assigned"),
-          ticketStatusCount(unassigned, "Acknowledged"),
-          ticketStatusCount(unassigned, "In Progress"),
-          unassigned.filter((ticket) => ticket.status.startsWith("Pending"))
-            .length,
-          unassigned.filter((ticket) => ticket.status.includes("Approval"))
-            .length,
-          ticketStatusCount(unassigned, "Resolved"),
-          ticketStatusCount(unassigned, "Closed"),
+          ...statusCounts(unassigned),
           unassigned.filter(
             (ticket) =>
+              !DONE.includes(ticket.status) &&
               ticket.sla_resolution_due &&
               new Date(ticket.sla_resolution_due) < new Date(),
           ).length,
@@ -740,8 +783,9 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
         "Tickets",
         "Open",
         "In progress",
+        "Active total",
         "Escalated",
-        "Resolved",
+        "Closed",
         "SLA met",
         "Avg response",
         "Avg resolution",
@@ -749,8 +793,9 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
       [
         "IT",
         view.it.total,
-        view.itTickets.filter((ticket) => !DONE.includes(ticket.status)).length,
-        view.it.in_progress,
+        view.it.open,
+        view.it.working,
+        view.it.active,
         view.it.escalated,
         view.it.resolved,
         `${view.it.sla_compliance}%`,
@@ -760,9 +805,9 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
       [
         "Admin",
         view.admin.total,
-        view.adminTickets.filter((ticket) => !DONE.includes(ticket.status))
-          .length,
-        view.admin.in_progress,
+        view.admin.open,
+        view.admin.working,
+        view.admin.active,
         view.admin.escalated,
         view.admin.resolved,
         `${view.admin.sla_compliance}%`,
@@ -778,13 +823,9 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
         "Location",
         "Total assigned",
         "Open",
-        "Assigned",
-        "Acknowledged",
         "In progress",
-        "Pending / On hold",
-        "Pending approval",
-        "Resolved",
         "Closed",
+        "Cancelled",
         "Overdue",
         "SLA met",
         "Avg response",
@@ -1022,6 +1063,21 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
           stats={view.admin}
           tickets={view.adminTickets}
           members={view.adminMembers}
+        />
+      </div>
+
+      <div className="grid gap-4 2xl:grid-cols-2">
+        <TeamPerformance
+          department="IT"
+          members={view.itMembers}
+          tickets={view.itTickets}
+          onOpenTicket={onOpenTicket}
+        />
+        <TeamPerformance
+          department="Admin"
+          members={view.adminMembers}
+          tickets={view.adminTickets}
+          onOpenTicket={onOpenTicket}
         />
       </div>
 
