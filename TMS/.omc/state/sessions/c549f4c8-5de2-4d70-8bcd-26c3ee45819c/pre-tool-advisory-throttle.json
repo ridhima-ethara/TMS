@@ -2,25 +2,9 @@
   "version": 1,
   "entries": {
     "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
-      "last_emitted_at_ms": 1791374936311,
+      "last_emitted_at_ms": 1791441662085,
       "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
-    },
-    "466399dafa2d20f60587180bad0a07358eb7f2bce724df0ff682f038ad33f5ad": {
-      "last_emitted_at_ms": 1791374914268,
-      "message": "Read multiple files in parallel when possible for faster analysis."
-    },
-    "db07ed0eb7924fd3d9e22e25f4521c132f3f27cea47a1fc6af6888d0e1a376cc": {
-      "last_emitted_at_ms": 1791373797377,
-      "message": "Spawning agent: general-purpose (inherit) [BACKGROUND] | Task: Dark mode review: phone + login"
-    },
-    "7aeafb1f62332693b09fd466bd96ea1a1be63a9084d368c07c995413fe47ca85": {
-      "last_emitted_at_ms": 1791373786834,
-      "message": "Spawning agent: general-purpose (inherit) [BACKGROUND] | Task: Dark mode review: desktop"
-    },
-    "445ed27a3872b681d98190bae61ccb84954e1bc4e140df5370be958dee776b3a": {
-      "last_emitted_at_ms": 1791373484517,
-      "message": "Verify changes work after editing. Test functionality before marking complete."
     }
   },
-  "updated_at": "2026-10-07T12:08:56.311Z"
+  "updated_at": "2026-10-08T06:41:02.085Z"
 }
