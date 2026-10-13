@@ -465,6 +465,7 @@ function pinnedFirewallAgent(expectedFingerprint) {
     throw new Error("Firewall certificate pin must be a SHA-256 fingerprint");
   const agent = new HttpsAgent({ keepAlive: false });
   agent.createConnection = (options, callback) => {
+    // nosemgrep: bypass-tls-verification -- FortiGate uses a self-signed cert; trust comes from the exact SHA-256 fingerprint pin checked on secureConnect below
     const socket = tlsConnect({
       ...options,
       minVersion: "TLSv1.2",

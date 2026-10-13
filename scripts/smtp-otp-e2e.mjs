@@ -92,6 +92,7 @@ async function waitForServer() {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     try {
+      // nosemgrep: react-insecure-request -- local e2e test against the app on 127.0.0.1; traffic never leaves the host
       const response = await fetch(`${baseUrl}/`);
       if (response.ok) return;
     } catch {}
@@ -130,6 +131,7 @@ let challengeId = null;
 try {
   await db.collection("users").insertOne(user);
   await waitForServer();
+  // nosemgrep: react-insecure-request -- local e2e test against the app on 127.0.0.1; traffic never leaves the host
   const loginResponse = await fetch(`${baseUrl}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -156,6 +158,7 @@ try {
   assert.ok(challenge);
   challengeId = challenge.id;
   assert.ok(!JSON.stringify(challenge).includes(code));
+  // nosemgrep: react-insecure-request -- local e2e test against the app on 127.0.0.1; traffic never leaves the host
   const verifyResponse = await fetch(`${baseUrl}/auth/login/otp/verify`, {
     method: "POST",
     headers: {

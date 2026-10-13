@@ -68,6 +68,7 @@ async function waitForServer() {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     try {
+      // nosemgrep: react-insecure-request -- local e2e test against the app on 127.0.0.1; traffic never leaves the host
       const response = await fetch(`${baseUrl}/`);
       if (response.ok) return;
     } catch {}
@@ -108,6 +109,7 @@ let challengeId = null;
 try {
   await db.collection("users").insertOne(user);
   await waitForServer();
+  // nosemgrep: react-insecure-request -- local e2e test against the app on 127.0.0.1; traffic never leaves the host
   const loginResponse = await fetch(`${baseUrl}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -148,6 +150,7 @@ try {
   assert.ok(!JSON.stringify(challenge).includes(code));
 
   const wrongCode = code === "000000" ? "999999" : "000000";
+  // nosemgrep: react-insecure-request -- local e2e test against the app on 127.0.0.1; traffic never leaves the host
   const wrongResponse = await fetch(`${baseUrl}/auth/login/otp/verify`, {
     method: "POST",
     headers: {
@@ -159,6 +162,7 @@ try {
   assert.equal(wrongResponse.status, 401);
   assert.equal(cookieValue(wrongResponse, "tf_token"), "");
 
+  // nosemgrep: react-insecure-request -- local e2e test against the app on 127.0.0.1; traffic never leaves the host
   const verifyResponse = await fetch(`${baseUrl}/auth/login/otp/verify`, {
     method: "POST",
     headers: {
@@ -180,6 +184,7 @@ try {
     "Remember-me session did not retain its 30-day lifetime",
   );
 
+  // nosemgrep: react-insecure-request -- local e2e test against the app on 127.0.0.1; traffic never leaves the host
   const replayResponse = await fetch(`${baseUrl}/auth/login/otp/verify`, {
     method: "POST",
     headers: {

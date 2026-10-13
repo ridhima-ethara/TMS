@@ -75,7 +75,8 @@ echo "== Bandit: Python code"
 low "$V/bandit" -q -c "$ROOT/security/bandit.yaml" -r tests *.py -f json -o "$OUT/bandit.json" 2>/dev/null
 
 echo "== Hadolint: Dockerfiles"
-mapfile -t DOCKERFILES < <(git ls-files '*Dockerfile*')
+# Every Dockerfile in the project, tracked or not, so new files are linted before they are committed.
+mapfile -t DOCKERFILES < <(find . -name '*Dockerfile*' -not -path './node_modules/*' -not -path './.next*' -not -path './security/.tools/*' | sort)
 if [ "${#DOCKERFILES[@]}" -gt 0 ]; then
   "$B/hadolint" --config "$ROOT/.hadolint.yaml" -f json "${DOCKERFILES[@]}" > "$OUT/hadolint.json" || true
 else

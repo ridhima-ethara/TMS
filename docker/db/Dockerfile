@@ -11,7 +11,7 @@ COPY --chmod=0644 tms.dump /opt/tms/tms.dump
 COPY --chmod=0755 10-restore-tms.sh /docker-entrypoint-initdb.d/10-restore-tms.sh
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30m --retries=3 \
-  CMD pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" || exit 1
+  CMD ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
 
 LABEL org.opencontainers.image.title="tms-db" \
       org.opencontainers.image.description="Ethara Service Hub PostgreSQL 15 database snapshot"
