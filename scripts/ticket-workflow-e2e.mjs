@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { addWorkingHours, workingMinutesBetween } from "../lib/sla.js";
+import { compareText } from "../lib/sort.js";
 import {
   closePostgres,
   connectToPostgres,
@@ -199,7 +200,7 @@ try {
     (item) => item.id === userByRole.employee.id,
   );
   assert.deepEqual(
-    Object.keys(requester).sort(),
+    Object.keys(requester).sort(compareText),
     ["email", "employee_id", "id", "location", "name"],
     "requester directory exposed unexpected fields",
   );

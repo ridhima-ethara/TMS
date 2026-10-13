@@ -27,6 +27,7 @@ import {
   workingMinutesBetween,
 } from "@/lib/sla";
 import { LAPTOP_ASSETS } from "@/lib/constants/laptop-assets";
+import { compareNumber, compareText } from "@/lib/sort";
 
 // ---------------- PostgreSQL ----------------
 let db;
@@ -2061,14 +2062,14 @@ function enrichFirewallTrafficApplications(trafficRows, applicationRows) {
             .map((row) => row.appcat || row.category)
             .filter(Boolean),
         ),
-      ].sort(),
+      ].sort(compareText),
       risks: [
         ...new Set(
           identifiedRows
             .map((row) => row.apprisk || row.application_risk)
             .filter(Boolean),
         ),
-      ].sort(),
+      ].sort(compareText),
     },
   };
 }
@@ -2426,8 +2427,12 @@ function firewallRecordFingerprint(row) {
   ].join("|");
 }
 
+// MD5 here is a de-duplication key, not a security control: nothing secret is
+// hashed and a collision only merges two identical-looking log rows. Stored keys
+// back the ON CONFLICT upsert below, so changing the algorithm would re-insert
+// every indexed row unless the whole index were rebuilt first.
 function firewallTrafficRecordKey(row) {
-  return createHash("md5").update(firewallRecordFingerprint(row)).digest("hex");
+  return createHash("md5").update(firewallRecordFingerprint(row)).digest("hex"); // NOSONAR S4790: non-security de-duplication key (see above)
 }
 
 function firewallTrafficClientKey(row) {
@@ -4231,7 +4236,7 @@ function enrichFirewallDevices(devicesPayload, logsPayload) {
       os_version: device.os_version || detail.os_version,
       hardware_vendor: device.hardware_vendor || device.vendor || detail.vendor,
       detected_interface: device.detected_interface || detail.interface,
-      observed_applications: [...detail.applications].sort(),
+      observed_applications: [...detail.applications].sort(compareText),
       observed_traffic_bytes: detail.traffic_bytes,
       traffic_last_seen: detail.last_seen,
       identification_source: "device discovery + traffic logs",
@@ -8495,7 +8500,7 @@ async function handleRoute(request, { params }) {
       }
       const doc = {
         id: "sla",
-        business_hours: { start, end, weekdays: weekdays.sort() },
+        business_hours: { start, end, weekdays: weekdays.sort(compareNumber) },
         working_hours_only: b.working_hours_only !== false,
         policy,
         pause_on_approval: b.pause_on_approval === true,
@@ -10186,7 +10191,7 @@ async function handleRoute(request, { params }) {
           reports: clean(reports),
           statuses: INCIDENT_STATUSES,
           categories: INCIDENT_CATEGORIES,
-          locations: [...locationNames].sort(),
+          locations: [...locationNames].sort(compareText),
         });
       }
       if (!seg[1] && method === "POST") {
@@ -13269,7 +13274,7 @@ async function handleRoute(request, { params }) {
         .limit(5000)
         .toArray();
       const uniqueSorted = (key) =>
-        [...new Set(optionSource.map((item) => item[key]).filter(Boolean))].sort();
+        [...new Set(optionSource.map((item) => item[key]).filter(Boolean))].sort(compareText);
       return json({
         items: clean(rows),
         filters: {

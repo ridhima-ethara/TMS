@@ -13,6 +13,7 @@ import { RaiseTicket } from '@/components/app/TicketsView'
 import DateRangeMenu from '@/components/app/DateRangeMenu'
 import { toast } from 'sonner'
 import { istKey, istTime } from '@/components/app/MyKraView'
+import { compareText } from '@/lib/sort'
 
 const RED = '#b42318', AMB = '#8a5a00', GRN = '#12795a', MAG = '#b3177f'
 const DAY = 86400000
@@ -271,7 +272,7 @@ export default function TicketBoard({ user, onOpenTicket, onGoApprovals }) {
   const dateFrom = dates.preset === 'all' ? '' : dates.preset === 'today' ? today : dates.preset === '7d' ? shiftKey(today, -6) : dates.preset === '30d' ? shiftKey(today, -29) : dates.preset === 'month' ? `${today.slice(0, 7)}-01` : dates.from
   const dateTo = dates.preset === 'all' ? '' : dates.preset === 'custom' ? dates.to : today
   const dateLabel = dates.preset === 'custom' ? `${dateFrom ? shortKey(dateFrom) : 'Any'} – ${dateTo ? shortKey(dateTo) : 'today'}` : DATE_PRESETS.find((p) => p[0] === dates.preset)?.[1]
-  const locOpts = [...new Set(all.map((t) => t.location).filter(Boolean))].sort()
+  const locOpts = [...new Set(all.map((t) => t.location).filter(Boolean))].sort(compareText)
   const ql = q.trim().toLowerCase()
   const chipDefs = [
     ['over', 'Overdue', '#d4553a', (t) => t.sk === 'over'],
@@ -292,7 +293,7 @@ export default function TicketBoard({ user, onOpenTicket, onGoApprovals }) {
       (!dateTo || raisedKey(t) <= dateTo) &&
       (!ql || `${t.human_id} ${t.title} ${t.assignee_name || ''} ${t.category || ''} ${t.issue_user_name || t.raised_for_name || ''} ${t.issue_user_email || ''} ${t.issue_user_employee_code || ''}`.toLowerCase().includes(ql)),
   )
-  const catOpts = [...new Set(all.map((t) => t.category).filter(Boolean))].sort()
+  const catOpts = [...new Set(all.map((t) => t.category).filter(Boolean))].sort(compareText)
   const loadMap = new Map()
   for (const t of active) {
     if (!t.assignee_id) continue

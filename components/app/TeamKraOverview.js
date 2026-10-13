@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { X } from "lucide-react";
 import { toast } from "sonner";
 import DateRangeMenu from "@/components/app/DateRangeMenu";
+import { compareText } from "@/lib/sort";
 
 const DESK = {
   it: { label: "IT", color: "#2f6bd0", soft: "#e8f0fc" },
@@ -269,7 +270,7 @@ export default function TeamKraOverview({ onEdit }) {
       const responses = subs.flatMap((s) => s.responses || []);
       const done = subs.reduce((a, s) => a + Number(s.done_count || 0), 0);
       const total = subs.reduce((a, s) => a + Number(s.total || 0), 0);
-      const at = subs.map((s) => s.submitted_at || s.created_at).filter(Boolean).sort().at(-1);
+      const at = subs.map((s) => s.submitted_at || s.created_at).filter(Boolean).sort(compareText).at(-1);
       return { m, subs, responses, done, total, at, late: subs.some((s) => s.late), applies: boardKey >= m.createdKey };
     })
     .sort((a, b) => (b.subs.length > 0) - (a.subs.length > 0) || a.m.name.localeCompare(b.m.name));

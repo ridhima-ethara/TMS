@@ -448,7 +448,7 @@ try {
     request("/parking", { method: "POST", cookie: cookies.admin, body: allocationBody }),
     request("/parking", { method: "POST", cookie: cookies.superAdmin, body: { ...allocationBody, vehicle_number: `${allocationBody.vehicle_number} X` } }),
   ]);
-  const parkingStatuses = [parkingOne.response.status, parkingTwo.response.status].sort();
+  const parkingStatuses = [parkingOne.response.status, parkingTwo.response.status].sort((a, b) => a - b);
   assertions += 1;
   assert.deepEqual(parkingStatuses, [200, 409], "concurrent parking allocation was not protected");
   const successfulParking = parkingOne.response.status === 200 ? parkingOne.payload : parkingTwo.payload;

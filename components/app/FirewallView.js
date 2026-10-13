@@ -423,7 +423,7 @@ function ConnectedDevicesPanel({
         )
         .filter(Boolean),
     ),
-  ].sort();
+  ].sort(compareText);
   const filteredRows = rows.filter((row) => {
     const deviceInterfaces = row.detected_interface
       ? [row.detected_interface]

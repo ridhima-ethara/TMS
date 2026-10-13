@@ -28,7 +28,9 @@ function indexedRecord(row) {
     row.message,
   ].join("|");
   return {
-    record_key: createHash("md5").update(fingerprint).digest("hex"),
+    // Must match firewallTrafficRecordKey() in the API route: a non-security
+    // de-duplication key, so MD5 is deliberate.
+    record_key: createHash("md5").update(fingerprint).digest("hex"), // NOSONAR S4790
     observed_at: observedAt,
     client_key: mac ? `mac:${mac}` : `ip:${ip}`,
     source_ip: ip,

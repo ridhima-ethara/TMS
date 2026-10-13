@@ -7,6 +7,7 @@ import { AppSelect } from '@/components/ui/select'
 import { RaiseTicket } from '@/components/app/TicketsView'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { toast } from 'sonner'
+import { compareText } from '@/lib/sort'
 
 const DAY = 86400000
 const HOUR = 3600000
@@ -257,7 +258,7 @@ export default function SuperAdminTickets({ user, onOpenTicket }) {
   const sk = { raised: (t) => -t.raised, taken: (t) => -(t.taken / t.target), pickup: (t) => -((t.picked ?? (t.live ? now : t.closed ?? t.raised)) - t.raised) }[sort]
   L.sort((a, b) => sk(a) - sk(b))
   const logScope = `${selDay === null ? `Raised or closed ${dayName}` : `Raised or closed on ${dayName}`}${member ? ` · ${memberName(member)}` : ''}`
-  const catOpts = [...new Set(base.map((t) => t.cat))].sort()
+  const catOpts = [...new Set(base.map((t) => t.cat))].sort(compareText)
 
   const chips = []
   if (member) chips.push({ label: memberName(member), clear: () => setMember('') })

@@ -6,6 +6,8 @@
 // hard-coded. The detailed panels (device table, app explorer, interfaces,
 // event stream, archive downloads) still render below each tab.
 
+import { compareText } from "@/lib/sort";
+
 const RED = "#b42318";
 const AMB = "#8a5a00";
 const GRN = "#12795a";
@@ -419,9 +421,9 @@ export function buildFirewallModel(input) {
     const monthName = monthStart.toLocaleDateString("en-GB", { month: "long", timeZone: "UTC" });
     const gapDays = monthRows.filter((r) => !r.future && !r.a).map((r) => r.d);
     const cappedDays = monthRows.filter((r) => r.a && Number(r.a.summary?.stored_records || 0) >= Number(r.a.record_limit || 50000)).map((r) => r.d);
-    const firstApps = list.filter((a) => Number(a.summary?.applications || 0) > 0).map((a) => a.date).sort()[0];
+    const firstApps = list.filter((a) => Number(a.summary?.applications || 0) > 0).map((a) => a.date).sort(compareText)[0];
     t.kpis = [
-      kp("Archived days", n(list.length), list.length ? `${dm(list.map((a) => a.date).sort()[0])} → ${dm(list.map((a) => a.date).sort().at(-1))}` : "none yet"),
+      kp("Archived days", n(list.length), list.length ? `${dm(list.map((a) => a.date).sort(compareText)[0])} → ${dm(list.map((a) => a.date).sort(compareText).at(-1))}` : "none yet"),
       kp(`Missing days · ${monthName.slice(0, 3)}`, n(missing), missing ? "no archive saved" : "every day captured", missing ? RED : GRN),
       kp("Days hit record cap", n(capped), capped ? "stopped at the record limit" : "none truncated", capped ? AMB : GRN),
       kp("Stored records", stored >= 1e6 ? `${(stored / 1e6).toFixed(2)}M` : n(stored), `${fmtBytes(storedTraffic)} traffic`),

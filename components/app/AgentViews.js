@@ -58,6 +58,7 @@ import { toast } from "sonner";
 import { RaiseTicket } from "@/components/app/TicketsView";
 import TeamPerformance from "@/components/app/TeamPerformance";
 import CategoryManager from "@/components/app/CategoryManager";
+import { compareText } from "@/lib/sort";
 
 const DONE = ["Resolved", "Closed", "Cancelled"];
 const roleMeta = (user) =>
@@ -911,7 +912,7 @@ export function AgentTickets({ user, onOpenTicket }) {
   }, [scope, user.id]);
   const categoryOptions = [
     ...new Set(tickets.map((ticket) => ticket.category).filter(Boolean)),
-  ].sort();
+  ].sort(compareText);
   const unallocatedCount = tickets.filter(
     (ticket) => !ticket.assignee_id && !DONE.includes(ticket.status),
   ).length;

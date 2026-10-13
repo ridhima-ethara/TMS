@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import DateRangeMenu from "@/components/app/DateRangeMenu";
+import { compareText } from "@/lib/sort";
 
 const STATUSES = ["Resolved", "Monitoring", "Open"];
 
@@ -553,7 +554,7 @@ function IncidentDashboard({ reports, onOpen }) {
         .filter((r) => (!from || r.day >= from) && (!to || r.day <= to) && (site === "all" || r.place.site === site)),
     [reports, from, to, site],
   );
-  const sites = useMemo(() => [...new Set(reports.map((r) => placeOf(r.location).site).filter((x) => x !== UNSPECIFIED))].sort(), [reports]);
+  const sites = useMemo(() => [...new Set(reports.map((r) => placeOf(r.location).site).filter((x) => x !== UNSPECIFIED))].sort(compareText), [reports]);
 
   const total = rows.length;
   const resolved = rows.filter((r) => r.status === "Resolved").length;
@@ -591,7 +592,7 @@ function IncidentDashboard({ reports, onOpen }) {
   const maxCell = Math.max(1, ...gridFloors.flatMap((f) => Object.values(f.cats)));
 
   // Trend: days for short ranges, weeks up to ~6 months, months beyond.
-  const firstDay = from || (rows.length ? rows.map((r) => r.day).sort()[0] : today);
+  const firstDay = from || (rows.length ? rows.map((r) => r.day).sort(compareText)[0] : today);
   const lastDay = to || today;
   const span = Math.round((Date.parse(lastDay) - Date.parse(firstDay)) / DAY) + 1;
   const unit = span <= 31 ? "day" : span <= 190 ? "week" : "month";

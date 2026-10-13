@@ -5,6 +5,7 @@ import { api } from '@/lib/appapi'
 import { Skeleton } from '@/components/ui/skeleton'
 import { AppSelect } from '@/components/ui/select'
 import { toast } from 'sonner'
+import { compareText } from '@/lib/sort'
 
 const TZ = 'Asia/Kolkata'
 const HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
@@ -126,7 +127,7 @@ export default function AuditView({ onOpenTicket }) {
     const lastOverdue = overdue[0]
     const sensitive = items.filter(isSensitive)
     const peopleToday = new Set(todayItems.filter((i) => i.actor_id !== 'system').map((i) => i.actor_id))
-    const actors = [...new Set(items.filter((i) => i.actor_name && i.actor_name !== 'system').map((i) => i.actor_name))].sort()
+    const actors = [...new Set(items.filter((i) => i.actor_name && i.actor_name !== 'system').map((i) => i.actor_name))].sort(compareText)
     const superLogins = items.filter((i) => i.action === 'login' && i.actor_role === 'super_admin')
     return { items, merged, absorbed, laterWork, todayItems, creates, byAgents, overdue, lastOverdue, sensitive, peopleToday, actors, superLogins }
   }, [data, from, today])

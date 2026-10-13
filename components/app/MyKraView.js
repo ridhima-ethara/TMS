@@ -9,6 +9,7 @@ import { AppSelect } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { toast } from 'sonner'
+import { compareText } from '@/lib/sort'
 import TeamChecklists, { DownloadReportButton, monthRange } from '@/components/app/ChecklistReport'
 
 const GRN = '#12795a', AMB = '#8a5a00', RED = '#b42318', MAG = '#b3177f'
@@ -1109,7 +1110,7 @@ function Submissions({ list, month, setMonth, minMonth, maxMonth, today, status,
       sc: p != null && p < 80 ? AMB : '#8a8a93',
     }
   })
-  const times = monthSubs.map((x) => istTime(x.submitted_at)).sort()
+  const times = monthSubs.map((x) => istTime(x.submitted_at)).sort(compareText)
   const medT = times[Math.floor(times.length / 2)] || '—'
   const lateD = keys.filter((d) => status(d) === 'late')
   const missD = keys.filter((d) => status(d) === 'missed')

@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import tailwindColors from 'tailwindcss/colors.js';
+import { compareText } from '../lib/sort.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(root, 'app', 'dark-palette.css');
@@ -405,7 +406,7 @@ for (const tokens of tokenGroups) {
   }
 }
 
-const restoreRules = [...restores.values()].sort();
+const restoreRules = [...restores.values()].sort(compareText);
 
 // ------------------------------------------------- opacity-modified utilities
 //
@@ -456,7 +457,7 @@ const derived = (fn, hex) => {
 };
 const inlineRules = [];
 const darkTexts = [];
-for (const hex of [...inlineHexes].sort()) {
+for (const hex of [...inlineHexes].sort(compareText)) {
   const c = rgbText(hex);
   const text = derived(darkForText, hex);
   const surface = derived(darkForSurface, hex);
@@ -494,7 +495,7 @@ for (const file of files) {
     for (const f of fills) for (const t of labels) pairs.add(`${f}|${t}`);
   }
 }
-for (const pair of [...pairs].sort()) {
+for (const pair of [...pairs].sort(compareText)) {
   const [f, t] = pair.split('|');
   const fc = rgbText(f);
   const tc = rgbText(t);
