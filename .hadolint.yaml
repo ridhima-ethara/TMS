@@ -1,0 +1,4 @@
+# Hadolint config (used by security/scan.sh).
+failure-threshold: none
+trustedRegistries:
+  - docker.io

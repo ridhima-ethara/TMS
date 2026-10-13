@@ -11,6 +11,8 @@
         "deploy": "bash scripts/deploy.sh",
         "cleanup:demo": "node --no-warnings --env-file=.env.local scripts/clear-demo-business-data.mjs --apply",
         "postbuild": "node scripts/prepare-standalone.mjs",
+        "security:scan": "bash security/scan.sh",
+        "security:sonar": "bash security/sonar-scan.sh",
         "demo:passwords": "node --no-warnings --env-file=.env.local scripts/set-demo-passwords.mjs",
         "maintenance:firewall-index": "node --no-warnings --env-file=.env.local scripts/backfill-firewall-traffic-index.mjs",
         "maintenance:firewall-compact": "node --no-warnings --env-file=.env.local scripts/compact-firewall-archives.mjs",

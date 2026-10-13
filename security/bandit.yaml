@@ -1,0 +1,4 @@
+# Bandit config (used by security/scan.sh).
+exclude_dirs:
+  - node_modules
+  - security/.tools

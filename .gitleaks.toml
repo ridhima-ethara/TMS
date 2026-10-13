@@ -1,0 +1,16 @@
+# Gitleaks config for the Ethara Service Hub (used by security/scan.sh).
+title = "ethara-service-hub"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated or local-only paths that are never committed"
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)\.next[^/]*/''',          # Next.js build output (per-build preview/encryption keys)
+  '''(^|/)security/\.tools/''',
+  '''(^|/)security/reports/''',
+  '''(^|/)\.env\.local$''',         # runtime secrets file: git-ignored, owner-only; permissions checked by the scan
+  '''(^|/)package-lock\.json$''',
+]

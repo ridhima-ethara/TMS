@@ -1,0 +1,8 @@
+node_modules/
+.next/
+.next-build/
+.next-build.prev/
+.next-stage/
+security/.tools/
+security/reports/
+public/

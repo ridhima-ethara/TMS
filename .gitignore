@@ -93,3 +93,7 @@ node_modules/@next/swc-linux-arm64-musl/next-swc.linux-arm64-musl.node
 # Local build snapshots / nested checkout
 /.next-build.*/
 /TMS/
+
+# Security scanning (tools and reports are local; configs are committed)
+/security/.tools/
+/security/reports/
