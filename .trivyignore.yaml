@@ -9,6 +9,15 @@ vulnerabilities:
       exists; build-time only, globs our own source files, never runs on the
       live site. Accepted 2026-10-13; remove when a fix ships or on Tailwind 4.
     expired_at: 2027-01-31
+  - id: CVE-2026-104844
+    paths:
+      - "package-lock.json"
+    statement: >-
+      postcss-selector-parser 6.1.4 (via tailwindcss 3.4). Denial of service on
+      crafted selectors; build-time only, parses our own CSS, never runs on the
+      live site. Fix (7.1.6) requires the Tailwind 4 migration. Accepted
+      2026-10-13; review by expiry or when Tailwind 4 lands.
+    expired_at: 2027-01-31
 misconfigurations:
   - id: DS-0002
     paths:
