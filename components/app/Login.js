@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
+import { useTheme } from "next-themes";
 import { api } from "@/lib/appapi";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -23,19 +24,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Sun,
-  User,
-  Wrench,
 } from "lucide-react";
-
-const ROLE_OPTIONS = [
-  { value: "employee", label: "Employee", icon: User },
-  { value: "it", label: "IT team", icon: Wrench },
-  {
-    value: "admin",
-    label: "Admin team",
-    icon: Building2,
-  },
-];
 
 const WORK_LOCATIONS = [
   { value: "Tulip", site: "HQ2" },
@@ -110,7 +99,13 @@ function Field({ label, htmlFor, right, children }) {
 
 export default function Login({ onLogin }) {
   const [mode, setMode] = useState("login");
-  const [appearance, setAppearance] = useState("light");
+  // The sign-in screen shares the platform theme so the choice made here
+  // carries straight into the dashboard. `resolvedTheme` is unknown until the
+  // client mounts, so keep the previous light default for the first paint to
+  // avoid a hydration mismatch.
+  const { resolvedTheme, setTheme } = useTheme();
+  const [themeMounted, setThemeMounted] = useState(false);
+  const appearance = themeMounted && resolvedTheme === "dark" ? "dark" : "light";
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -143,9 +138,18 @@ export default function Login({ onLogin }) {
   });
 
   useEffect(() => {
+    setThemeMounted(true);
     try {
+      // One-time migration of the old sign-in-only preference onto the shared
+      // platform theme key, so returning users keep the mode they picked.
       const saved = window.localStorage.getItem("ethara-login-appearance");
-      if (saved === "light" || saved === "dark") setAppearance(saved);
+      if (
+        (saved === "light" || saved === "dark") &&
+        !window.localStorage.getItem("ethara-theme")
+      ) {
+        setTheme(saved);
+      }
+      if (saved) window.localStorage.removeItem("ethara-login-appearance");
     } catch {
       // Storage can be unavailable in private or restricted browser contexts.
     }
@@ -161,6 +165,8 @@ export default function Login({ onLogin }) {
       url.searchParams.delete("emailVerification");
       window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     }
+    // Runs once on mount; setTheme is stable across renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -171,15 +177,20 @@ export default function Login({ onLogin }) {
   }, [mode]);
 
   const toggleAppearance = () => {
-    setAppearance((current) => {
-      const next = current === "light" ? "dark" : "light";
-      try {
-        window.localStorage.setItem("ethara-login-appearance", next);
-      } catch {
-        // The visual switch still works even when persistence is unavailable.
-      }
-      return next;
-    });
+    // Persistence is handled by the shared ThemeProvider (storageKey
+    // "ethara-theme"), so the choice survives into the dashboard.
+    const next = appearance === "light" ? "dark" : "light";
+    const root = document.documentElement;
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    if (reduceMotion) {
+      setTheme(next);
+      return;
+    }
+    root.classList.add("theme-transitioning");
+    setTheme(next);
+    window.setTimeout(() => root.classList.remove("theme-transitioning"), 320);
   };
 
   const emailValid = reg.email.toLowerCase().endsWith("@ethara.ai");
@@ -357,7 +368,7 @@ export default function Login({ onLogin }) {
       data-login-theme={appearance}
     >
       <BrandPanel mode={mode} />
-      <main className="login-form-panel relative flex min-h-screen min-w-0 w-full items-center justify-center overflow-x-hidden px-4 py-8 sm:px-8 sm:py-10 lg:h-screen lg:overflow-y-auto">
+      <main className="login-form-panel relative flex min-h-screen min-w-0 w-full items-start justify-center overflow-x-hidden px-4 py-8 sm:px-8 sm:py-10 lg:h-screen lg:overflow-y-auto [@media(min-width:1024px)_and_(max-height:700px)]:py-16">
         <button
           type="button"
           onClick={toggleAppearance}
@@ -376,7 +387,7 @@ export default function Login({ onLogin }) {
         <div className="login-mobile-glow pointer-events-none absolute inset-0 lg:hidden" />
         <div className="login-grid-plane pointer-events-none absolute inset-0 opacity-60 lg:hidden" />
         <div
-          className={`relative z-10 min-w-0 w-full max-w-full ${mode === "login" ? "sm:max-w-[500px]" : "sm:max-w-[520px]"}`}
+          className={`relative z-10 my-auto min-w-0 w-full max-w-full ${mode === "login" ? "sm:max-w-[500px]" : "sm:max-w-[520px]"}`}
         >
           <div className="mb-6 flex justify-center lg:hidden">
             <BrandLockup compact context={mode === "register" ? "register" : "signin"} />
@@ -729,10 +740,6 @@ export default function Login({ onLogin }) {
                   <h1 className="text-2xl font-semibold tracking-tight text-[var(--login-text)] sm:text-[28px]">
                     Create your account
                   </h1>
-                  <p className="mt-2 text-sm text-[var(--login-muted)]">
-                    Only <b className="text-[var(--login-icon-hover)]">@ethara.ai</b> email
-                    addresses can register.
-                  </p>
                 </div>
 
                 <form onSubmit={doRegister} className="space-y-4">
@@ -787,43 +794,6 @@ export default function Login({ onLogin }) {
                       required
                     />
                   </Field>
-
-                  <div>
-                    <Label className="text-[13px] font-medium text-[var(--login-label)]">
-                      I&apos;m joining as
-                    </Label>
-                    <div className="mt-2 grid grid-cols-3 gap-2">
-                      {ROLE_OPTIONS.map((option) => {
-                        const Icon = option.icon;
-                        const active = reg.role === option.value;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() =>
-                              setReg({ ...reg, role: option.value })
-                            }
-                            aria-pressed={active}
-                            className={`rounded-lg border p-3 text-center transition ${
-                              active
-                                ? "border-[#ED00ED]/70 bg-[#ED00ED]/10"
-                                : "border-[var(--login-border)] bg-[var(--login-option)] hover:border-[#ED00ED]/40"
-                            }`}
-                          >
-                            <Icon
-                              className={`mx-auto h-5 w-5 ${active ? "text-[#ED00ED]" : "text-[var(--login-muted)]"}`}
-                            />
-                            <b className="mt-2 block text-[11px] text-[var(--login-text-soft)]">
-                              {option.label}
-                            </b>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <p className="mt-2 text-[10px] leading-4 text-[var(--login-faint)]">
-                      All roles are activated immediately after registration.
-                    </p>
-                  </div>
 
                   <Field label="Work location" htmlFor="register-location">
                     <div

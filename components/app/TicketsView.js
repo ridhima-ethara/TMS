@@ -44,6 +44,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import AttachmentUpload from "@/components/app/AttachmentUpload";
 import { toast } from "sonner";
+import { DateField } from "@/components/ui/date-field";
 import {
   Check,
   Plus,
@@ -151,13 +152,13 @@ function EmployeeKanban({ tickets, loading, onOpenTicket }) {
   return (
     <Card className="overflow-hidden border-[#E5E9EF] bg-[#F7F8FA] shadow-none">
       <div className="overflow-x-auto p-4">
-        <div className="flex min-w-max items-start gap-3">
+        <div className="flex min-w-max items-start gap-3 lg:min-w-0">
           {EMPLOYEE_KANBAN_COLUMNS.map((column) => {
             const rows = tickets.filter(
               (ticket) => employeeTicketStage(ticket) === column.key,
             );
             return (
-              <section key={column.key} className="w-[290px] shrink-0">
+              <section key={column.key} className="w-[290px] shrink-0 lg:w-auto lg:min-w-[260px] lg:flex-1">
                 <div
                   className={`mb-3 flex items-center rounded-xl border border-white px-3 py-3 shadow-sm ${column.soft}`}
                 >
@@ -314,8 +315,8 @@ export default function TicketsView({
   // load categories for the active department
   useEffect(() => {
     const dept =
-      filters.department !== "all" ? `?department=${filters.department}` : "";
-    api(`/categories${dept}`)
+      filters.department !== "all" ? `&department=${filters.department}` : "";
+    api(`/categories?include_hidden=1${dept}`)
       .then((c) => setCats([...new Set(c.map((x) => x.name))]))
       .catch(() => {});
   }, [filters.department]);
@@ -375,7 +376,7 @@ export default function TicketsView({
   return (
     <div className="space-y-4">
       {user.role === "employee" && (
-        <div className="grid gap-3 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
             ["Total tickets", data.total, "text-[#111827]"],
             [
@@ -491,7 +492,7 @@ export default function TicketsView({
             </SelectContent>
           </Select>
         </div>
-        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:justify-end">
           {user.role === "employee" && (
             <div
               className="flex rounded-lg border border-[#DDE2EA] bg-[#F3F5F8] p-1"
@@ -724,18 +725,13 @@ const locationSite = (value) => {
 // IT and Admin members raise tickets only for their own department.
 const OWN_DEPARTMENT_BY_ROLE = { it: "IT", admin: "Admin" };
 
-// Mirrors the server: laptop/hardware categories map to an issued machine,
-// but a procurement request is for new kit and maps to nothing.
-const isLaptopCategory = (category = "") =>
-  /laptop|hardware|device configuration|asset/i.test(category) &&
-  !/procurement/i.test(category);
-
-export function RaiseTicket({ user, onCreated }) {
+export function RaiseTicket({ user, onCreated, trigger }) {
   const lockedDepartment = OWN_DEPARTMENT_BY_ROLE[user.role] || null;
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [cats, setCats] = useState([]);
+  const [categoryPriority, setCategoryPriority] = useState({});
   const [locs, setLocs] = useState([]);
   const [members, setMembers] = useState([]);
   const [existingTickets, setExistingTickets] = useState([]);
@@ -755,21 +751,22 @@ export function RaiseTicket({ user, onCreated }) {
     email: "",
     assignee_id: "",
     asset_serial_number: "",
+    seat_number: "",
   });
   const [assetMatch, setAssetMatch] = useState(null);
   const [assetAnalysis, setAssetAnalysis] = useState(null);
   const [assetLookupPending, setAssetLookupPending] = useState(false);
 
-  // Live laptop lookup: an entered serial number (or, failing that, the GRP
-  // code) resolves the issued laptop so the vendor mapping is visible before
-  // the ticket is raised.
+  const [employeeLookup, setEmployeeLookup] = useState({
+    code: "",
+    pending: false,
+    match: null,
+  });
+
+  // Live laptop lookup from a serial number the IT team types in by hand.
+  // The GRP code no longer resolves or fills in the serial.
   useEffect(() => {
-    // Employees do not fill in an affected-employee block, so their own GRP
-    // code stands in and their issued laptop still maps.
-    const query =
-      f.asset_serial_number.trim() ||
-      f.employee_id.trim() ||
-      (user.role === "employee" ? (user.employee_id || "").trim() : "");
+    const query = f.asset_serial_number.trim();
     if (!query) {
       setAssetMatch(null);
       setAssetAnalysis(null);
@@ -790,20 +787,44 @@ export function RaiseTicket({ user, onCreated }) {
         .finally(() => setAssetLookupPending(false));
     }, 350);
     return () => clearTimeout(timer);
-  }, [f.asset_serial_number, f.employee_id, user.role, user.employee_id]);
+  }, [f.asset_serial_number]);
 
-  // Auto-populate the serial number from the GRP-code match so the vendor
-  // mapping is recorded on the ticket without retyping it.
+  // GRP code → affected employee's name and email, filled in on screen.
   useEffect(() => {
-    if (!assetMatch?.serial_number) return;
-    if (f.asset_serial_number.trim()) return;
-    if (!isLaptopCategory(f.category)) return;
-    setF((current) =>
-      current.asset_serial_number.trim()
-        ? current
-        : { ...current, asset_serial_number: assetMatch.serial_number },
-    );
-  }, [assetMatch, f.category, f.asset_serial_number]);
+    const code = f.employee_id.trim();
+    if (user.role === "employee" || code.length < 3) {
+      setEmployeeLookup({ code: "", pending: false, match: null });
+      return undefined;
+    }
+    setEmployeeLookup((current) => ({ ...current, code, pending: true }));
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api(`/employees/lookup?code=${encodeURIComponent(code)}`)
+        .then(({ match }) => {
+          if (cancelled) return;
+          setEmployeeLookup({ code, pending: false, match: match || null });
+          if (!match) return;
+          setF((current) =>
+            current.employee_id.trim() !== code
+              ? current
+              : {
+                  ...current,
+                  raised_for_name: match.name || current.raised_for_name,
+                  email: match.email || current.email,
+                  raised_for_id: match.user_id || "",
+                },
+          );
+        })
+        .catch(() => {
+          if (!cancelled)
+            setEmployeeLookup({ code, pending: false, match: null });
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [f.employee_id, user.role]);
 
   useEffect(() => {
     if (!open) return;
@@ -811,6 +832,11 @@ export function RaiseTicket({ user, onCreated }) {
       .then((c) => {
         const names = c.map((x) => x.name);
         setCats(names);
+        setCategoryPriority(
+          Object.fromEntries(
+            c.filter((x) => x.default_priority).map((x) => [x.name, x.default_priority]),
+          ),
+        );
         if (!f.category && names.length)
           setF((current) => ({ ...current, category: names[0] }));
       })
@@ -862,6 +888,7 @@ export function RaiseTicket({ user, onCreated }) {
         email: "",
         assignee_id: "",
         asset_serial_number: "",
+        seat_number: "",
       }));
       setAssetMatch(null);
       onCreated();
@@ -933,10 +960,12 @@ export function RaiseTicket({ user, onCreated }) {
       }}
     >
       <DialogTrigger asChild>
-        <Button size="sm">
-          <Plus className="h-4 w-4 mr-1" />
-          Raise Ticket
-        </Button>
+        {trigger || (
+          <Button size="sm">
+            <Plus className="h-4 w-4 mr-1" />
+            Raise Ticket
+          </Button>
+        )}
       </DialogTrigger>
       <DialogContent className="max-h-[calc(100dvh-1rem)] max-w-[760px] overflow-y-auto rounded-2xl p-4 sm:max-h-[94vh] sm:p-7">
         <DialogHeader>
@@ -1000,7 +1029,13 @@ export function RaiseTicket({ user, onCreated }) {
                       type="button"
                       key={category}
                       onClick={() => {
-                        setF({ ...f, category });
+                        // A category's default priority (Settings) is applied
+                        // when it is picked; the raiser can still change it.
+                        setF({
+                          ...f,
+                          category,
+                          priority: categoryPriority[category] || f.priority,
+                        });
                         setCategoryOpen(false);
                         setCategorySearch("");
                       }}
@@ -1023,14 +1058,14 @@ export function RaiseTicket({ user, onCreated }) {
           <div className="grid gap-5 sm:grid-cols-[1.4fr_1fr]">
             <div>
               <Label className="text-sm font-semibold">
-                Priority · sets response SLA
+                Priority · sets resolution SLA
               </Label>
               <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {[
-                  ["Low", "24h"],
-                  ["Medium", "8h"],
-                  ["High", "4h"],
-                  ["Critical", "1h"],
+                  ["Low", "3 days"],
+                  ["Medium", "24h"],
+                  ["High", "8h"],
+                  ["Critical", "2h"],
                 ].map(([priority, sla]) => (
                   <button
                     type="button"
@@ -1052,6 +1087,18 @@ export function RaiseTicket({ user, onCreated }) {
                   setF({ ...f, location: v, assignee_id: "" })
                 }
                 locs={locs}
+              />
+              <Label className="block pt-1 text-xs" htmlFor="ticket-seat-number">
+                Seat number{" "}
+                <span className="text-[#9CA3AF]">(where the team can find you)</span>
+              </Label>
+              <Input
+                id="ticket-seat-number"
+                className="h-10 rounded-xl bg-[#FAFBFC]"
+                value={f.seat_number}
+                maxLength={40}
+                onChange={(e) => setF({ ...f, seat_number: e.target.value })}
+                placeholder="e.g. A6-24"
               />
             </div>
           </div>
@@ -1086,6 +1133,7 @@ export function RaiseTicket({ user, onCreated }) {
               placeholder="Describe the issue"
             />
           </div>
+          {user.role !== "employee" && (
           <div className="space-y-1">
             <Label className="text-xs">
               Laptop serial number{" "}
@@ -1119,11 +1167,12 @@ export function RaiseTicket({ user, onCreated }) {
               </p>
             ) : (
               <p className="text-[11px] text-[#9CA3AF]">
-                Leave blank to auto-map from the employee&apos;s GRP code for
-                laptop-related categories.
+                Enter the serial number manually to map the ticket to the laptop
+                and its vendor.
               </p>
             )}
           </div>
+          )}
           {user.role !== "employee" && (
             <div className="rounded-xl border border-[#DDE7E3] bg-gradient-to-r from-[#F7FBF9] to-white p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1135,9 +1184,9 @@ export function RaiseTicket({ user, onCreated }) {
                     </span>
                   </Label>
                   <p className="mt-1 text-xs leading-5 text-[#697087]">
-                    Enter the affected employee&apos;s GRP code. If the email or
-                    GRP code matches a registered employee, the ticket will also
-                    appear on their dashboard.
+                    Enter the affected employee&apos;s GRP code — their name and
+                    email are filled in automatically. If they are a registered
+                    employee, the ticket also appears on their dashboard.
                   </p>
                 </div>
                 <span
@@ -1149,6 +1198,28 @@ export function RaiseTicket({ user, onCreated }) {
                 </span>
               </div>
               <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <div>
+                  <Label className="text-xs">GRP code (optional)</Label>
+                  <Input
+                    className="mt-1 h-11 bg-white"
+                    value={f.employee_id}
+                    onChange={(event) =>
+                      setF({ ...f, employee_id: event.target.value, raised_for_id: "" })
+                    }
+                    placeholder="GRP-0000"
+                  />
+                  {f.employee_id.trim().length >= 3 && (
+                    <p
+                      className={`mt-1 text-[10px] ${employeeLookup.match ? "text-[#0E6B47]" : "text-[#9CA3AF]"}`}
+                    >
+                      {employeeLookup.pending
+                        ? "Looking up employee…"
+                        : employeeLookup.match
+                          ? "✓ Name and email filled from GRP code"
+                          : "No employee found — enter name and email"}
+                    </p>
+                  )}
+                </div>
                 <div>
                   <Label className="text-xs">Employee name</Label>
                   <Input
@@ -1172,22 +1243,11 @@ export function RaiseTicket({ user, onCreated }) {
                     placeholder="employee@ethara.ai"
                   />
                 </div>
-                <div>
-                  <Label className="text-xs">GRP code (optional)</Label>
-                  <Input
-                    className="mt-1 h-11 bg-white"
-                    value={f.employee_id}
-                    onChange={(event) =>
-                      setF({ ...f, employee_id: event.target.value, raised_for_id: "" })
-                    }
-                    placeholder="GRP-0000"
-                  />
-                </div>
               </div>
               <p className="mt-2 text-[10px] text-[#9CA3AF]">
-                Leave all three fields blank for an internal team ticket. Adding
-                the GRP code on a laptop issue maps the ticket to the issued
-                machine and its vendor.
+                Enter the GRP code and the employee&apos;s name and email fill in
+                automatically. Leave all three blank for an internal team
+                ticket. The laptop serial number is entered manually above.
               </p>
             </div>
           )}
@@ -1314,6 +1374,7 @@ export function RaiseTicket({ user, onCreated }) {
           attachmentCount={attachments.length}
           assigneeName={selectedMember?.name}
           assetVendor={assetMatch?.vendor}
+          showLaptop={user.role !== "employee"}
           onConfirm={submit}
         />
       </DialogContent>
@@ -1386,6 +1447,7 @@ function ConfirmRaiseTicket({
   attachmentCount,
   assigneeName,
   assetVendor,
+  showLaptop = true,
   onConfirm,
 }) {
   const rows = [
@@ -1393,15 +1455,18 @@ function ConfirmRaiseTicket({
     ["Category", form.category || "—"],
     ["Priority", form.priority],
     ["Location", form.location],
+    ["Seat number", form.seat_number?.trim() || "—"],
     ["Assigned to", assigneeName || `Auto-route to ${form.department} team`],
     ["Affected employee", form.raised_for_name.trim() || "Internal ticket"],
     ["GRP code", form.employee_id.trim() || "From your profile"],
-    [
-      "Laptop / vendor",
-      form.asset_serial_number.trim()
-        ? `${form.asset_serial_number.trim()}${assetVendor ? ` · ${assetVendor}` : ""}`
-        : "Not a laptop issue",
-    ],
+    ...(showLaptop
+      ? [[
+          "Laptop / vendor",
+          form.asset_serial_number.trim()
+            ? `${form.asset_serial_number.trim()}${assetVendor ? ` · ${assetVendor}` : ""}`
+            : "Not a laptop issue",
+        ]]
+      : []),
     ["Attachments", attachmentCount ? `${attachmentCount} file(s)` : "None"],
   ];
   return (
@@ -1626,10 +1691,11 @@ function RaiseRequest({ user, onCreated }) {
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Required by</Label>
-              <Input
-                type="date"
+              <DateField
+                className="w-full"
                 value={f.required_by}
-                onChange={(e) => setF({ ...f, required_by: e.target.value })}
+                clearable
+                onChange={(value) => setF({ ...f, required_by: value })}
               />
             </div>
           </div>

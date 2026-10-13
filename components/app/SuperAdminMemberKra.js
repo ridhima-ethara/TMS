@@ -44,6 +44,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import TeamKraOverview from "@/components/app/TeamKraOverview";
 
 const initials = (name = "") =>
   name
@@ -282,7 +283,7 @@ function KraCard({ list, member, submissions, onEdit, onDelete, onDuplicate }) {
   );
 }
 
-// Super Admin edits an existing member KRA. The member it belongs to is fixed
+// Super Admin edits an existing member checklist. The member it belongs to is fixed
 // here — reassigning would be a different checklist, so only the title,
 // schedule, location and task list are editable.
 function EditChecklist({ list, locations, onClose, onSaved }) {
@@ -329,7 +330,7 @@ function EditChecklist({ list, locations, onClose, onSaved }) {
           active: form.active,
         },
       });
-      toast.success(`Updated ${list.member_name}'s KRA`);
+      toast.success(`Updated ${list.member_name}'s checklist`);
       onSaved();
       onClose();
     } catch (error) {
@@ -344,7 +345,7 @@ function EditChecklist({ list, locations, onClose, onSaved }) {
       <DialogContent className="max-h-[calc(100dvh-1rem)] max-w-[640px] overflow-y-auto rounded-2xl sm:max-h-[92vh]">
         <DialogHeader>
           <DialogTitle className="text-xl font-bold">
-            Edit daily KRA
+            Edit daily checklist
           </DialogTitle>
           <p className="mt-1 text-sm text-[#9CA3AF]">
             {list?.member_name} ·{" "}
@@ -581,7 +582,7 @@ function AssignChecklist({ members, lists, locations, onCreated }) {
         <DialogHeader>
           <DialogTitle>Assign daily checklist</DialogTitle>
           <p className="text-sm text-[#6B7280]">
-            Create a recurring KRA checklist for a team member.
+            Create a recurring checklist for a team member.
           </p>
         </DialogHeader>
         <div className="space-y-5">
@@ -621,7 +622,7 @@ function AssignChecklist({ members, lists, locations, onCreated }) {
                     <span
                       className={`rounded-full px-2 py-1 text-[10px] font-semibold ${hasKra ? "bg-amber-100 text-amber-800" : "bg-green-100 text-green-800"}`}
                     >
-                      {hasKra ? "Has KRA" : "No KRA"}
+                      {hasKra ? "Has checklist" : "No checklist"}
                     </span>
                   </button>
                 );
@@ -630,7 +631,7 @@ function AssignChecklist({ members, lists, locations, onCreated }) {
             {selectedHasKra && (
               <div className="mt-2 flex gap-2 rounded-lg bg-amber-50 p-3 text-xs text-amber-800">
                 <AlertTriangle className="h-4 w-4" />
-                This member already has a KRA. This will add another checklist.
+                This member already has a checklist. This will add another checklist.
               </div>
             )}
           </div>
@@ -807,7 +808,15 @@ function AssignChecklist({ members, lists, locations, onCreated }) {
   );
 }
 
+// "Edit checklists" on the Team & Checklists overview opens this manager: assign,
+// import, edit, duplicate and delete checklists, plus the submission log.
 export default function SuperAdminMemberKra() {
+  const [managing, setManaging] = useState(false);
+  if (!managing) return <TeamKraOverview onEdit={() => setManaging(true)} />;
+  return <KraManager onBack={() => setManaging(false)} />;
+}
+
+function KraManager({ onBack }) {
   const [members, setMembers] = useState([]);
   const [locations, setLocations] = useState([]);
   const [lists, setLists] = useState([]);
@@ -882,6 +891,19 @@ export default function SuperAdminMemberKra() {
   };
   return (
     <div className="space-y-5 text-[#111827]">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={onBack}
+            className="w-fit text-[12.5px] text-[#b3177f] hover:underline"
+          >
+            ← Back to Team &amp; Checklists overview
+          </button>
+          <h2 className="m-0 text-[22px] font-semibold tracking-[-.01em] text-[#17171c]">
+            Edit checklists
+          </h2>
+        </div>
+      </div>
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex w-full overflow-x-auto rounded-lg bg-[#EDF0F4] p-1 sm:w-auto">
           <button

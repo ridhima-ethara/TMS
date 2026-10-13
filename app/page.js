@@ -2,26 +2,8 @@
 import Image from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ROLE_LABEL } from "@/lib/appapi";
+import { configureSla } from "@/lib/sla";
 import Login from "@/components/app/Login";
-import Dashboard from "@/components/app/Dashboard";
-import EmployeeAcknowledgements from "@/components/app/EmployeeAcknowledgements";
-import TicketsView from "@/components/app/TicketsView";
-import MyChecklist from "@/components/app/MyChecklist";
-import SuperAdminMemberKra from "@/components/app/SuperAdminMemberKra";
-import AuditView from "@/components/app/AuditView";
-import TicketDrawer from "@/components/app/TicketDrawer";
-import SuperAdminDashboard from "@/components/app/SuperAdminDashboard";
-import SuperAdminTickets from "@/components/app/SuperAdminTickets";
-import ApprovalsView from "@/components/app/ApprovalsView";
-import ParkingView from "@/components/app/ParkingView";
-import SettingsView from "@/components/app/SettingsView";
-import FirewallView from "@/components/app/FirewallView";
-import VendorAnalysis from "@/components/app/VendorAnalysis";
-import {
-  AgentDashboard,
-  AgentKra,
-  AgentTickets,
-} from "@/components/app/AgentViews";
 import { Toaster } from "@/components/ui/sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -33,8 +15,58 @@ import {
 } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import ThemeToggle from "@/components/app/ThemeToggle";
+import dynamic from "next/dynamic";
+
+// Each screen is its own chunk, loaded when first opened. Shipping every view
+// (the Firewall view alone is ~6k lines, plus the chart library) in the first
+// bundle made the initial load download and parse everything for every user.
+const ViewLoading = () => (
+  <div className="h-[520px] w-full animate-pulse rounded-xl bg-[#ebeae6]" />
+);
+const lazyView = (loader) =>
+  dynamic(loader, { ssr: false, loading: ViewLoading });
+const Dashboard = lazyView(() => import("@/components/app/Dashboard"));
+const EmployeeAcknowledgements = lazyView(() => import("@/components/app/EmployeeAcknowledgements"));
+const TicketsView = lazyView(() => import("@/components/app/TicketsView"));
+const MyChecklist = lazyView(() => import("@/components/app/MyChecklist"));
+const SuperAdminMemberKra = lazyView(() => import("@/components/app/SuperAdminMemberKra"));
+const AuditView = lazyView(() => import("@/components/app/AuditView"));
+const TicketDrawer = dynamic(() => import("@/components/app/TicketDrawer"), { ssr: false });
+const SuperAdminDashboard = lazyView(() => import("@/components/app/SuperAdminDashboard"));
+const SuperAdminTickets = lazyView(() => import("@/components/app/SuperAdminTickets"));
+const ApprovalsView = lazyView(() => import("@/components/app/ApprovalsView"));
+const ParkingView = lazyView(() => import("@/components/app/ParkingView"));
+const SettingsView = lazyView(() => import("@/components/app/SettingsView"));
+const FirewallView = lazyView(() => import("@/components/app/FirewallView"));
+const VendorAnalysis = lazyView(() => import("@/components/app/VendorAnalysis"));
+const IncidentReportsView = lazyView(() => import("@/components/app/IncidentReports"));
+const HeadDashboard = lazyView(() =>
+  import("@/components/app/HeadDashboard"),
+);
+const MemberDashboard = lazyView(() =>
+  import("@/components/app/MemberDashboard"),
+);
+const AgentKra = lazyView(() =>
+  import("@/components/app/MyKraView"),
+);
+const TicketBoard = lazyView(() => import("@/components/app/TicketBoard"));
 import { toast } from "sonner";
 import {
+  AlertOctagon,
   Ticket,
   LayoutDashboard,
   Laptop,
@@ -50,8 +82,10 @@ import {
   Settings,
   Shield,
   AlertTriangle,
+  Check,
   CheckCheck,
   CheckCircle2,
+  ChevronsUpDown,
   Clock3,
   MessageSquare,
   Sparkles,
@@ -60,39 +94,44 @@ import {
   VolumeX,
 } from "lucide-react";
 
+
+// Sidebar groups follow the Service Hub design: Service desk / People /
+// Workplace / System. Roles only ever see their own items.
 const NAV = {
   employee: [
-    { k: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { k: "tickets", label: "My Tickets", icon: Ticket },
-    { k: "acknowledgements", label: "Resolution Acknowledgements", icon: FileCheck2 },
+    { k: "dashboard", label: "Dashboard", icon: LayoutDashboard, group: "Service desk" },
+    { k: "tickets", label: "My tickets", icon: Ticket, group: "Service desk" },
+    { k: "acknowledgements", label: "Resolution acknowledgements", icon: FileCheck2, group: "Service desk" },
   ],
   it: [
-    { k: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { k: "tickets", label: "IT Tickets", icon: Ticket },
-    { k: "approvals", label: "Approvals", icon: FileCheck2 },
-    { k: "mychecklist", label: "My KRA", icon: ClipboardCheck },
-    { k: "vendor-analysis", label: "Vendor Analysis", icon: Laptop },
-    { k: "firewall", label: "Firewall Utilization", icon: Shield },
+    { k: "dashboard", label: "Dashboard", icon: LayoutDashboard, group: "Service desk" },
+    { k: "tickets", label: "IT tickets", icon: Ticket, group: "Service desk" },
+    { k: "approvals", label: "Approvals", icon: FileCheck2, group: "Service desk" },
+    { k: "incident-reports", label: "Incident reports", icon: AlertOctagon, group: "Service desk" },
+    { k: "mychecklist", label: "My Checklist", icon: ClipboardCheck, group: "People" },
+    { k: "vendor-analysis", label: "Vendor analysis", icon: Laptop, group: "People" },
+    { k: "firewall", label: "Firewall", icon: Shield, group: "Workplace" },
   ],
   admin: [
-    { k: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { k: "tickets", label: "Admin Tickets", icon: Ticket },
-    { k: "approvals", label: "Approvals", icon: FileCheck2 },
-    { k: "mychecklist", label: "My KRA", icon: ClipboardCheck },
-    { k: "vendor-analysis", label: "Vendor Analysis", icon: Laptop },
-    { k: "parking", label: "Parking", icon: Car },
-    { k: "firewall", label: "Firewall Utilization", icon: Shield },
+    { k: "dashboard", label: "Dashboard", icon: LayoutDashboard, group: "Service desk" },
+    { k: "tickets", label: "Admin tickets", icon: Ticket, group: "Service desk" },
+    { k: "approvals", label: "Approvals", icon: FileCheck2, group: "Service desk" },
+    { k: "mychecklist", label: "My Checklist", icon: ClipboardCheck, group: "People" },
+    { k: "vendor-analysis", label: "Vendor analysis", icon: Laptop, group: "People" },
+    { k: "parking", label: "Parking", icon: Car, group: "Workplace" },
+    { k: "firewall", label: "Firewall", icon: Shield, group: "Workplace" },
   ],
   super_admin: [
-    { k: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { k: "tickets", label: "All Tickets", icon: Ticket },
-    { k: "approvals", label: "Approval Inbox", icon: FileCheck2 },
-    { k: "member-checklists", label: "Member KRA", icon: Users },
-    { k: "vendor-analysis", label: "Vendor Analysis", icon: Laptop },
-    { k: "parking", label: "Parking", icon: Car },
-    { k: "settings", label: "Settings", icon: Settings },
-    { k: "firewall", label: "Firewall Utilization", icon: Shield },
-    { k: "audit", label: "Audit Logs", icon: ScrollText },
+    { k: "dashboard", label: "Dashboard", icon: LayoutDashboard, group: "Service desk" },
+    { k: "tickets", label: "All tickets", icon: Ticket, group: "Service desk" },
+    { k: "approvals", label: "Approval inbox", icon: FileCheck2, group: "Service desk" },
+    { k: "incident-reports", label: "Incident reports", icon: AlertOctagon, group: "Service desk" },
+    { k: "member-checklists", label: "Team & Checklists", icon: Users, group: "People" },
+    { k: "vendor-analysis", label: "Vendor analysis", icon: Laptop, group: "People" },
+    { k: "parking", label: "Parking", icon: Car, group: "Workplace" },
+    { k: "firewall", label: "Firewall", icon: Shield, group: "Workplace" },
+    { k: "settings", label: "Settings", icon: Settings, group: "System" },
+    { k: "audit", label: "Audit logs", icon: ScrollText, group: "System" },
   ],
 };
 
@@ -221,6 +260,8 @@ function notificationTargetView(notification, role) {
       return "acknowledgements";
     return "tickets";
   }
+  if (/incident report/.test(message))
+    return ["it", "super_admin"].includes(role) ? "incident-reports" : "dashboard";
   if (/firewall/.test(message)) return "firewall";
   if (/parking/.test(message))
     return ["admin", "super_admin"].includes(role) ? "parking" : "dashboard";
@@ -234,6 +275,196 @@ function notificationTargetView(notification, role) {
   return "dashboard";
 }
 
+/**
+ * Navigation rail.
+ *
+ * Declared at module scope so switching views or receiving a notification poll
+ * does not remount the whole nav subtree. `collapsed` only ever comes through
+ * as true for the desktop rail — the mobile drawer always renders labels.
+ */
+/**
+ * Lets a member holding several roles act as one of them. Reloads the app so
+ * every view, nav item and cached list is rebuilt for the new role.
+ */
+function RoleSwitcher({ role, roles }) {
+  const [switching, setSwitching] = useState(false);
+  const switchRole = async (next) => {
+    if (next === role) return;
+    setSwitching(true);
+    try {
+      await api("/auth/switch-role", { method: "POST", body: { role: next } });
+      window.location.assign("/");
+    } catch (error) {
+      toast.error(error.message);
+      setSwitching(false);
+    }
+  };
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        disabled={switching}
+        aria-label="Switch role"
+        className="-ml-1 mt-0.5 flex max-w-full items-center gap-1 rounded-md px-1 py-0.5 text-left text-[11.5px] text-[#6b6b76] outline-none transition-colors hover:bg-[#f5f5f2] hover:text-[#17171c] focus-visible:ring-2 focus-visible:ring-[#b3177f]/30 disabled:opacity-60 data-[state=open]:bg-[#f5f5f2] data-[state=open]:text-[#17171c]"
+      >
+        <span className="truncate">{ROLE_LABEL[role] || role}</span>
+        {switching ? (
+          <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+        ) : (
+          <ChevronsUpDown className="h-3 w-3 shrink-0 opacity-70" />
+        )}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side="top" align="start" sideOffset={6} className="w-52">
+        <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Switch role
+        </DropdownMenuLabel>
+        {roles.map((option) => {
+          const active = option === role;
+          return (
+            <DropdownMenuItem
+              key={option}
+              onSelect={() => switchRole(option)}
+              className={active ? "font-semibold text-[#b3177f]" : ""}
+            >
+              <span className="flex-1 truncate">{ROLE_LABEL[option] || option}</span>
+              {active && <Check className="h-3.5 w-3.5 text-[#b3177f]" />}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function Sidebar({
+  nav,
+  view,
+  role,
+  user,
+  collapsed,
+  onNavigate,
+  badges = {},
+}) {
+  const groups = nav.reduce((list, item) => {
+    const last = list[list.length - 1];
+    if (last && last.title === item.group) last.items.push(item);
+    else list.push({ title: item.group, items: [item] });
+    return list;
+  }, []);
+  const userInitials = (user?.name || "")
+    .split(" ")
+    .map((part) => part[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+  return (
+    <TooltipProvider delayDuration={120}>
+      <aside
+        data-collapsed={collapsed ? "true" : "false"}
+        className="dashboard-sidebar flex h-full w-[min(16rem,calc(100vw-2rem))] shrink-0 flex-col overflow-hidden border-r border-[#e8e7e3] bg-white text-[13px] text-[#3b3b44] md:w-full"
+      >
+        <div
+          className={`flex shrink-0 items-center border-b border-[#efeeea] ${collapsed ? "justify-center px-2 py-4" : "gap-2.5 px-[18px] pb-4 pt-[18px]"}`}
+        >
+          <Image
+            src="/brand/ethara-emblem.png"
+            alt="Ethara"
+            width={30}
+            height={30}
+            priority
+            className="h-[30px] w-[30px] shrink-0 rounded-full object-contain"
+          />
+          {!collapsed && (
+            <span className="dashboard-sidebar-label truncate text-sm font-semibold text-[#17171c]">
+              Ethara <span className="text-[#b3177f]">Service Hub</span>
+            </span>
+          )}
+        </div>
+
+        <nav
+          aria-label="Primary"
+          className={`flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden py-4 ${collapsed ? "gap-1 px-2" : "gap-[18px] px-2.5"}`}
+        >
+          {groups.map((group) => (
+            <div key={group.title} className="flex flex-col gap-0.5">
+              {!collapsed && (
+                <div className="px-2.5 pb-1.5 text-[10.5px] uppercase tracking-[.08em] text-[#9a9aa3]">
+                  {group.title}
+                </div>
+              )}
+              {group.items.map((n) => {
+                const Icon = n.icon;
+                const active = view === n.k;
+                const badge = badges[n.k] > 0 ? badges[n.k] : null;
+                const item = (
+                  <button
+                    onClick={() => onNavigate(n.k)}
+                    aria-current={active ? "page" : undefined}
+                    aria-label={collapsed ? n.label : undefined}
+                    className={`dashboard-nav-item flex w-full items-center rounded-lg text-left ${collapsed ? "justify-center px-0 py-2.5" : "justify-between gap-2 px-2.5 py-2"} ${
+                      active
+                        ? "dashboard-nav-item-active bg-[#fbe9f4] font-semibold text-[#8a0f61]"
+                        : "text-[#3b3b44] hover:bg-[#f5f5f2]"
+                    }`}
+                  >
+                    {collapsed ? (
+                      <Icon className="h-4 w-4 shrink-0" />
+                    ) : (
+                      <>
+                        <span className="dashboard-sidebar-label truncate">
+                          {n.label}
+                        </span>
+                        {badge && (
+                          <span className={`text-[11px] tabular-nums ${active ? "" : "text-[#6b6b76]"}`}>
+                            {badge}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </button>
+                );
+                if (!collapsed) return <div key={n.k}>{item}</div>;
+                return (
+                  <Tooltip key={n.k}>
+                    <TooltipTrigger asChild>{item}</TooltipTrigger>
+                    <TooltipContent side="right" className="text-xs">
+                      {n.label}
+                      {badge ? ` · ${badge}` : ""}
+                    </TooltipContent>
+                  </Tooltip>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+
+        <div
+          className={`flex shrink-0 items-center border-t border-[#efeeea] ${collapsed ? "justify-center p-2" : "gap-2.5 px-4 py-3.5"}`}
+        >
+          {!collapsed && (
+            <>
+              <span className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-full bg-[#17171c] text-[11px] font-semibold text-white">
+                {userInitials}
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col leading-tight">
+                <span className="truncate font-semibold text-[#17171c]">
+                  {user?.name}
+                </span>
+                {user?.roles?.length > 1 ? (
+                  <RoleSwitcher role={role} roles={user.roles} />
+                ) : (
+                  <span className="truncate text-[11.5px] text-[#6b6b76]">
+                    {ROLE_LABEL[role]}
+                  </span>
+                )}
+              </span>
+            </>
+          )}
+        </div>
+      </aside>
+    </TooltipProvider>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(true);
@@ -241,8 +472,13 @@ export default function App() {
   const [refresh, setRefresh] = useState(0);
   const [openTicketId, setOpenTicketId] = useState(null);
   const [users, setUsers] = useState([]);
+  const [pendingApprovals, setPendingApprovals] = useState(0);
   const [notifs, setNotifs] = useState([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const sidebarCollapsed = false;
+  // Gates the width transition so restoring a collapsed rail on load does not
+  // animate from the expanded width on first paint.
+  const [shellReady, setShellReady] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const notificationIdsRef = useRef(new Set());
@@ -252,6 +488,12 @@ export default function App() {
   const pendingNotificationSoundRef = useRef(false);
 
   const doRefresh = useCallback(() => setRefresh((n) => n + 1), []);
+
+  // Enable the width transition after first paint.
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setShellReady(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
 
   const navigateView = useCallback(
     (requested, options) => {
@@ -425,6 +667,11 @@ export default function App() {
 
   const loadMeta = useCallback(async () => {
     if (!user) return;
+    // Saved SLA rules (Settings → SLA & hours) so browser-side SLA maths
+    // matches the server's.
+    api("/settings/sla")
+      .then((config) => configureSla(config))
+      .catch(() => {});
     try {
       setUsers(await api("/users"));
     } catch (e) {}
@@ -432,6 +679,20 @@ export default function App() {
   useEffect(() => {
     loadMeta();
   }, [loadMeta, refresh]);
+
+  // Pending count for the super admin's Approval inbox nav item.
+  useEffect(() => {
+    if (user?.role !== "super_admin") return;
+    api("/approvals")
+      .then((rows) =>
+        setPendingApprovals(
+          rows.filter((row) =>
+            ["Pending", "On Hold", "Clarification"].includes(row.status),
+          ).length,
+        ),
+      )
+      .catch(() => {});
+  }, [user, refresh]);
 
   useEffect(() => {
     notificationIdsRef.current = new Set();
@@ -496,62 +757,57 @@ export default function App() {
       </>
     );
 
-  const nav = NAV[user.role] || NAV.employee;
+  // Members (not team heads) see their personal dashboard as "My dashboard".
+  const nav = (NAV[user.role] || NAV.employee).map((item) =>
+    item.k === "dashboard" && ["it", "admin"].includes(user.role)
+      ? { ...item, label: user.is_team_head ? "Team dashboard" : "My dashboard" }
+      : item,
+  );
   const unread = notifs.filter((n) => !n.read).length;
+  // Screens redesigned with their own page heading don't repeat it in the bar.
+  const ownHeading =
+    view === "firewall" ||
+    view === "vendor-analysis" ||
+    view === "incident-reports" ||
+    (view === "mychecklist" && ["it", "admin"].includes(user.role)) ||
+    (view === "dashboard" && ["it", "admin"].includes(user.role)) ||
+    (view === "tickets" && ["it", "admin"].includes(user.role)) ||
+    view === "approvals" ||
+    (user.role === "super_admin" &&
+      ["dashboard", "tickets", "approvals", "member-checklists", "settings", "audit"].includes(view));
+  const navBadges =
+    user.role === "super_admin" ? { approvals: pendingApprovals } : {};
   const titleMap = {
     dashboard: "Dashboard",
     tickets: nav.find((n) => n.k === "tickets")?.label,
     acknowledgements: "Resolution Acknowledgements",
     approvals: "Approvals",
-    mychecklist: "My KRA / Daily Tasks",
-    "member-checklists": "Member KRA",
+    mychecklist: "My Checklist / Daily Tasks",
+    "member-checklists": "Team & Checklists",
     "vendor-analysis": "Laptop Vendor Analysis",
+    "incident-reports": "Incident Reports",
     parking: "Tulip Parking",
     settings: "Member Settings",
     firewall: "Firewall Utilization",
     audit: "Audit Logs",
   };
 
-  const Sidebar = () => (
-    <aside className="dashboard-sidebar flex h-full w-[min(16rem,calc(100vw-2rem))] shrink-0 flex-col overflow-hidden border-r border-[#E5E9EF] bg-white text-[#4B5563] shadow-[8px_0_28px_rgba(17,24,39,.04)] md:w-64">
-      <div className="flex h-16 items-center gap-3 border-b border-[#E5E9EF] px-5 text-lg font-semibold text-[#111827]">
-        <span className="brand-emblem-frame flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#DDE8E3] bg-white shadow-sm">
-          <Image src="/brand/ethara-emblem.png" alt="" width={36} height={36} priority className="brand-emblem h-9 w-9 object-contain" aria-hidden="true" />
-        </span>
-        <span>
-          Ethara <span className="text-[#ee00ee]">Service Hub</span>
-        </span>
-      </div>
-      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
-        {nav.map((n) => {
-          const Icon = n.icon;
-          const active = view === n.k;
-          return (
-            <button
-              key={n.k}
-              onClick={() => {
-                navigateView(n.k);
-                setSidebarOpen(false);
-              }}
-              className={`dashboard-nav-item flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all ${active ? "bg-fuchsia-50 text-[#9D139D] shadow-[inset_3px_0_0_#ee00ee]" : "text-[#4B5563] hover:bg-[#F4F6F8] hover:text-[#111827]"}`}
-            >
-              <Icon className="h-4 w-4" />
-              {n.label}
-            </button>
-          );
-        })}
-      </nav>
-      <div className="border-t border-[#E5E9EF] p-4 text-xs text-[#6B7280]">
-        <span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,.45)]" />
-        {ROLE_LABEL[user.role]} workspace
-      </div>
-    </aside>
-  );
-
   return (
-    <div className="min-h-screen flex bg-[#f7f8fc] dashboard-shell">
-      <div className="fixed inset-y-0 left-0 z-40 hidden h-screen md:flex">
-        <Sidebar />
+    <div
+      className="dashboard-shell min-h-screen flex bg-[#f5f5f2]"
+      data-sidebar-collapsed={sidebarCollapsed ? "true" : "false"}
+      data-shell-ready={shellReady ? "true" : "false"}
+    >
+      <div className="dashboard-sidebar-slot fixed inset-y-0 left-0 z-40 hidden h-screen md:flex">
+        <Sidebar
+          nav={nav}
+          view={view}
+          role={user.role}
+          user={user}
+          collapsed={sidebarCollapsed}
+          onNavigate={(k) => navigateView(k)}
+          badges={navBadges}
+        />
       </div>
       {sidebarOpen && (
         <div className="fixed inset-0 z-40 md:hidden">
@@ -560,32 +816,44 @@ export default function App() {
             onClick={() => setSidebarOpen(false)}
           />
           <div className="dashboard-mobile-sidebar relative z-50 flex h-full">
-            <Sidebar />
+            <Sidebar
+              nav={nav}
+              view={view}
+              role={user.role}
+              user={user}
+              collapsed={false}
+              onNavigate={(k) => {
+                navigateView(k);
+                setSidebarOpen(false);
+              }}
+                  badges={navBadges}
+            />
           </div>
         </div>
       )}
 
-      <div className="min-w-0 flex-1 flex-col md:ml-64 flex">
-        <header className="sticky top-0 z-30 flex min-h-16 items-center justify-between gap-2 border-b border-[#e5e7f0] bg-white/90 px-2 py-2 backdrop-blur-xl sm:px-4 sm:py-3 md:px-7">
+      <div className="dashboard-main min-w-0 flex-1 flex-col flex">
+        <header className="sticky top-0 z-30 flex min-h-14 items-center justify-between gap-2 border-b border-[#e8e7e3] bg-[#f5f5f2]/90 px-2 py-2 backdrop-blur-xl sm:px-4 md:px-7">
           <div className="flex min-w-0 items-center gap-1 sm:gap-3">
             <Button
               variant="ghost"
               size="icon"
               className="md:hidden"
               onClick={() => setSidebarOpen(true)}
+              aria-label="Open navigation"
             >
               <Menu className="h-5 w-5" />
             </Button>
-            <div className="min-w-0">
-              <h1 className="truncate text-base font-bold text-[#0b0e14] sm:text-xl">
-                {titleMap[view] || "Dashboard"}
-              </h1>
-              <p className="hidden text-xs text-[#697087] sm:block">
-                Ethara IT &amp; Admin Operations
-              </p>
-            </div>
+            {!ownHeading && (
+              <div className="min-w-0">
+                <h1 className="truncate text-base font-semibold tracking-[-.01em] text-[#17171c] sm:text-lg">
+                  {titleMap[view] || "Dashboard"}
+                </h1>
+              </div>
+            )}
           </div>
           <div className="flex shrink-0 items-center gap-1 sm:gap-3">
+            <ThemeToggle />
             <Popover open={notificationsOpen} onOpenChange={setNotificationsOpen}>
               <PopoverTrigger asChild>
                 <Button
@@ -705,24 +973,7 @@ export default function App() {
                 </ScrollArea>
               </PopoverContent>
             </Popover>
-            <div className="flex items-center gap-2">
-              <Avatar className="h-8 w-8 ring-2 ring-fuchsia-100 sm:h-9 sm:w-9">
-                <AvatarFallback className="text-xs bg-[#151a28] text-white">
-                  {user.name
-                    .split(" ")
-                    .map((x) => x[0])
-                    .slice(0, 2)
-                    .join("")}
-                </AvatarFallback>
-              </Avatar>
-              <div className="hidden sm:block">
-                <p className="text-sm font-medium leading-none">{user.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {ROLE_LABEL[user.role]}
-                </p>
-              </div>
-            </div>
-            <Button variant="ghost" size="icon" onClick={logout}>
+            <Button variant="ghost" size="icon" onClick={logout} aria-label="Sign out" title="Sign out">
               <LogOut className="h-4 w-4" />
             </Button>
           </div>
@@ -734,13 +985,23 @@ export default function App() {
             (user.role === "super_admin" ? (
               <SuperAdminDashboard
                 onViewKra={() => navigateView("member-checklists")}
+                onViewIncidents={() => navigateView("incident-reports")}
                 onOpenTicket={setOpenTicketId}
               />
-            ) : ["it", "admin"].includes(user.role) ? (
-              <AgentDashboard
+            ) : ["it", "admin"].includes(user.role) && !user.is_team_head ? (
+              <MemberDashboard
                 user={user}
                 onGoTickets={() => navigateView("tickets")}
                 onGoKra={() => navigateView("mychecklist")}
+                onGoApprovals={() => navigateView("approvals")}
+                onOpenTicket={setOpenTicketId}
+              />
+            ) : ["it", "admin"].includes(user.role) ? (
+              <HeadDashboard
+                user={user}
+                onGoTickets={() => navigateView("tickets")}
+                onGoApprovals={() => navigateView("approvals")}
+                onOpenTicket={setOpenTicketId}
               />
             ) : (
               <Dashboard
@@ -760,9 +1021,13 @@ export default function App() {
           )}
           {view === "tickets" &&
             (user.role === "super_admin" ? (
-              <SuperAdminTickets onOpenTicket={setOpenTicketId} />
+              <SuperAdminTickets user={user} onOpenTicket={setOpenTicketId} />
             ) : ["it", "admin"].includes(user.role) ? (
-              <AgentTickets user={user} onOpenTicket={setOpenTicketId} />
+              <TicketBoard
+                user={user}
+                onOpenTicket={setOpenTicketId}
+                onGoApprovals={() => navigateView("approvals")}
+              />
             ) : (
               <TicketsView
                 user={user}
@@ -772,7 +1037,11 @@ export default function App() {
               />
             ))}
           {view === "approvals" && (
-            <ApprovalsView user={user} onOpenTicket={setOpenTicketId} />
+            <ApprovalsView
+              user={user}
+              onOpenTicket={setOpenTicketId}
+              onChanged={doRefresh}
+            />
           )}
           {view === "mychecklist" &&
             (["it", "admin"].includes(user.role) ? (
@@ -783,7 +1052,11 @@ export default function App() {
           {view === "member-checklists" && <SuperAdminMemberKra />}
           {view === "vendor-analysis" &&
             ["it", "admin", "super_admin"].includes(user.role) && (
-              <VendorAnalysis onOpenTicket={setOpenTicketId} />
+              <VendorAnalysis user={user} onOpenTicket={setOpenTicketId} />
+            )}
+          {view === "incident-reports" &&
+            ["it", "super_admin"].includes(user.role) && (
+              <IncidentReportsView user={user} />
             )}
           {view === "parking" && <ParkingView />}
           {view === "settings" && <SettingsView />}

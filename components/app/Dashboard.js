@@ -17,11 +17,11 @@ function Stat({ label, value, icon: Icon, tone = 'default', suffix = '' }) {
   return (
     <Card className="border-[#e4e6ef] bg-white transition-all duration-200 hover:-translate-y-0.5 hover:border-fuchsia-200 hover:shadow-[0_12px_32px_rgba(238,0,238,.08)]">
       <CardContent className="p-4 min-h-24 flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-medium text-[#697087]">{label}</p>
+        <div className="min-w-0">
+          <p className="min-h-8 text-xs font-medium leading-4 text-[#697087] [hyphens:auto]">{label}</p>
           <p className={`mt-1 text-2xl font-bold tabular-nums ${tones[tone]}`}>{value ?? 0}{suffix}</p>
         </div>
-        {Icon && <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#f7f8fc]"><Icon className={`h-5 w-5 opacity-55 ${tones[tone]}`} /></span>}
+        {Icon && <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#f7f8fc] xl:h-10 xl:w-10"><Icon className={`h-5 w-5 opacity-55 ${tones[tone]}`} /></span>}
       </CardContent>
     </Card>
   )
@@ -161,7 +161,7 @@ function DailyKra({ refresh }) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-base flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-fuchsia-600" />Daily KRA Compliance
+        <CardTitle className="text-base flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-fuchsia-600" />Daily checklist Compliance
           <span className="text-xs font-normal text-muted-foreground ml-1">{data?.date}</span>
         </CardTitle>
       </CardHeader>
@@ -189,7 +189,7 @@ function DailyKra({ refresh }) {
               </div>
             )
           })}
-          {(!data || data.members.length === 0) && <p className="text-sm text-muted-foreground">No KRA assigned yet.</p>}
+          {(!data || data.members.length === 0) && <p className="text-sm text-muted-foreground">No checklist assigned yet.</p>}
         </div>
       </CardContent>
     </Card>
@@ -202,7 +202,7 @@ function MyKra({ refresh }) {
   if (!lists.length) return null
   return (
     <Card>
-      <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-fuchsia-600" />My KRA — Today</CardTitle></CardHeader>
+      <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-fuchsia-600" />My Checklist — Today</CardTitle></CardHeader>
       <CardContent className="space-y-3">
         {lists.map((l) => {
           const sub = l.today_submission
@@ -299,7 +299,6 @@ function EmployeeDash({ user, onOpenTicket, onGoTickets, onGoAcknowledgements, r
           <div className="max-w-2xl">
             <p className="text-xs font-semibold uppercase tracking-[.2em] text-fuchsia-200">Employee service centre</p>
             <h2 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">Welcome, {user.name?.split(' ')[0] || 'there'}</h2>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-slate-300">Raise a request, follow every update, and confirm completed work from one clear workspace.</p>
           </div>
           <Button onClick={onGoTickets} className="w-full bg-[#ee00ee] text-white shadow-lg shadow-fuchsia-950/30 hover:bg-[#cf00cf] sm:w-auto">
             View my requests <ArrowRight className="ml-2 h-4 w-4" />
@@ -309,7 +308,7 @@ function EmployeeDash({ user, onOpenTicket, onGoTickets, onGoAcknowledgements, r
 
       {error && <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">Latest refresh failed; showing the most recent dashboard data.</div>}
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">{cards.map((c) => <Stat key={c.label} {...c} />)}</div>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5 [&>*:last-child:nth-child(odd)]:col-span-2 md:[&>*:last-child:nth-child(odd)]:col-span-1">{cards.map((c) => <Stat key={c.label} {...c} />)}</div>
 
       <Card className={`overflow-hidden ${s.resolved ? 'border-emerald-200 bg-gradient-to-r from-emerald-50 to-white' : 'border-[#e4e6ef]'}`}>
         <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">

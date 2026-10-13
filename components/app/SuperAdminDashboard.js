@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { api } from "@/lib/appapi";
+import { api, fetchAllTickets } from "@/lib/appapi";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -15,6 +15,9 @@ import {
 import { toast } from "sonner";
 import { workingHoursBetween } from "@/lib/sla";
 import TeamPerformance from "@/components/app/TeamPerformance";
+import MemberReport from "@/components/app/MemberReport";
+import OperationsOverview from "@/components/app/OperationsOverview";
+import { IncidentReportsPanel } from "@/components/app/IncidentReports";
 
 const DONE = ["Resolved", "Closed", "Cancelled"];
 const deptMeta = {
@@ -40,6 +43,119 @@ const inRange = (ticket, from, to) => {
   const start = new Date(`${from}T00:00:00`);
   const end = new Date(`${to}T23:59:59.999`);
   return created >= start && created <= end;
+};
+
+// Checklist submissions are keyed by an IST calendar day, and every timestamp on them
+// is read back in IST, because that is the timezone the cutoff and the whole SLA
+// engine are defined in.
+const IST = "Asia/Kolkata";
+const istTime = (value) =>
+  value
+    ? new Date(value).toLocaleTimeString("en-GB", {
+        timeZone: IST,
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "—";
+const istDateTime = (value) =>
+  value
+    ? new Date(value).toLocaleString("en-GB", {
+        timeZone: IST,
+        day: "2-digit",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "—";
+/** Minutes past IST midnight, used to average clock times across days. */
+const istMinuteOfDay = (value) => {
+  if (!value) return null;
+  const [h, m] = istTime(value).split(":").map(Number);
+  return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null;
+};
+const minutesToClock = (minutes) =>
+  minutes == null
+    ? "—"
+    : `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(
+        Math.round(minutes % 60),
+      ).padStart(2, "0")}`;
+
+/**
+ * Groups checklist submissions per member for the selected range.
+ *
+ * `created_at` is the first entry of the day and `submitted_at` is the most
+ * recent update — a re-submission overwrites `submitted_at` in place, so these
+ * two are the only update times the records preserve. Individual intermediate
+ * saves are not recoverable, which is why this reports first/last rather than a
+ * full edit history.
+ */
+const kraActivityByMember = (submissions, from, to) => {
+  const map = new Map();
+  for (const entry of submissions || []) {
+    const day = String(entry.date || "").slice(0, 10);
+    if (!day || day < from || day > to) continue;
+    const id = entry.member_id;
+    if (!map.has(id))
+      map.set(id, {
+        member_id: id,
+        member_name: entry.member_name,
+        submissions: 0,
+        days: new Set(),
+        done: 0,
+        total: 0,
+        late: 0,
+        revised: 0,
+        firstEntryMinutes: [],
+        lastUpdateMinutes: [],
+        entries: [],
+      });
+    const row = map.get(id);
+    const first = entry.created_at || entry.submitted_at;
+    const last = entry.submitted_at || entry.created_at;
+    row.submissions += 1;
+    row.days.add(day);
+    row.done += Number(entry.done_count) || 0;
+    row.total += Number(entry.total) || 0;
+    if (entry.late) row.late += 1;
+    // A gap of more than a minute means the member came back and revised it.
+    if (first && last && new Date(last) - new Date(first) > 60_000)
+      row.revised += 1;
+    const firstMinutes = istMinuteOfDay(first);
+    const lastMinutes = istMinuteOfDay(last);
+    if (firstMinutes != null) row.firstEntryMinutes.push(firstMinutes);
+    if (lastMinutes != null) row.lastUpdateMinutes.push(lastMinutes);
+    row.entries.push({
+      date: day,
+      title: entry.checklist_title,
+      done: Number(entry.done_count) || 0,
+      total: Number(entry.total) || 0,
+      status: entry.status,
+      late: Boolean(entry.late),
+      firstEntryAt: first,
+      lastUpdateAt: last,
+      deadlineAt: entry.deadline_at,
+    });
+  }
+  const mean = (values) =>
+    values.length
+      ? values.reduce((sum, value) => sum + value, 0) / values.length
+      : null;
+  for (const row of map.values()) {
+    row.dayCount = row.days.size;
+    row.completion = row.total
+      ? Math.round((row.done / row.total) * 100)
+      : 0;
+    row.avgFirstEntry = minutesToClock(mean(row.firstEntryMinutes));
+    row.avgLastUpdate = minutesToClock(mean(row.lastUpdateMinutes));
+    row.earliestFirstEntry = minutesToClock(
+      row.firstEntryMinutes.length ? Math.min(...row.firstEntryMinutes) : null,
+    );
+    row.latestUpdate = minutesToClock(
+      row.lastUpdateMinutes.length ? Math.max(...row.lastUpdateMinutes) : null,
+    );
+    row.entries.sort((a, b) => b.date.localeCompare(a.date));
+  }
+  return map;
 };
 const makeStats = (tickets) => {
   const count = (predicate) => tickets.filter(predicate).length;
@@ -160,7 +276,7 @@ const makeStats = (tickets) => {
     })),
   };
 };
-const rangeMembers = (members, tickets) =>
+const rangeMembers = (members, tickets, kraActivity) =>
   members.map((member) => {
     const assigned = tickets.filter(
       (ticket) => ticket.assignee_id === member.member_id,
@@ -168,11 +284,17 @@ const rangeMembers = (members, tickets) =>
     const resolved = assigned.filter(
       (ticket) => ticket.resolved_at || ticket.resolution?.resolved_date,
     );
-    const met = resolved.filter(
+    // Only tickets carrying a resolution deadline can be judged against one.
+    // Dividing by every resolved ticket (as this did) silently understates a
+    // member's compliance for any ticket without sla_resolution_due, and
+    // disagreed with the desk-level maths in makeStats.
+    const resolvedForSla = resolved.filter(
+      (ticket) => ticket.sla_resolution_due,
+    );
+    const met = resolvedForSla.filter(
       (ticket) =>
-        ticket.sla_resolution_due &&
         new Date(ticket.resolved_at || ticket.resolution.resolved_date) <=
-          new Date(ticket.sla_resolution_due),
+        new Date(ticket.sla_resolution_due),
     ).length;
     const responseMeasured = assigned.filter(
       (ticket) =>
@@ -189,19 +311,28 @@ const rangeMembers = (members, tickets) =>
         new Date(ticket.acknowledged_at || ticket.first_response_at) <=
           new Date(ticket.sla_response_due),
     ).length;
-    // Only about a quarter of tickets record an explicit work_started_at, so
-    // active time falls back to when the member picked the ticket up.
-    // Without this the figure reads as zero on most ranges.
-    const workingTimes = resolved
+    // "Handling time" is elapsed IST business time from the moment the member
+    // picked the ticket up to the moment it was resolved. It is NOT effort:
+    // members run several tickets at once, so these windows overlap and must
+    // never be summed into an "hours worked" figure.
+    //
+    // work_started_at (set when a ticket moves to In Progress) is only present
+    // on about a fifth of resolved tickets, so it falls back to the
+    // acknowledgement time. `handled_from_work_started` reports how many rows
+    // used the precise field, so the average can be read with that in mind.
+    const workSpans = resolved
       .map((ticket) => ({
+        precise: Boolean(ticket.work_started_at),
         from:
           ticket.work_started_at ||
           ticket.acknowledged_at ||
           ticket.first_response_at,
         to: ticket.resolved_at || ticket.resolution.resolved_date,
       }))
-      .filter((span) => span.from && span.to)
-      .map((span) => workingHoursBetween(span.from, span.to));
+      .filter((span) => span.from && span.to);
+    const workingTimes = workSpans.map((span) =>
+      workingHoursBetween(span.from, span.to),
+    );
     const responseTimes = assigned
       .filter((ticket) => ticket.acknowledged_at || ticket.first_response_at)
       .map((ticket) =>
@@ -232,19 +363,25 @@ const rangeMembers = (members, tickets) =>
         ? Math.round((responseMet / responseMeasured.length) * 100)
         : 0,
       response_sla_breached: responseMeasured.length - responseMet,
-      resolution_sla_compliance: resolved.length
-        ? Math.round((met / resolved.length) * 100)
+      resolution_sla_compliance: resolvedForSla.length
+        ? Math.round((met / resolvedForSla.length) * 100)
         : 0,
-      resolution_sla_breached: resolved.length - met,
+      resolution_sla_breached: resolvedForSla.length - met,
       avg_response_hours: average(responseTimes),
       avg_resolution_hours: average(resolutionTimes),
       avg_working_hours: average(workingTimes),
+      handled_count: workSpans.length,
+      handled_from_work_started: workSpans.filter((span) => span.precise)
+        .length,
+      // Kept for the export, but labelled as overlapping elapsed time rather
+      // than as hours worked.
       total_working_hours:
         Math.round(
           workingTimes.reduce((sum, value) => sum + value, 0) * 10,
         ) / 10,
-      sla_compliance: responseMeasured.length + resolved.length
-        ? Math.round(((responseMet + met) / (responseMeasured.length + resolved.length)) * 100)
+      kra: kraActivity?.get(member.member_id) || null,
+      sla_compliance: responseMeasured.length + resolvedForSla.length
+        ? Math.round(((responseMet + met) / (responseMeasured.length + resolvedForSla.length)) * 100)
         : 0,
     };
   });
@@ -292,7 +429,7 @@ function CategoryRows({ rows, tickets, color }) {
   );
 }
 
-function PriorityMix({ stats, open }) {
+function PriorityMix({ stats, total }) {
   const colors = {
     Critical: "#7A1F1F",
     High: "#E8930C",
@@ -300,7 +437,7 @@ function PriorityMix({ stats, open }) {
     Low: "#1E9E6A",
   };
   const entries = stats.by_priority || [];
-  const total = Math.max(
+  const ringTotal = Math.max(
     entries.reduce((sum, entry) => sum + entry.value, 0),
     1,
   );
@@ -308,7 +445,7 @@ function PriorityMix({ stats, open }) {
   const stops = entries
     .map((entry) => {
       const start = cursor;
-      cursor += (entry.value / total) * 100;
+      cursor += (entry.value / ringTotal) * 100;
       return `${colors[entry.name]} ${start}% ${cursor}%`;
     })
     .join(", ");
@@ -320,12 +457,16 @@ function PriorityMix({ stats, open }) {
       <div className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-3 sm:grid-cols-[100px_minmax(0,1fr)] sm:gap-4">
         <div
           className="grid h-20 w-20 shrink-0 place-items-center rounded-full sm:h-24 sm:w-24"
-          style={{ background: `conic-gradient(${stops || "#EDF0F4 0 100%"})` }}
+          style={{ background: `conic-gradient(${stops || "var(--ring-track-cool) 0 100%"})` }}
         >
           <div className="grid h-14 w-14 place-items-center rounded-full bg-white text-center sm:h-16 sm:w-16">
             <span>
-              <b className="block text-xl">{open}</b>
-              <small className="text-[#9CA3AF]">active</small>
+              {/* The ring and the legend both describe every ticket in the
+                  selected range, so the centre figure has to be that same
+                  total. It previously showed the active count, which left the
+                  number disagreeing with the segments around it. */}
+              <b className="block text-xl">{total}</b>
+              <small className="text-[#9CA3AF]">in range</small>
             </span>
           </div>
         </div>
@@ -353,7 +494,7 @@ function PriorityMix({ stats, open }) {
   );
 }
 
-function MemberPerformance({ rows, color, unassigned = 0 }) {
+function MemberPerformance({ rows, color, unassigned = 0, onSelect }) {
   const assignedTotal = (rows || []).reduce(
     (sum, member) => sum + (member.assigned || 0),
     0,
@@ -365,13 +506,17 @@ function MemberPerformance({ rows, color, unassigned = 0 }) {
         <span className="ml-2 normal-case tracking-normal text-[#8B93A1]">
           {assignedTotal} assigned to members
           {unassigned ? ` · ${unassigned} in the unassigned team queue` : ""}
+          {" · select a member for the full report"}
         </span>
       </p>
       <div className="grid gap-3 xl:grid-cols-2">
         {(rows || []).map((member) => (
-          <div
+          <button
             key={member.member_id}
-            className="rounded-xl border border-[#E5E9EF] bg-[#FAFBFC] p-3 text-sm"
+            type="button"
+            onClick={() => onSelect?.(member)}
+            aria-label={`Open consolidated report for ${member.member_name}`}
+            className="member-card w-full rounded-xl border border-[#E5E9EF] bg-[#FAFBFC] p-3 text-left text-sm transition-all hover:border-[#C9D2DD] hover:bg-white hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ED00ED]"
           >
             <div className="flex items-center gap-3">
               <span
@@ -397,7 +542,14 @@ function MemberPerformance({ rows, color, unassigned = 0 }) {
                 ["Workload", `${member.assigned || 0} / ${member.open || 0}`, "assigned / open"],
                 ["Response", `${member.avg_response_hours || 0}h`, `${member.response_sla_compliance || 0}% SLA · ${member.response_sla_breached || 0} breach`],
                 ["Resolution", `${member.avg_resolution_hours || 0}h`, `${member.resolution_sla_compliance || 0}% SLA · ${member.resolution_sla_breached || 0} breach`],
-                ["Active work", `${member.avg_working_hours || 0}h`, `${member.total_working_hours || 0}h total`],
+                // Elapsed pickup-to-resolve business time, averaged per ticket.
+                // The per-ticket average is the meaningful figure; the sum of
+                // these windows overlaps and is not hours worked.
+                [
+                  "Handling time",
+                  `${member.avg_working_hours || 0}h`,
+                  `avg over ${member.handled_count || 0} resolved`,
+                ],
               ].map(([label, value, detail]) => (
                 <div key={label} className="rounded-lg bg-white px-2.5 py-2">
                   <p className="text-[9px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
@@ -410,14 +562,39 @@ function MemberPerformance({ rows, color, unassigned = 0 }) {
                 </div>
               ))}
             </div>
-          </div>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-white px-2.5 py-2 text-[10px] text-[#697087]">
+              <span className="font-semibold uppercase tracking-wider text-[#9CA3AF]">
+                Checklist
+              </span>
+              {member.kra ? (
+                <>
+                  <span>
+                    <b>{member.kra.dayCount}</b> day
+                    {member.kra.dayCount === 1 ? "" : "s"} ·{" "}
+                    <b>{member.kra.completion}%</b> tasks done
+                  </span>
+                  <span>
+                    updated <b>{member.kra.avgFirstEntry}</b> →{" "}
+                    <b>{member.kra.avgLastUpdate}</b> IST
+                  </span>
+                  {member.kra.late > 0 && (
+                    <span className="font-semibold text-red-600">
+                      {member.kra.late} late
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span>No submissions in range</span>
+              )}
+            </div>
+          </button>
         ))}
       </div>
     </div>
   );
 }
 
-function DeskCard({ department, stats, tickets, members }) {
+function DeskCard({ department, stats, tickets, members, onSelectMember }) {
   const meta = deptMeta[department];
   const Icon = meta.icon;
   return (
@@ -433,7 +610,9 @@ function DeskCard({ department, stats, tickets, members }) {
         </div>
         {[
           ["Tickets", stats.total],
-          ["Escalated", stats.escalated],
+          // Deliberately a live, all-dates figure (see the view memo), so it is
+          // labelled to stop it being read as part of the selected range.
+          ["Escalated · live", stats.escalated],
           ["Response SLA", `${stats.response_sla_compliance}%`],
           ["Resolution SLA", `${stats.resolution_sla_compliance}%`],
         ].map(([label, value]) => (
@@ -448,17 +627,17 @@ function DeskCard({ department, stats, tickets, members }) {
           [
             "Open",
             stats.open,
-            "#111827",
+            "var(--stat-open)",
             "Status Open — raised or claimed, but work has not started",
           ],
           ["In progress", stats.working, meta.color, stats.working_breakdown || "No active work"],
           [
-            "Escalated",
+            "Escalated · live",
             stats.escalated,
-            "#A32D2D",
+            "var(--stat-escalated)",
             "Active tickets past response or resolution SLA — live across all dates, not the selected range",
           ],
-          ["Closed", stats.resolved, "#087017", "Completed tickets"],
+          ["Closed", stats.resolved, "var(--stat-closed)", "Completed tickets"],
         ].map(([label, value, color, tip], index) => (
           <div
             key={label}
@@ -499,7 +678,7 @@ function DeskCard({ department, stats, tickets, members }) {
         </div>
       </div>
       <div className="grid gap-6 px-5 py-5 md:grid-cols-[225px_minmax(0,1fr)]">
-        <PriorityMix stats={stats} open={stats.active} />
+        <PriorityMix stats={stats} total={stats.total} />
         <CategoryRows
           rows={stats.by_category}
           tickets={tickets}
@@ -508,6 +687,7 @@ function DeskCard({ department, stats, tickets, members }) {
       </div>
       <MemberPerformance
         rows={members}
+        onSelect={onSelectMember}
         unassigned={
           tickets.filter((ticket) => !ticket.assignee_id).length
         }
@@ -608,8 +788,9 @@ function UserIssueInsights({ tickets, onOpenTicket }) {
   </Card>;
 }
 
-export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
+export default function SuperAdminDashboard({ onViewKra, onViewIncidents, onOpenTicket }) {
   const [data, setData] = useState(null);
+  const [memberReport, setMemberReport] = useState(null);
   const [from, setFrom] = useState(() => {
     const date = new Date();
     date.setDate(date.getDate() - 6);
@@ -621,22 +802,41 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
       Promise.all([
         api("/dashboard?department=IT"),
         api("/dashboard?department=Admin"),
-        api("/tickets?department=IT&limit=1000"),
-        api("/tickets?department=Admin&limit=1000"),
+        // Paged fetches: IT alone is past the 1000-row page cap, and a single
+        // page silently dropped the oldest tickets from every figure below.
+        fetchAllTickets("department=IT"),
+        fetchAllTickets("department=Admin"),
         api("/reports/member-sla?department=IT"),
         api("/reports/member-sla?department=Admin"),
         api("/reports/daily-kra"),
+        // Checklist activity for the whole period. Fetched unfiltered and narrowed
+        // client-side, matching how tickets are handled, so changing the date
+        // range never needs another round trip.
+        api("/member-checklist-submissions?limit=5000"),
       ])
-        .then(([it, admin, itTickets, adminTickets, itSla, adminSla, kra]) =>
-          setData({
+        .then(
+          ([
             it,
             admin,
-            itTickets: itTickets.items,
-            adminTickets: adminTickets.items,
+            itTickets,
+            adminTickets,
             itSla,
             adminSla,
             kra,
-          }),
+            kraSubmissions,
+          ]) =>
+            setData({
+              it,
+              admin,
+              itTickets: itTickets.items,
+              adminTickets: adminTickets.items,
+              itSla,
+              adminSla,
+              kra,
+              kraSubmissions: Array.isArray(kraSubmissions)
+                ? kraSubmissions
+                : [],
+            }),
         )
         .catch(() => {});
     load();
@@ -656,18 +856,24 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
     // a live operational state: a ticket breaches precisely because it is old,
     // so range-filtering it would hide the tickets that most need attention.
     // The server computes escalated over every ticket, unpaged; use that.
+    const kraActivity = kraActivityByMember(data.kraSubmissions, from, to);
     return {
       ...data,
       itTickets,
       adminTickets,
       allTickets: [...data.itTickets, ...data.adminTickets],
+      kraActivity,
       it: { ...makeStats(itTickets), escalated: data.it.escalated ?? 0 },
       admin: {
         ...makeStats(adminTickets),
         escalated: data.admin.escalated ?? 0,
       },
-      itMembers: rangeMembers(data.itSla.members, itTickets),
-      adminMembers: rangeMembers(data.adminSla.members, adminTickets),
+      itMembers: rangeMembers(data.itSla.members, itTickets, kraActivity),
+      adminMembers: rangeMembers(
+        data.adminSla.members,
+        adminTickets,
+        kraActivity,
+      ),
     };
   }, [data, from, to]);
 
@@ -681,18 +887,59 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
         ticket.sla_resolution_due &&
         new Date(ticket.sla_resolution_due) < new Date(),
     );
-    const longest = active.sort(
+    const overdue = [...active].sort(
       (a, b) => new Date(a.sla_resolution_due) - new Date(b.sla_resolution_due),
-    )[0];
-    const slow = view.it.avg_resolution_hours
-      ? (
-          view.admin.avg_resolution_hours / view.it.avg_resolution_hours
-        ).toFixed(1)
-      : "—";
-    const weakest = [...(view.adminMembers || [])].sort(
-      (a, b) => a.sla_compliance - b.sla_compliance,
-    )[0];
-    return { longest, slow, weakest };
+    );
+    const longest = overdue[0];
+    // Directional comparison. The ratio alone was rendered with a hardcoded
+    // "slower", so a faster Admin desk read as "0.2x slower than IT".
+    const itHours = view.it.avg_resolution_hours;
+    const adminHours = view.admin.avg_resolution_hours;
+    const comparison =
+      itHours && adminHours
+        ? adminHours >= itHours
+          ? {
+              factor: (adminHours / itHours).toFixed(1),
+              direction: "slower",
+              desk: "Admin",
+              other: "IT",
+            }
+          : {
+              factor: (itHours / adminHours).toFixed(1),
+              direction: "slower",
+              desk: "IT",
+              other: "Admin",
+            }
+        : null;
+    // Weakest desk member across both desks, but only where there is a workload
+    // to judge — a member with nothing assigned is not "0% compliant".
+    const weakest = [
+      ...(view.itMembers || []).map((member) => ({
+        ...member,
+        department: "IT",
+      })),
+      ...(view.adminMembers || []).map((member) => ({
+        ...member,
+        department: "Admin",
+      })),
+    ]
+      .filter((member) => member.assigned > 0)
+      .sort((a, b) => a.sla_compliance - b.sla_compliance)[0];
+    const unassigned = view.allTickets.filter(
+      (ticket) => !ticket.assignee_id && !DONE.includes(ticket.status),
+    ).length;
+    const kraPending = (view.kra?.members || []).filter(
+      (member) => !member.submitted_lists,
+    ).length;
+    return {
+      longest,
+      overdueCount: overdue.length,
+      overdueTop: overdue.slice(0, 3),
+      comparison,
+      weakest,
+      unassigned,
+      kraPending,
+    };
   }, [view]);
 
   if (!data) return <Skeleton className="h-[520px] w-full rounded-xl" />;
@@ -704,238 +951,364 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
     (sum, member) => sum + Math.max(0, member.total_items - member.done_items),
     0,
   );
+  /**
+   * Builds the operations report as a single CSV made of clearly titled
+   * sections, each with its own header row, so it opens cleanly in Excel and
+   * every number can be traced back to a definition.
+   *
+   * Sections: report metadata, desk summary, member detail (tickets + SLA +
+   * handling time + Checklist), the unassigned queue, per-day checklist submissions, and
+   * the full ticket ledger.
+   */
   const exportReport = () => {
-    const allTickets = [...view.itTickets, ...view.adminTickets];
     const csvCell = (value) => {
       const text = String(value ?? "");
+      // Guard against spreadsheet formula injection.
       const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
       return `"${safe.replace(/"/g, '""')}"`;
     };
-    const dateTime = (value) =>
-      value ? new Date(value).toLocaleString("en-GB") : "";
-    const ticketStatusCount = (tickets, status) =>
-      tickets.filter((ticket) => ticket.status === status).length;
-    const statusCounts = (tickets) => [
-      ticketStatusCount(tickets, "Open"),
-      tickets.filter(
+    const stamp = (value) => (value ? istDateTime(value) : "");
+    const clock = (value) => (value ? istTime(value) : "");
+    const pct = (value) => `${value || 0}%`;
+    const hrs = (value) => `${value || 0}h`;
+
+    const overdueNow = (list) =>
+      list.filter(
+        (ticket) =>
+          !DONE.includes(ticket.status) &&
+          ticket.sla_resolution_due &&
+          new Date(ticket.sla_resolution_due) < new Date(),
+      ).length;
+    const statusCounts = (list) => [
+      list.filter((ticket) => ticket.status === "Open").length,
+      list.filter(
         (ticket) => !DONE.includes(ticket.status) && ticket.status !== "Open",
       ).length,
-      tickets.filter((ticket) =>
-        ["Resolved", "Closed"].includes(ticket.status),
-      ).length,
-      ticketStatusCount(tickets, "Cancelled"),
+      list.filter((ticket) => ["Resolved", "Closed"].includes(ticket.status))
+        .length,
+      list.filter((ticket) => ticket.status === "Cancelled").length,
     ];
-    const resourceRows = (department, members, tickets) => {
-      const rows = members.map((member) => {
-        const assigned = tickets.filter(
+
+    const blank = [];
+    const section = (title, note) =>
+      note ? [blank, [title], [note]] : [blank, [title]];
+
+    // ---- member rows: one line per member, everything about them ----------
+    const MEMBER_HEADER = [
+      "Department",
+      "Member",
+      "Email",
+      "Location",
+      "Assigned",
+      "Open",
+      "In progress",
+      "Closed",
+      "Cancelled",
+      "Overdue now",
+      "Overall SLA met",
+      "Response SLA met",
+      "Response breaches",
+      "Avg response (business h)",
+      "Resolution SLA met",
+      "Resolution breaches",
+      "Avg resolution (business h)",
+      "Avg handling time per ticket (business h)",
+      "Tickets measured for handling time",
+      "…with exact work-start stamp",
+      "Sum of handling windows (overlapping, not hours worked)",
+      "Checklist days submitted",
+      "Checklist submissions",
+      "Checklist tasks done",
+      "Checklist tasks total",
+      "Checklist completion",
+      "Checklist late submissions",
+      "Checklist revised after first entry",
+      "Checklist typical first entry (IST)",
+      "Checklist typical last update (IST)",
+      "Checklist earliest first entry (IST)",
+      "Checklist latest update (IST)",
+    ];
+    const memberRows = (department, members, tickets) =>
+      members.map((member) => {
+        const mine = tickets.filter(
           (ticket) => ticket.assignee_id === member.member_id,
         );
-        const overdue = assigned.filter(
-          (ticket) =>
-            !DONE.includes(ticket.status) &&
-            ticket.sla_resolution_due &&
-            new Date(ticket.sla_resolution_due) < new Date(),
-        ).length;
+        const kra = member.kra;
         return [
           department,
           member.member_name,
           member.email || "",
           member.location || "",
-          assigned.length,
-          ...statusCounts(assigned),
-          overdue,
-          `${member.sla_compliance || 0}%`,
-          `${member.avg_response_hours || 0}h`,
-          `${member.avg_resolution_hours || 0}h`,
-          `${member.avg_working_hours || 0}h`,
+          mine.length,
+          ...statusCounts(mine),
+          overdueNow(mine),
+          pct(member.sla_compliance),
+          pct(member.response_sla_compliance),
+          member.response_sla_breached || 0,
+          member.avg_response_hours || 0,
+          pct(member.resolution_sla_compliance),
+          member.resolution_sla_breached || 0,
+          member.avg_resolution_hours || 0,
+          member.avg_working_hours || 0,
+          member.handled_count || 0,
+          member.handled_from_work_started || 0,
+          member.total_working_hours || 0,
+          kra?.dayCount || 0,
+          kra?.submissions || 0,
+          kra?.done || 0,
+          kra?.total || 0,
+          pct(kra?.completion),
+          kra?.late || 0,
+          kra?.revised || 0,
+          kra?.avgFirstEntry || "",
+          kra?.avgLastUpdate || "",
+          kra?.earliestFirstEntry || "",
+          kra?.latestUpdate || "",
         ];
       });
+
+    const queueRow = (department, tickets) => {
       const unassigned = tickets.filter((ticket) => !ticket.assignee_id);
-      if (unassigned.length)
-        rows.push([
+      if (!unassigned.length) return [];
+      return [
+        [
           department,
-          "Unassigned / Team queue",
-          "",
-          "",
+          "Unassigned / team queue",
           unassigned.length,
           ...statusCounts(unassigned),
-          unassigned.filter(
-            (ticket) =>
-              !DONE.includes(ticket.status) &&
-              ticket.sla_resolution_due &&
-              new Date(ticket.sla_resolution_due) < new Date(),
-          ).length,
-          "—",
-          "—",
-          "—",
-          "—",
-        ]);
-      return rows;
+          overdueNow(unassigned),
+        ],
+      ];
     };
+
+    // ---- per-day checklist submissions -----------------------------------------
+    const kraRows = [];
+    for (const [department, members] of [
+      ["IT", view.itMembers || []],
+      ["Admin", view.adminMembers || []],
+    ]) {
+      for (const member of members) {
+        for (const entry of member.kra?.entries || []) {
+          kraRows.push([
+            department,
+            member.member_name,
+            entry.date,
+            entry.title || "",
+            entry.done,
+            entry.total,
+            entry.status || "",
+            entry.late ? "Yes" : "No",
+            stamp(entry.firstEntryAt),
+            stamp(entry.lastUpdateAt),
+            stamp(entry.deadlineAt),
+            entry.firstEntryAt &&
+            entry.lastUpdateAt &&
+            new Date(entry.lastUpdateAt) - new Date(entry.firstEntryAt) > 60000
+              ? "Yes"
+              : "No",
+          ]);
+        }
+      }
+    }
+    kraRows.sort(
+      (a, b) => String(b[2]).localeCompare(String(a[2])) || String(a[1]).localeCompare(String(b[1])),
+    );
+
+    // ---- full ticket ledger ----------------------------------------------
+    const allTickets = [...view.itTickets, ...view.adminTickets];
+    const ticketRows = allTickets
+      .slice()
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+      .map((ticket) => {
+        const resolvedAt =
+          ticket.resolved_at || ticket.resolution?.resolved_date;
+        const slaState = resolvedAt
+          ? new Date(resolvedAt) <= new Date(ticket.sla_resolution_due)
+            ? "Met"
+            : "Breached"
+          : DONE.includes(ticket.status)
+            ? "Closed"
+            : ticket.sla_resolution_due &&
+                new Date(ticket.sla_resolution_due) < new Date()
+              ? "Overdue"
+              : "Within SLA";
+        return [
+          ticket.human_id,
+          ticket.department,
+          ticket.title,
+          ticket.category,
+          ticket.priority,
+          ticket.status,
+          slaState,
+          ticket.assignee_name || "Unassigned / team queue",
+          ticket.location || "",
+          ticket.issue_user_name || ticket.raised_for_name || "",
+          ticket.issue_user_employee_code || ticket.employee_id || "",
+          ticket.issue_user_email || ticket.email || "",
+          ticket.raised_by_name || "",
+          stamp(ticket.created_at),
+          stamp(ticket.assigned_at),
+          ticket.assigned_by_name || "",
+          stamp(ticket.acknowledged_at || ticket.first_response_at),
+          stamp(ticket.work_started_at),
+          stamp(ticket.sla_response_due),
+          stamp(ticket.sla_resolution_due),
+          stamp(resolvedAt),
+          ticket.resolved_by_name || ticket.resolution?.resolved_by || "",
+          stamp(ticket.closed_at),
+          ticket.closed_by_name || "",
+          ticket.member_working_minutes != null
+            ? Math.round((ticket.member_working_minutes / 60) * 10) / 10
+            : "",
+          ticket.approval_required ? "Yes" : "No",
+          ticket.resolution?.summary || "",
+          ticket.resolution?.action_taken || "",
+          ticket.resolution?.root_cause || "",
+        ];
+      });
+
     const rows = [
-      ["TICKETFLOW DETAILED OPERATIONS REPORT"],
-      ["Date range", `${from} to ${to}`],
-      ["Generated at", new Date().toLocaleString("en-GB")],
-      [],
-      ["DEPARTMENT SUMMARY"],
+      ["ETHARA SERVICE HUB — OPERATIONS REPORT"],
+      ["Date range (tickets raised)", `${from} to ${to}`],
+      ["Generated at (IST)", istDateTime(new Date())],
+      ["Business hours", "Mon–Fri, 10:00–19:00 IST"],
+      ["Tickets in range", allTickets.length],
+      [
+        "Note on handling time",
+        "Elapsed business time from ticket pickup to resolution. Members handle several tickets at once, so these windows overlap — the summed column is not hours worked.",
+      ],
+      [
+        "Note on escalated",
+        "Escalated counts are live across all dates, because a ticket breaches precisely because it is old.",
+      ],
+
+      ...section("1. DESK SUMMARY"),
       [
         "Department",
-        "Tickets",
+        "Tickets in range",
         "Open",
         "In progress",
         "Active total",
-        "Escalated",
         "Closed",
-        "SLA met",
-        "Avg response",
-        "Avg resolution",
+        "Escalated (live, all dates)",
+        "Overall SLA met",
+        "Response SLA met",
+        "Resolution SLA met",
+        "Avg response (business h)",
+        "Avg resolution (business h)",
       ],
-      [
-        "IT",
-        view.it.total,
-        view.it.open,
-        view.it.working,
-        view.it.active,
-        view.it.escalated,
-        view.it.resolved,
-        `${view.it.sla_compliance}%`,
-        `${view.it.avg_response_hours}h`,
-        `${view.it.avg_resolution_hours}h`,
-      ],
-      [
-        "Admin",
-        view.admin.total,
-        view.admin.open,
-        view.admin.working,
-        view.admin.active,
-        view.admin.escalated,
-        view.admin.resolved,
-        `${view.admin.sla_compliance}%`,
-        `${view.admin.avg_response_hours}h`,
-        `${view.admin.avg_resolution_hours}h`,
-      ],
-      [],
-      ["RESOURCE / MEMBER STATUS SUMMARY"],
+      ...[
+        ["IT", view.it],
+        ["Admin", view.admin],
+      ].map(([name, stats]) => [
+        name,
+        stats.total,
+        stats.open,
+        stats.working,
+        stats.active,
+        stats.resolved,
+        stats.escalated,
+        pct(stats.sla_compliance),
+        pct(stats.response_sla_compliance),
+        pct(stats.resolution_sla_compliance),
+        stats.avg_response_hours,
+        stats.avg_resolution_hours,
+      ]),
+
+      ...section(
+        "2. MEMBER DETAIL",
+        "One row per member: workload, SLA, handling time and checklist activity for the selected range.",
+      ),
+      MEMBER_HEADER,
+      ...memberRows("IT", view.itMembers || [], view.itTickets),
+      ...memberRows("Admin", view.adminMembers || [], view.adminTickets),
+
+      ...section(
+        "3. UNASSIGNED QUEUE",
+        "Tickets in range with no owner. Excluded from member rows above.",
+      ),
       [
         "Department",
-        "Member / Resource",
-        "Email",
-        "Location",
-        "Total assigned",
+        "Queue",
+        "Tickets",
         "Open",
         "In progress",
         "Closed",
         "Cancelled",
-        "Overdue",
-        "SLA met",
-        "Avg response",
-        "Avg resolution",
-        "Avg member work",
+        "Overdue now",
       ],
-      ...resourceRows("IT", view.itMembers || [], view.itTickets),
-      ...resourceRows("Admin", view.adminMembers || [], view.adminTickets),
-      [],
-      ["TICKET-LEVEL ASSIGNMENT DETAILS"],
+      ...queueRow("IT", view.itTickets),
+      ...queueRow("Admin", view.adminTickets),
+
+      ...section(
+        "4. CHECKLIST SUBMISSIONS BY DAY",
+        "First entry is when the member started the day's checklist; last update is the most recent save. Intermediate saves overwrite in place and are not retained.",
+      ),
       [
-        "Ticket ID",
+        "Department",
+        "Member",
+        "Date",
+        "Checklist",
+        "Tasks done",
+        "Tasks total",
+        "Status",
+        "Late",
+        "First entry (IST)",
+        "Last update (IST)",
+        "Deadline (IST)",
+        "Revised after first entry",
+      ],
+      ...(kraRows.length ? kraRows : [["—", "No checklist submissions in range"]]),
+
+      ...section(
+        "5. TICKET LEDGER",
+        "Every ticket raised in the selected range, with its full lifecycle timestamps in IST.",
+      ),
+      [
+        "Ticket",
         "Department",
         "Title",
         "Category",
         "Priority",
         "Status",
-        "Assigned member",
-        "Assignee ID",
-        "Raised by",
-        "Raised for",
-        "Employee ID",
-        "Email",
-        "Location",
-        "Created at",
-        "Raised at",
-        "Allocated at",
-        "Allocated by",
-        "Acknowledged at",
-        "Acknowledged by",
-        "Work started at",
-        "Working member",
-        "SLA response due",
-        "SLA resolution due",
         "SLA state",
-        "Resolved at",
+        "Assigned member",
+        "Location",
+        "Raised for",
+        "Employee code",
+        "Email",
+        "Raised by",
+        "Created (IST)",
+        "Allocated (IST)",
+        "Allocated by",
+        "Acknowledged (IST)",
+        "Work started (IST)",
+        "Response due (IST)",
+        "Resolution due (IST)",
+        "Resolved (IST)",
         "Resolved by",
-        "Closed at",
+        "Closed (IST)",
         "Closed by",
-        "Member working hours",
+        "Handling time (business h)",
+        "Approval required",
         "Resolution summary",
         "Action taken",
         "Root cause",
-        "Approval required",
-        "Description",
       ],
-      ...allTickets
-        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-        .map((ticket) => {
-          const resolvedAt = ticket.resolved_at || ticket.resolution?.resolved_date;
-          const slaState = resolvedAt
-            ? new Date(resolvedAt) <= new Date(ticket.sla_resolution_due)
-              ? "Met"
-              : "Breached"
-            : DONE.includes(ticket.status)
-              ? "Closed"
-              : ticket.sla_resolution_due &&
-                  new Date(ticket.sla_resolution_due) < new Date()
-                ? "Overdue"
-                : "Within SLA";
-          return [
-            ticket.human_id,
-            ticket.department,
-            ticket.title,
-            ticket.category,
-            ticket.priority,
-            ticket.status,
-            ticket.assignee_name || "Unassigned / Team queue",
-            ticket.assignee_id || "",
-            ticket.raised_by_name,
-            ticket.raised_for_name,
-            ticket.employee_id,
-            ticket.email,
-            ticket.location,
-            dateTime(ticket.created_at),
-            dateTime(ticket.raised_at || ticket.created_at),
-            dateTime(ticket.assigned_at),
-            ticket.assigned_by_name || "",
-            dateTime(ticket.acknowledged_at || ticket.first_response_at),
-            ticket.acknowledged_by_name || ticket.first_response_by_name || "",
-            dateTime(ticket.work_started_at),
-            ticket.work_started_by_name || ticket.assignee_name || "",
-            dateTime(ticket.sla_response_due),
-            dateTime(ticket.sla_resolution_due),
-            slaState,
-            dateTime(resolvedAt),
-            ticket.resolved_by_name || ticket.resolution?.resolved_by || "",
-            dateTime(ticket.closed_at),
-            ticket.closed_by_name || "",
-            ticket.member_working_minutes != null
-              ? Math.round((ticket.member_working_minutes / 60) * 10) / 10
-              : "",
-            ticket.resolution?.summary || "",
-            ticket.resolution?.action_taken || "",
-            ticket.resolution?.root_cause || "",
-            ticket.approval_required ? "Yes" : "No",
-            ticket.description || "",
-          ];
-        }),
+      ...ticketRows,
     ];
+
     const blob = new Blob(
       ["\uFEFF" + rows.map((row) => row.map(csvCell).join(",")).join("\r\n")],
       { type: "text/csv;charset=utf-8" },
     );
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `ticketflow-detailed-report-${from}-to-${to}.csv`;
+    link.download = `ethara-operations-report-${from}-to-${to}.csv`;
     link.click();
     URL.revokeObjectURL(link.href);
   };
+
   const remindAll = async () => {
     try {
       const result = await api("/member-checklists/remind-pending", {
@@ -949,173 +1322,44 @@ export default function SuperAdminDashboard({ onViewKra, onOpenTicket }) {
     }
   };
   return (
-    <div className="space-y-4 text-[#111827]">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p className="text-sm text-[#9CA3AF]">
-            Live analytics &amp; SLA ·{" "}
-            {new Date().toLocaleDateString("en-GB", {
-              weekday: "long",
-              day: "2-digit",
-              month: "short",
-              year: "numeric",
-            })}
-          </p>
-        </div>
-        <div className="flex w-full flex-wrap items-end gap-2 sm:w-auto">
-          <label className="w-full text-xs font-semibold text-[#4B5563] sm:w-auto">
-            From
-            <input
-              type="date"
-              value={from}
-              max={to}
-              onChange={(event) => setFrom(event.target.value)}
-              className="mt-1 block h-9 w-full rounded-md border border-[#E5E9EF] bg-white px-3 text-sm sm:w-auto"
-            />
-          </label>
-          <label className="w-full text-xs font-semibold text-[#4B5563] sm:w-auto">
-            To
-            <input
-              type="date"
-              value={to}
-              min={from}
-              max={inputDate(new Date())}
-              onChange={(event) => setTo(event.target.value)}
-              className="mt-1 block h-9 w-full rounded-md border border-[#E5E9EF] bg-white px-3 text-sm sm:w-auto"
-            />
-          </label>
-          <Button className="w-full sm:w-auto" variant="outline" onClick={exportReport}>
-            <Download className="h-4 w-4" />
-            Export report
-          </Button>
-        </div>
-      </div>
-      <div className="flex flex-wrap items-center gap-x-8 gap-y-2 rounded-xl border border-[#F5C9C9] bg-[#FDECEC] px-5 py-4 text-sm text-[#942828]">
-        <span className="flex items-center gap-2 font-bold">
-          <AlertTriangle className="h-4 w-4" />
-          Needs attention
-        </span>
-        <span>
-          Longest overdue:{" "}
-          <b>
-            {attention.longest
-              ? `${attention.longest.human_id} · ${duration(Date.now() - new Date(attention.longest.sla_resolution_due))}`
-              : "None"}
-          </b>
-        </span>
-        <span>
-          Admin resolution <b>{attention.slow}× slower</b> than IT
-        </span>
-        <span>
-          {attention.weakest?.member_name}:{" "}
-          <b>{attention.weakest?.sla_compliance || 0}% SLA met</b>
-        </span>
-      </div>
-
-
-      <div className="grid gap-4 xl:grid-cols-[1fr_120px_1fr]">
-        <DeskCard
-          department="IT"
-          stats={view.it}
-          tickets={view.itTickets}
-          members={view.itMembers}
-        />
-        <div className="hidden flex-col items-center justify-center gap-3 xl:flex">
-          <p className="text-xs font-semibold uppercase text-[#9CA3AF]">
-            IT vs Admin
-          </p>
-          {[
-            [
-              "Response SLA",
-              `${view.it.response_sla_compliance}%`,
-              `${view.admin.response_sla_compliance}%`,
-            ],
-            [
-              "Resolution SLA",
-              `${view.it.resolution_sla_compliance}%`,
-              `${view.admin.resolution_sla_compliance}%`,
-            ],
-            [
-              "Resolution",
-              `${view.it.avg_resolution_hours}h`,
-              `${view.admin.avg_resolution_hours}h`,
-            ],
-            ["Escalated", view.it.escalated, view.admin.escalated],
-            [
-              "Response",
-              `${view.it.avg_response_hours}h`,
-              `${view.admin.avg_response_hours}h`,
-            ],
-          ].map(([label, itValue, adminValue]) => (
-            <Card
-              key={label}
-              className="w-full px-2 py-3 text-center shadow-none"
-            >
-              <p className="text-xs font-semibold text-[#9CA3AF]">{label}</p>
-              <p className="mt-1 font-bold text-green-700">{itValue}</p>
-              <p className="text-[10px] text-[#9CA3AF]">vs</p>
-              <p className="font-bold text-red-600">{adminValue}</p>
-            </Card>
-          ))}
-        </div>
-        <DeskCard
-          department="Admin"
-          stats={view.admin}
-          tickets={view.adminTickets}
-          members={view.adminMembers}
-        />
-      </div>
-
-      <div className="grid gap-4 2xl:grid-cols-2">
-        <TeamPerformance
-          department="IT"
-          members={view.itMembers}
-          tickets={view.itTickets}
-          onOpenTicket={onOpenTicket}
-        />
-        <TeamPerformance
-          department="Admin"
-          members={view.adminMembers}
-          tickets={view.adminTickets}
-          onOpenTicket={onOpenTicket}
-        />
-      </div>
-
-      <UserIssueInsights
-        tickets={[...view.itTickets, ...view.adminTickets]}
+    <div>
+      <OperationsOverview
+        data={{ ...data, kraActivity: view.kraActivity }}
+        from={from}
+        to={to}
+        setFrom={setFrom}
+        setTo={setTo}
+        maxDate={inputDate(new Date())}
+        onExport={exportReport}
+        onRemindAll={remindAll}
+        onViewKra={onViewKra}
+        onOpenReport={(member, department) =>
+          setMemberReport({
+            member:
+              (department === "IT" ? view.itMembers : view.adminMembers).find(
+                (row) => row.member_id === member.member_id,
+              ) || member,
+            department,
+          })
+        }
         onOpenTicket={onOpenTicket}
       />
-
-      <Card className="flex flex-wrap items-center gap-5 border-[#E5E9EF] px-5 py-4 shadow-none">
-        <div>
-          <p className="font-bold">Daily KRA compliance</p>
-          <p className="text-xs text-[#9CA3AF]">{data.kra.date}</p>
-        </div>
-        <span className="font-medium text-red-700">
-          {submitted}/{kraMembers.length} submitted
-        </span>
-        <div className="flex -space-x-2">
-          {kraMembers.map((member) => (
-            <span
-              key={member.member_id}
-              title={`${member.member_name}: ${member.status}`}
-              className={`grid h-9 w-9 place-items-center rounded-full border-2 border-white text-xs font-semibold ${member.status === "Completed" ? "bg-[#DDF4E9] text-[#0E6B47]" : member.status === "Issue" ? "bg-[#DC3D3D] text-white" : member.status === "Partial" ? "bg-[#FDF3E0] text-[#8A5A06]" : "bg-[#EEF0F3] text-[#697087]"}`}
-            >
-              {initials(member.member_name)}
-            </span>
-          ))}
-        </div>
-        <span className="text-sm text-[#4B5563]">
-          {pendingTasks} tasks pending across IT and Admin teams
-        </span>
-        <Button variant="outline" className="ml-auto" onClick={remindAll}>
-          <Bell className="h-4 w-4" />
-          Remind all
-        </Button>
-        <Button className="bg-[#131C26] hover:bg-[#1C2836]" onClick={onViewKra}>
-          View KRA board
-        </Button>
-      </Card>
+      <IncidentReportsPanel onViewAll={onViewIncidents} />
+      {memberReport && (
+        <MemberReport
+          member={memberReport.member}
+          department={memberReport.department}
+          tickets={
+            memberReport.department === "IT"
+              ? view.itTickets
+              : view.adminTickets
+          }
+          from={from}
+          to={to}
+          onClose={() => setMemberReport(null)}
+          onOpenTicket={onOpenTicket}
+        />
+      )}
     </div>
   );
 }

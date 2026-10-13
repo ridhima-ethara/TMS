@@ -18,6 +18,9 @@ import {
 } from "node:crypto";
 import {
   slaDates,
+  addWorkingHours,
+  configureSla,
+  slaConfigSnapshot,
   isBusinessTime,
   nextBusinessTime,
   workingHoursBetween,
@@ -89,14 +92,23 @@ async function connectToDatabase() {
         db.collection("firewall_outages").createIndex(
           { firewall_id: 1, started_at: -1 },
         ),
+        db.collection("firewall_port_state").createIndex(
+          { firewall_id: 1, port: 1 },
+          { unique: true },
+        ),
+        db.collection("firewall_port_outages").createIndex(
+          { firewall_id: 1, started_at: -1 },
+        ),
       ]);
       await ensureDesignatedItManagers(db);
       await ensureLocations(db);
       await ensureCategories(db);
+      await loadSlaSettings(db);
       await ensureTicketRoutingData(db);
       await ensureStandardTicketStatuses(db);
       await ensureKraDefaults(db);
       await migrateTicketSlaData(db);
+      await rebaselineTicketSlas(db);
       startSlaMonitor(db);
       startEmailDeliveryMonitor(db);
       startFirewallHealthMonitor(db);
@@ -297,6 +309,58 @@ function sessionVersionMatches(user, tokenSession) {
     Number(user?.session_version || 0) ===
     Number(tokenSession?.session_version || 0)
   );
+}
+
+const USER_ROLES = ["employee", "it", "admin", "super_admin"];
+
+function roleDepartment(role) {
+  return role === "it"
+    ? "IT"
+    : role === "admin"
+      ? "Admin"
+      : role === "super_admin"
+        ? "Management"
+        : "General";
+}
+
+// Primary role first, then any extra roles a Super Admin granted.
+function userRoles(user) {
+  return [
+    ...new Set(
+      [user?.role, ...(Array.isArray(user?.extra_roles) ? user.extra_roles : [])]
+        .filter((role) => USER_ROLES.includes(role)),
+    ),
+  ];
+}
+
+function hasUserRole(user, role) {
+  return userRoles(user).includes(role);
+}
+
+// Matches users holding a role as primary or as an extra role.
+function roleMemberFilter(role) {
+  return { $or: [{ role }, { extra_roles: role }] };
+}
+
+// The role a session acts as: the one it switched to, if still granted.
+function activeSessionRole(user, tokenSession) {
+  const requested = tokenSession?.active_role;
+  return requested && hasUserRole(user, requested) ? requested : user.role;
+}
+
+// The user as the signed-in client sees it, acting in `activeRole`.
+function actingUser(user, activeRole) {
+  const role = activeRole || user.role;
+  const primary = role === user.role;
+  return {
+    ...clean(user),
+    role,
+    primary_role: user.role,
+    roles: userRoles(user),
+    department: primary ? user.department : roleDepartment(role),
+    is_team_head: primary ? Boolean(user.is_team_head) : false,
+    managed_locations: primary ? user.managed_locations || [] : [],
+  };
 }
 
 function demoLoginAllowed(request) {
@@ -661,6 +725,140 @@ const FIREWALL_OVERVIEW_INFLIGHT_KEY = Symbol.for(
   "ticketflow.firewallOverviewInflight",
 );
 
+// Turns the raw request error behind a failed firewall check into a reason an
+// IT admin can act on. Outages store the code; titles/details are re-derived
+// from it so wording changes apply to old outages too.
+const FIREWALL_FAILURE_REASONS = {
+  cert_pin_mismatch: {
+    title: "Certificate changed",
+    detail:
+      "The firewall presented a TLS certificate that no longer matches the pinned fingerprint, so the connection was refused. Verify the new certificate and update the CERT_SHA256 pin.",
+  },
+  cert_invalid: {
+    title: "Certificate expired or invalid",
+    detail:
+      "The firewall's TLS certificate is expired, not yet valid or untrusted. Renew the certificate on the firewall.",
+  },
+  auth_rejected: {
+    title: "API token rejected",
+    detail:
+      "The firewall answered but refused the API key (HTTP 401/403). Re-issue the REST API token or check the trusted-host list.",
+  },
+  rate_limited: {
+    title: "Rate limited by firewall",
+    detail:
+      "The firewall API returned HTTP 429 (too many requests), so checks were rejected even though the device was reachable.",
+  },
+  firewall_api_error: {
+    title: "Firewall API error",
+    detail:
+      "The firewall answered with a server error (HTTP 5xx). The REST API daemon may be restarting or overloaded.",
+  },
+  timeout: {
+    title: "Firewall not responding",
+    detail:
+      "Requests timed out with no answer. Usually the WAN link, ISP or site power is down, or the firewall is rebooting.",
+  },
+  unreachable: {
+    title: "Network path down",
+    detail:
+      "No route to the firewall (host/network unreachable). Check the WAN link, ISP and VPN between the server and the site.",
+  },
+  refused: {
+    title: "Connection refused",
+    detail:
+      "The firewall's address answered but refused the HTTPS connection. The admin HTTPS service may be disabled or on another port.",
+  },
+  reset: {
+    title: "Connection dropped",
+    detail: "The connection was reset part-way through a request.",
+  },
+  dns: {
+    title: "Address lookup failed",
+    detail: "The firewall host name could not be resolved.",
+  },
+  bad_response: {
+    title: "Unexpected response",
+    detail: "The firewall answered with data the app could not read.",
+  },
+  firewall_restarted: {
+    title: "Firewall restarted",
+    detail:
+      "The firewall rebooted — a power cut, a crash, or a manual or firmware restart. The whole site has no internet until it finishes starting, usually 2–5 minutes.",
+  },
+  isp_down: {
+    title: "Internet line down",
+    detail:
+      "The firewall's health checks over this internet line (ISP) got no replies, so it stopped sending traffic over the line and moved users onto the other lines. Usually an ISP outage or a fault in the line or ISP router. Users may notice drops or slowness while traffic moves over.",
+  },
+  isp_out_of_sla: {
+    title: "Internet line unstable",
+    detail:
+      "The line stayed connected, but packet loss or delay was above the firewall's limits, so traffic was moved onto the other lines. Users may have seen slowness or dropped calls.",
+  },
+  port_link_down: {
+    title: "Port link down",
+    detail:
+      "The firewall stayed reachable but this port lost its physical link (cable, switch, SFP or the device on the other end).",
+  },
+  log_endpoints_only: {
+    title: "Log feeds failed (not a device outage)",
+    detail:
+      "Only the event/threat log APIs failed while the page was loading; the status checks were not part of that request. Such failures no longer count as downtime.",
+  },
+  unconfigured: {
+    title: "Not configured",
+    detail: "The firewall API URL or key is missing from the server configuration.",
+  },
+  unknown: {
+    title: "Unclassified failure",
+    detail: "The checks failed with an error that is not one of the known causes.",
+  },
+  unrecorded: {
+    title: "Reason not recorded",
+    detail:
+      "This outage happened before failure reasons were tracked, and no error was logged during it.",
+  },
+};
+
+function firewallFailureCode(message = "") {
+  const text = String(message);
+  if (/fingerprint mismatch/i.test(text)) return "cert_pin_mismatch";
+  if (/certificate|CERT_|self[- ]signed|UNABLE_TO_VERIFY/i.test(text))
+    return "cert_invalid";
+  if (/HTTP 40[13]\b/.test(text)) return "auth_rejected";
+  if (/HTTP 429\b/.test(text)) return "rate_limited";
+  if (/HTTP 5\d\d\b/.test(text)) return "firewall_api_error";
+  if (/ETIMEDOUT|timed out|timeout/i.test(text)) return "timeout";
+  if (/EHOSTUNREACH|ENETUNREACH|EHOSTDOWN/i.test(text)) return "unreachable";
+  if (/ECONNREFUSED/i.test(text)) return "refused";
+  if (/ECONNRESET|socket hang up|EPIPE/i.test(text)) return "reset";
+  if (/ENOTFOUND|EAI_AGAIN/i.test(text)) return "dns";
+  if (/non-JSON|size limit|Unsupported firewall/i.test(text))
+    return "bad_response";
+  return "unknown";
+}
+
+function firewallFailureReason(sectionErrors = {}) {
+  const messages = Object.values(sectionErrors).filter(Boolean).map(String);
+  if (!messages.length) return null;
+  const counts = {};
+  messages.forEach((message) => {
+    const code = firewallFailureCode(message);
+    counts[code] = (counts[code] || 0) + 1;
+  });
+  const code = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+  return {
+    code,
+    message: messages.find((message) => firewallFailureCode(message) === code),
+  };
+}
+
+function describeFirewallReason(code, extra = {}) {
+  const key = FIREWALL_FAILURE_REASONS[code] ? code : "unknown";
+  return { code: key, ...FIREWALL_FAILURE_REASONS[key], ...extra };
+}
+
 async function probeFirewallAvailability(db, firewallId) {
   const profile = firewallProfile(firewallId);
   const fw = profile.value;
@@ -694,9 +892,9 @@ async function probeFirewallAvailability(db, firewallId) {
           headers,
           tls,
         );
-        return [name, true];
-      } catch {
-        return [name, false];
+        return [name, true, null];
+      } catch (error) {
+        return [name, false, error?.message || "Request failed"];
       }
     }),
   );
@@ -704,22 +902,433 @@ async function probeFirewallAvailability(db, firewallId) {
   const failedSections = results
     .filter(([, successful]) => !successful)
     .map(([name]) => name);
+  const sectionErrors = Object.fromEntries(
+    results
+      .filter(([, successful]) => !successful)
+      .map(([name, , message]) => [name, message]),
+  );
   const state =
     successfulSections === 0
       ? "down"
       : failedSections.length
         ? "degraded"
         : "online";
-  await recordFirewallHealth(db, profile, state, {
-    successfulSections,
-    failedSections,
-  });
+  const { recoveredOutageId, previousHealth } = await recordFirewallHealth(
+    db,
+    profile,
+    state,
+    { successfulSections, failedSections, sectionErrors },
+  );
+  const fwGet = (path) =>
+    firewallRequest(
+      `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`,
+      headers,
+      tls,
+    );
+  if (state !== "down")
+    await reviewFirewallRestart(db, profile, fwGet, previousHealth, recoveredOutageId).catch(
+      (error) => console.error(`${profile.label} restart check failed:`, error.message),
+    );
+  // Once the firewall answers again, keep what its own event log says about
+  // the outage (restarts, upgrades, link/failover events).
+  if (recoveredOutageId)
+    void firewallEventEvidence(
+      (path) =>
+        firewallRequest(
+          `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`,
+          headers,
+          tls,
+        ),
+      profile,
+      FIREWALL_DEVICE_EVENT_PATTERN,
+    )
+      .then((events) =>
+        db.collection("firewall_outages").updateOne(
+          { id: recoveredOutageId },
+          { $set: { firewall_events: events, firewall_events_checked_at: new Date() } },
+        ),
+      )
+      .catch((error) =>
+        console.error(`${profile.label} outage evidence failed:`, error.message),
+      );
+  if (state !== "down" && process.env.FIREWALL_PORT_MONITOR !== "false")
+    await trackFirewallPorts(db, profile, fwGet).catch((error) =>
+      console.error(`${profile.label} port tracking failed:`, error.message),
+    );
+  if (state !== "down" && process.env.FIREWALL_LINE_MONITOR !== "false")
+    await trackFirewallLines(db, profile, fwGet).catch((error) =>
+      console.error(`${profile.label} internet line tracking failed:`, error.message),
+    );
   if (state === "degraded")
     void syncFirewallArchiveSnapshot(db, profile.id, {
       reason: "degraded_pre_downtime",
     }).catch((error) =>
       console.error(`${profile.label} pre-downtime archive failed:`, error),
     );
+}
+
+// Uses the firewall's own last-reboot time to explain outages: a reboot that
+// falls inside (or just before) an outage is its cause, and a reboot no health
+// check caught is still reported.
+async function reviewFirewallRestart(db, profile, request, previousHealth, recoveredOutageId) {
+  const payload = await request(
+    profile.value("REBOOT_PATH", "/api/v2/monitor/web-ui/state"),
+  );
+  const rebootMs = Number(payload?.results?.utc_last_reboot || 0);
+  if (!rebootMs) return;
+  const rebootAt = new Date(rebootMs);
+  const known = previousHealth?.last_reboot_at
+    ? new Date(previousHealth.last_reboot_at).getTime()
+    : null;
+  if (known !== rebootMs)
+    await db
+      .collection("firewall_health")
+      .updateOne({ firewall_id: profile.id }, { $set: { last_reboot_at: rebootAt } });
+  const outages = db.collection("firewall_outages");
+  const recovered = recoveredOutageId
+    ? await outages.findOne({ id: recoveredOutageId })
+    : null;
+  const now = new Date();
+  if (
+    recovered &&
+    rebootMs >= new Date(recovered.started_at).getTime() - 15 * 60_000 &&
+    rebootMs <= now.getTime()
+  ) {
+    // The site went dark when the firewall rebooted, before the first failed check.
+    const startedAt = new Date(
+      Math.min(new Date(recovered.started_at).getTime(), rebootMs),
+    );
+    await outages.updateOne(
+      { id: recovered.id },
+      {
+        $set: {
+          reason_override: "firewall_restarted",
+          reboot_at: rebootAt,
+          detected_at: recovered.detected_at || recovered.started_at,
+          started_at: startedAt,
+          duration_ms: Math.max(0, new Date(recovered.ended_at || now).getTime() - startedAt.getTime()),
+          updated_at: now,
+        },
+      },
+    );
+    recovered.reason_override = "firewall_restarted";
+    recovered.started_at = startedAt;
+  } else if (known && rebootMs > known) {
+    void sendFirewallAlert(
+      db,
+      `${profile.label} firewall restarted at ${firewallIstTime(rebootAt)}. ${describeFirewallReason("firewall_restarted").detail}`,
+    );
+  }
+  if (recovered?.alerted_at) {
+    const reason = firewallOutageReason(recovered);
+    const end = recovered.ended_at || now;
+    void sendFirewallAlert(
+      db,
+      `${profile.label} firewall is back online. It was down for ${firewallShortDuration(new Date(end) - new Date(recovered.started_at))} (${firewallIstTime(recovered.started_at)} – ${firewallIstTime(end)}). Reason: ${reason.title}.`,
+    );
+  }
+}
+
+// Internet line (SD-WAN member) history. The firewall can stay reachable while
+// one ISP line fails and traffic fails over to the others, so the lines are
+// tracked separately from the firewall and its physical ports.
+async function trackFirewallLines(db, profile, request) {
+  const payload = await request(
+    profile.value("SDWAN_HEALTH_PATH", "/api/v2/monitor/virtual-wan/health-check"),
+  );
+  const checks = payload?.results;
+  if (!checks || typeof checks !== "object" || Array.isArray(checks)) return;
+  const lines = {};
+  for (const members of Object.values(checks)) {
+    if (!members || typeof members !== "object") continue;
+    const entries = Object.entries(members);
+    // An empty sla_targets_met only means "out of SLA" when this health check
+    // has SLA targets that some member meets.
+    const slaConfigured = entries.some(
+      ([, m]) => Array.isArray(m?.sla_targets_met) && m.sla_targets_met.length,
+    );
+    for (const [port, m] of entries) {
+      const line = (lines[port] ||= { port, state: "up", loss: 0, latency: 0 });
+      if (m?.status !== "up") line.state = "down";
+      else if (
+        line.state === "up" &&
+        slaConfigured &&
+        Array.isArray(m.sla_targets_met) &&
+        !m.sla_targets_met.length
+      )
+        line.state = "out_of_sla";
+      line.loss = Math.max(line.loss, Number(m?.packet_loss || 0));
+      line.latency = Math.max(line.latency, Number(m?.latency || 0));
+    }
+  }
+  const ports = Object.values(lines);
+  if (!ports.length) return;
+  const now = new Date();
+  const lineStates = db.collection("firewall_line_state");
+  const outages = db.collection("firewall_port_outages");
+  const aliases = new Map(
+    (await db.collection("firewall_port_state").find({ firewall_id: profile.id }).toArray()).map(
+      (doc) => [doc.port, doc.alias || ""],
+    ),
+  );
+  const previous = new Map(
+    (await lineStates.find({ firewall_id: profile.id }).toArray()).map((doc) => [doc.port, doc]),
+  );
+  for (const line of ports) {
+    const key = `isp:${line.port}`;
+    const alias = aliases.get(line.port) || "";
+    const name = alias ? `${alias} (${line.port})` : line.port;
+    const prev = previous.get(line.port);
+    const changed = !prev || prev.state !== line.state;
+    await lineStates.updateOne(
+      { firewall_id: profile.id, port: line.port },
+      {
+        $set: {
+          firewall_id: profile.id,
+          port: line.port,
+          alias,
+          state: line.state,
+          packet_loss: line.loss,
+          latency_ms: line.latency,
+          last_seen_at: now,
+          ...(changed ? { state_since: now } : {}),
+          updated_at: now,
+        },
+        $setOnInsert: { id: uuidv4(), first_seen_at: now, created_at: now },
+      },
+      { upsert: true },
+    );
+    const open = await outages.findOne({ firewall_id: profile.id, port: key, open: true });
+    const reasonCode = line.state === "down" ? "isp_down" : "isp_out_of_sla";
+    if (line.state !== "up") {
+      if (!open) {
+        await outages.insertOne({
+          id: uuidv4(),
+          kind: "isp",
+          firewall_id: profile.id,
+          firewall_label: profile.label,
+          port: key,
+          alias: alias || line.port,
+          open: true,
+          started_at: now,
+          start_observed: Boolean(prev),
+          reason_code: reasonCode,
+          firewall_events: [],
+          created_at: now,
+          updated_at: now,
+        });
+      } else {
+        if (reasonCode === "isp_down" && open.reason_code !== "isp_down")
+          await outages.updateOne({ id: open.id }, { $set: { reason_code: "isp_down", updated_at: now } });
+        if (
+          !open.alerted_at &&
+          now.getTime() - new Date(open.started_at).getTime() >= FIREWALL_ALERT_AFTER_MS
+        ) {
+          const claimed = await outages.updateOne(
+            { id: open.id, open: true, alerted_at: { $exists: false } },
+            { $set: { alerted_at: now } },
+          );
+          if (claimed.modifiedCount) {
+            const reason = describeFirewallReason(reasonCode);
+            void sendFirewallAlert(
+              db,
+              `${profile.label} firewall: internet line ${name} — ${reason.title} since ${firewallIstTime(open.started_at)}${line.loss ? ` (packet loss ${line.loss}%)` : ""}. ${reason.detail}`,
+            );
+          }
+        }
+      }
+    } else if (open) {
+      await outages.updateOne(
+        { id: open.id, open: true },
+        {
+          $set: {
+            open: false,
+            ended_at: now,
+            duration_ms: Math.max(0, now - new Date(open.started_at)),
+            updated_at: now,
+          },
+        },
+      );
+      if (open.alerted_at)
+        void sendFirewallAlert(
+          db,
+          `${profile.label} firewall: internet line ${name} is back in service after ${firewallShortDuration(now - new Date(open.started_at))} (${firewallIstTime(open.started_at)} – ${firewallIstTime(now)}).`,
+        );
+    }
+  }
+}
+
+// Port (interface) link history. The firewall only reports the current link
+// state and its in-memory event log rolls over within minutes, so the app
+// records up/down transitions itself on every health check.
+const FIREWALL_PORT_STATE_REFRESH_MS = 15 * 60_000;
+const FIREWALL_DEVICE_EVENT_PATTERN =
+  /restart|reboot|shut ?down|upgrade|firmware|power|conserve|failover|link monitor|interface status|link (?:down|up)|ha (?:state|member)/i;
+
+function escapeFirewallPattern(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Reads the firewall's own system event log and keeps the entries that
+// explain an outage. The log is small and rolls over quickly, so this runs at
+// the moment a transition is seen.
+async function firewallEventEvidence(request, profile, pattern) {
+  const path = profile.value("EVENTS_PATH", "/api/security-events");
+  const rows = firewallRows(
+    await request(`${path}${path.includes("?") ? "&" : "?"}rows=1000`),
+  );
+  return rows
+    .filter((row) =>
+      pattern.test(
+        [row.logdesc, row.msg, row.action, row.interface, row.status]
+          .filter(Boolean)
+          .join(" "),
+      ),
+    )
+    .slice(0, 8)
+    .map((row) => ({
+      at: [row.date, row.time].filter(Boolean).join(" ") || null,
+      title: String(row.logdesc || row.action || "Event"),
+      message: String(row.msg || "").slice(0, 400),
+      level: row.level || null,
+    }));
+}
+
+function firewallPortAlias(row) {
+  return String(row?.alias || "")
+    .trim()
+    .replace(/^\((.*)\)$/, "$1")
+    .trim();
+}
+
+async function trackFirewallPorts(db, profile, request) {
+  const payload = await request(
+    profile.value("INTERFACES_PATH", "/api/interfaces"),
+  );
+  // FortiOS interface/select returns results keyed by port name.
+  const results = payload?.results;
+  const rows =
+    results && typeof results === "object" && !Array.isArray(results)
+      ? Object.values(results)
+      : firewallRows(payload);
+  if (!rows.length) return;
+  const now = new Date();
+  const states = db.collection("firewall_port_state");
+  const outages = db.collection("firewall_port_outages");
+  const previous = new Map(
+    (await states.find({ firewall_id: profile.id }).toArray()).map((doc) => [
+      doc.port,
+      doc,
+    ]),
+  );
+  const openOutages = new Map(
+    (await outages.find({ firewall_id: profile.id, open: true }).toArray()).map(
+      (doc) => [doc.port, doc],
+    ),
+  );
+  const portEvidence = (port) =>
+    firewallEventEvidence(
+      request,
+      profile,
+      new RegExp(`\\b${escapeFirewallPattern(port)}\\b`, "i"),
+    ).catch(() => []);
+  for (const row of rows) {
+    const port = String(row?.name || "").trim();
+    if (!port) continue;
+    const up = row.link === true || row.link === "up" || row.status === "up";
+    const alias = firewallPortAlias(row);
+    const prev = previous.get(port);
+    const wasUp = prev?.link === true;
+    const everUp = Boolean(prev?.ever_up || up);
+    // Only ports someone named, or that have carried a link, are monitored;
+    // unused spare ports would otherwise look permanently down.
+    const tracked = Boolean(alias) || everUp;
+    const changed = !prev || prev.link !== up;
+    if (
+      changed ||
+      prev.tracked !== tracked ||
+      prev.alias !== alias ||
+      now - new Date(prev.updated_at || 0) > FIREWALL_PORT_STATE_REFRESH_MS
+    )
+      await states.updateOne(
+        { firewall_id: profile.id, port },
+        {
+          $set: {
+            firewall_id: profile.id,
+            port,
+            alias,
+            ip: row.ip || null,
+            speed: Number(row.speed || 0),
+            link: up,
+            ever_up: everUp,
+            tracked,
+            last_seen_at: now,
+            ...(up ? { last_up_at: now } : { last_down_at: now }),
+            ...(changed ? { state_since: now } : {}),
+            updated_at: now,
+          },
+          $setOnInsert: { id: uuidv4(), first_seen_at: now, created_at: now },
+        },
+        { upsert: true },
+      );
+    if (!tracked) continue;
+    const open = openOutages.get(port);
+    const portName = alias ? `${alias} (${port})` : port;
+    // Only ports seen going down are alerted; ports already down when
+    // monitoring began are listed on the dashboard but stay quiet.
+    if (
+      !up &&
+      open &&
+      !open.alerted_at &&
+      open.start_observed !== false &&
+      now.getTime() - new Date(open.started_at).getTime() >= FIREWALL_ALERT_AFTER_MS
+    ) {
+      const claimed = await outages.updateOne(
+        { id: open.id, open: true, alerted_at: { $exists: false } },
+        { $set: { alerted_at: now } },
+      );
+      if (claimed.modifiedCount)
+        void sendFirewallAlert(
+          db,
+          `${profile.label} firewall: port ${portName} lost its link at ${firewallIstTime(open.started_at)}. ${describeFirewallReason("port_link_down").detail}`,
+        );
+    }
+    if (!up && !open) {
+      await outages.insertOne({
+        id: uuidv4(),
+        firewall_id: profile.id,
+        firewall_label: profile.label,
+        port,
+        alias,
+        open: true,
+        started_at: now,
+        // false when the port was already down the first time it was seen,
+        // so the real start time is earlier than started_at.
+        start_observed: wasUp,
+        firewall_events: wasUp ? await portEvidence(port) : [],
+        created_at: now,
+        updated_at: now,
+      });
+    } else if (up && open) {
+      await outages.updateOne(
+        { id: open.id, open: true },
+        {
+          $set: {
+            open: false,
+            ended_at: now,
+            duration_ms: Math.max(0, now - new Date(open.started_at)),
+            recovery_events: await portEvidence(port),
+            updated_at: now,
+          },
+        },
+      );
+      if (open.alerted_at)
+        void sendFirewallAlert(
+          db,
+          `${profile.label} firewall: port ${portName} link is back after ${firewallShortDuration(now - new Date(open.started_at))}.`,
+        );
+    }
+  }
 }
 
 function startFirewallHealthMonitor(db) {
@@ -910,6 +1519,130 @@ function sanitizeFirewallPayload(value) {
     else redacted[key] = sanitizeFirewallPayload(entry);
   }
   return redacted;
+}
+
+// The security scope pages up to 100k system events off the appliance. Sending
+// them all to the browser made every Firewall page load ~60 MB and spiked the
+// server's memory, while the UI only ever shows them grouped. The server now
+// summarises the full set and ships just the newest rows for the event table.
+const SECURITY_EVENT_ROWS_SENT = 3000;
+function firewallEventTime(row) {
+  const ms = Number(row?._metadata?.timestamp);
+  if (Number.isFinite(ms) && ms > 0) return ms;
+  const ns = Number(row?.eventtime);
+  if (Number.isFinite(ns) && ns > 1e17) return Math.round(ns / 1e6);
+  if (row?.date && row?.time) {
+    const parsed = Date.parse(`${row.date}T${row.time}${row.tz ? row.tz.replace(/(\d{2})(\d{2})$/, "$1:$2") : "Z"}`);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+function firewallSeverityBucket(level) {
+  const value = String(level || "").toLowerCase();
+  if (/emergency|alert|critical|error/.test(value)) return "alert";
+  if (/warn/.test(value)) return "warning";
+  if (/notice/.test(value)) return "notice";
+  return "information";
+}
+function summarizeFirewallSecurity(sections, now = Date.now()) {
+  const events = firewallRows(sections.events);
+  const severity = { alert: 0, warning: 0, notice: 0, information: 0 };
+  const groups = new Map();
+  const hourly = new Map();
+  const daily = new Map();
+  const bruteSources = new Map();
+  let bruteForce = 0;
+  let adminSuccess = 0;
+  let first = null;
+  let last = null;
+  const dayFormat = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" });
+  for (const row of events) {
+    const bucket = firewallSeverityBucket(row.level);
+    severity[bucket] += 1;
+    const title = row.logdesc || row.msg || row.eventtype || "Security event";
+    const key = `${title}|${row.level || bucket}`;
+    const at = firewallEventTime(row);
+    if (at != null) {
+      if (first == null || at < first) first = at;
+      if (last == null || at > last) last = at;
+    }
+    let group = groups.get(key);
+    if (!group) {
+      group = { title, level: row.level || bucket, severity: bucket, count: 0, latest: null, sources: new Map() };
+      groups.set(key, group);
+    }
+    group.count += 1;
+    if (at != null && (!group.latest || at > group.latest)) group.latest = at;
+    if (row.srcip) group.sources.set(row.srcip, (group.sources.get(row.srcip) || 0) + 1);
+    if (at != null && now - at <= 24 * 3600000) {
+      const hour = Math.floor(at / 3600000) * 3600000;
+      const slot = hourly.get(hour) || { alert: 0, warning: 0, notice: 0, information: 0 };
+      slot[bucket] += 1;
+      hourly.set(hour, slot);
+    }
+    if (at != null) {
+      const day = dayFormat.format(new Date(at));
+      const slot = daily.get(day) || { alerts: 0, other: 0 };
+      if (bucket === "alert") slot.alerts += 1;
+      else slot.other += 1;
+      daily.set(day, slot);
+    }
+    if (/admin login failed/i.test(title)) {
+      bruteForce += 1;
+      if (row.srcip) {
+        const geo = row.source_geo || {};
+        const source = bruteSources.get(row.srcip) || { ip: row.srcip, count: 0, city: geo.city || "", country: geo.country || "", country_code: geo.country_code || "", asn: geo.asn || null, organization: geo.organization || geo.isp || "" };
+        source.count += 1;
+        bruteSources.set(row.srcip, source);
+      }
+    }
+    if (/admin login successful/i.test(title)) adminSuccess += 1;
+  }
+  const origins = new Map();
+  for (const source of bruteSources.values()) {
+    const key = `${source.city}|${source.country}|${source.asn || ""}`;
+    const origin = origins.get(key) || { city: source.city, country: source.country, country_code: source.country_code, asn: source.asn, organization: source.organization, ips: 0, count: 0 };
+    origin.ips += 1;
+    origin.count += source.count;
+    origins.set(key, origin);
+  }
+  const hourStart = Math.floor(now / 3600000) * 3600000 - 23 * 3600000;
+  return {
+    total: events.length,
+    first_event_at: first ? new Date(first).toISOString() : null,
+    last_event_at: last ? new Date(last).toISOString() : null,
+    severity,
+    groups: [...groups.values()]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 25)
+      .map((group) => ({
+        title: group.title,
+        level: group.level,
+        severity: group.severity,
+        count: group.count,
+        latest: group.latest ? new Date(group.latest).toISOString() : null,
+        top_sources: [...group.sources.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([ip, count]) => ({ ip, count })),
+        source_count: group.sources.size,
+      })),
+    hourly: Array.from({ length: 24 }, (_, index) => {
+      const hour = hourStart + index * 3600000;
+      return { hour: new Date(hour).toISOString(), ...(hourly.get(hour) || { alert: 0, warning: 0, notice: 0, information: 0 }) };
+    }),
+    daily: [...daily.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([date, value]) => ({ date, ...value })),
+    brute_force: {
+      failed: bruteForce,
+      succeeded: adminSuccess,
+      source_ips: bruteSources.size,
+      top_sources: [...bruteSources.values()].sort((a, b) => b.count - a.count).slice(0, 10),
+      origins: [...origins.values()].sort((a, b) => b.count - a.count).slice(0, 8),
+    },
+    sensors: {
+      antivirus: firewallRows(sections.threat_antivirus).length,
+      ips: firewallRows(sections.threat_ips).length,
+      web: firewallRows(sections.threat_web).length,
+      dns: firewallRows(sections.threat_dns).length,
+    },
+  };
 }
 
 function firewallRows(value) {
@@ -2054,49 +2787,87 @@ function firewallArchiveSummaryCsv(archives) {
   return `\uFEFF${[header, ...rows].join("\r\n")}\r\n`;
 }
 
+// Stripping `records` out of an archive makes Postgres decompress the whole
+// multi-megabyte document, so listing ~30 archives took 10-15 s on every
+// Archive tab open. Each archive's stripped summary is cached by document_key
+// and re-read only when its updated_at changes (archives are re-captured every
+// few minutes, and only today's document usually changes). The key/updated_at
+// probe is served by the (firewall_id, date) index in a few milliseconds.
+const FIREWALL_ARCHIVE_INDEX_CACHE_KEY = "__tmsFirewallArchiveIndexCache";
 async function firewallArchiveIndex(
   db,
   firewallId,
   { date = null, from = null, to = null, limit = 365 } = {},
 ) {
-  const result = await db.pool.query(
-    `SELECT document_key,
-            data - 'records' AS archive,
-            CASE
-              WHEN jsonb_typeof(data->'records') = 'array'
-                THEN jsonb_array_length(data->'records')
-              ELSE 0
-            END AS record_count
+  if (!globalThis[FIREWALL_ARCHIVE_INDEX_CACHE_KEY])
+    globalThis[FIREWALL_ARCHIVE_INDEX_CACHE_KEY] = new Map();
+  const cache = globalThis[FIREWALL_ARCHIVE_INDEX_CACHE_KEY];
+  const keys = await db.pool.query(
+    `SELECT document_key, updated_at
        FROM tms_documents
       WHERE collection_name = $1
-        AND data->>'firewall_id' = $2
-        AND ($3::text IS NULL OR data->>'date' = $3)
-        AND ($4::text IS NULL OR data->>'date' >= $4)
-        AND ($5::text IS NULL OR data->>'date' <= $5)
-      ORDER BY data->>'date' DESC
-      LIMIT $6`,
-    [
-      "firewall_daily_archives",
-      firewallId,
-      date,
-      from,
-      to,
-      limit,
-    ],
+        AND data->>'firewall_id' = $2`,
+    ["firewall_daily_archives", firewallId],
   );
-  return result.rows.map((row) => ({
-    document_key: row.document_key,
-    archive: {
-      ...row.archive,
-      summary: {
-        ...(row.archive?.summary || {}),
-        stored_records: Number(
-          row.archive?.summary?.stored_records ?? row.record_count ?? 0,
-        ),
+  const stale = keys.rows
+    .filter((row) => {
+      const cached = cache.get(row.document_key);
+      return !cached || cached.updatedAt !== new Date(row.updated_at).getTime();
+    })
+    .map((row) => row.document_key);
+  if (stale.length) {
+    const fresh = await db.pool.query(
+      `SELECT document_key,
+              updated_at,
+              data - 'records' AS archive,
+              CASE
+                WHEN jsonb_typeof(data->'records') = 'array'
+                  THEN jsonb_array_length(data->'records')
+                ELSE 0
+              END AS record_count
+         FROM tms_documents
+        WHERE collection_name = $1
+          AND document_key = ANY($2::text[])`,
+      ["firewall_daily_archives", stale],
+    );
+    for (const row of fresh.rows)
+      cache.set(row.document_key, {
+        updatedAt: new Date(row.updated_at).getTime(),
+        archive: row.archive,
+        recordCount: Number(row.record_count || 0),
+      });
+  }
+  const liveKeys = new Set(keys.rows.map((row) => row.document_key));
+  for (const key of cache.keys()) {
+    const entry = cache.get(key);
+    if (entry.archive?.firewall_id === firewallId && !liveKeys.has(key))
+      cache.delete(key);
+  }
+  return keys.rows
+    .map((row) => ({ key: row.document_key, entry: cache.get(row.document_key) }))
+    .filter(({ entry }) => {
+      const archiveDate = entry?.archive?.date;
+      if (!entry || !archiveDate) return false;
+      if (date && archiveDate !== date) return false;
+      if (from && archiveDate < from) return false;
+      if (to && archiveDate > to) return false;
+      return true;
+    })
+    .sort((a, b) => String(b.entry.archive.date).localeCompare(String(a.entry.archive.date)))
+    .slice(0, limit)
+    .map(({ key, entry }) => ({
+      document_key: key,
+      archive: {
+        ...entry.archive,
+        summary: {
+          ...(entry.archive?.summary || {}),
+          stored_records: Number(
+            entry.archive?.summary?.stored_records ?? entry.recordCount ?? 0,
+          ),
+        },
       },
-    },
-    record_count: Number(row.record_count || 0),
-  }));
+      record_count: entry.recordCount,
+    }));
 }
 
 async function firewallBandwidthFromArchive(db, profile, start, end) {
@@ -2435,14 +3206,21 @@ async function recordFirewallHealth(
   db,
   profile,
   state,
-  { successfulSections = 0, failedSections = [] } = {},
+  { successfulSections = 0, failedSections = [], sectionErrors = {} } = {},
 ) {
   const now = new Date();
+  const failure =
+    state === "unconfigured"
+      ? { code: "unconfigured", message: "Firewall API URL or key is not configured" }
+      : state === "online"
+        ? null
+        : firewallFailureReason(sectionErrors);
   const healthCollection = db.collection("firewall_health");
   const outageCollection = db.collection("firewall_outages");
   const previous = await healthCollection.findOne({ firewall_id: profile.id });
   const stateChanged = previous?.current_state !== state;
   let recoveredAt = null;
+  let recoveredOutageId = null;
   const preDowntimeSnapshot =
     state === "down" && stateChanged
       ? await preservePreDowntimeArchive(db, profile, now)
@@ -2457,6 +3235,13 @@ async function recordFirewallHealth(
             last_probe_at: now,
             successful_sections: successfulSections,
             failed_sections: failedSections,
+            ...(failure
+              ? {
+                  last_reason_code: failure.code,
+                  last_error: failure.message,
+                  section_errors: sectionErrors,
+                }
+              : {}),
             updated_at: now,
           },
           $setOnInsert: {
@@ -2466,8 +3251,14 @@ async function recordFirewallHealth(
             open: true,
             started_at: now,
             pre_downtime_snapshot: preDowntimeSnapshot,
+            reason_code: failure?.code || "unknown",
+            first_error: failure?.message || null,
+            reason_source: "health_check",
             created_at: now,
           },
+          ...(failure
+            ? { $inc: { [`reason_probe_counts.${failure.code}`]: 1 } }
+            : {}),
         },
         { upsert: true },
       );
@@ -2479,6 +3270,29 @@ async function recordFirewallHealth(
         { $set: { last_probe_at: now, updated_at: now } },
       );
     }
+    const open = await outageCollection.findOne({
+      firewall_id: profile.id,
+      open: true,
+    });
+    if (
+      open &&
+      !open.alerted_at &&
+      now.getTime() - new Date(open.started_at).getTime() >= FIREWALL_ALERT_AFTER_MS
+    ) {
+      const claimed = await outageCollection.updateOne(
+        { id: open.id, open: true, alerted_at: { $exists: false } },
+        { $set: { alerted_at: now } },
+      );
+      if (claimed.modifiedCount) {
+        const reason = describeFirewallReason(open.reason_code);
+        void sendFirewallAlert(
+          db,
+          FIREWALL_MONITORING_REASONS.has(open.reason_code)
+            ? `${profile.label} firewall monitoring stopped since ${firewallIstTime(open.started_at)} — ${reason.title}. The site network may still be up; TMS just cannot check it. ${reason.detail}`
+            : `${profile.label} firewall is DOWN since ${firewallIstTime(open.started_at)} — ${reason.title}. ${reason.detail}`,
+        );
+      }
+    }
   } else {
     const openOutage = await outageCollection.findOne({
       firewall_id: profile.id,
@@ -2486,6 +3300,7 @@ async function recordFirewallHealth(
     });
     if (openOutage) {
       recoveredAt = now;
+      recoveredOutageId = openOutage.id;
       await outageCollection.updateOne(
         {
           id: openOutage.id,
@@ -2517,6 +3332,8 @@ async function recordFirewallHealth(
         last_probe_at: now,
         successful_sections: successfulSections,
         failed_sections: failedSections,
+        last_reason_code: failure?.code || null,
+        last_error: failure?.message || null,
         ...(state === "down" ? { last_failure_at: now } : {}),
         ...(["online", "degraded"].includes(state)
           ? { last_success_at: now }
@@ -2534,11 +3351,101 @@ async function recordFirewallHealth(
     },
     { upsert: true },
   );
+  return { recoveredOutageId, previousHealth: previous };
+}
+
+// Failures on the monitoring side (TMS could not verify or authenticate to
+// the firewall) say nothing about whether the site's network was up, so they
+// are reported as monitoring gaps rather than downtime.
+const FIREWALL_MONITORING_REASONS = new Set([
+  "cert_pin_mismatch",
+  "cert_invalid",
+  "auth_rejected",
+  "rate_limited",
+  "unconfigured",
+  "log_endpoints_only",
+]);
+
+// A failure must persist for this long (two health checks at the default
+// 60s interval) before anyone is alerted, so single dropped probes stay quiet.
+const FIREWALL_ALERT_AFTER_MS = Math.max(
+  0,
+  Number(process.env.FIREWALL_ALERT_AFTER_MS || 55_000),
+);
+
+function firewallIstTime(value) {
+  return `${new Date(value).toLocaleString("en-GB", {
+    timeZone: "Asia/Kolkata",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })} IST`;
+}
+
+function firewallShortDuration(ms) {
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const rest = minutes % 60;
+  return [days && `${days}d`, hours && `${hours}h`, (rest || (!days && !hours)) && `${rest}m`]
+    .filter(Boolean)
+    .join(" ");
+}
+
+// Super Admins and the IT team (primary or additional role) by default.
+async function sendFirewallAlert(db, message) {
+  if (process.env.FIREWALL_ALERTS === "false") return;
+  try {
+    const roles = String(process.env.FIREWALL_ALERT_ROLES || "super_admin,it")
+      .split(",")
+      .map((role) => role.trim())
+      .filter((role) => USER_ROLES.includes(role));
+    if (!roles.length) return;
+    const users = await db
+      .collection("users")
+      .find({
+        active: { $ne: false },
+        $or: roles.flatMap((role) => roleMemberFilter(role).$or),
+      })
+      .toArray();
+    await notify(db, users.map((user) => user.id), message, null, "escalation");
+  } catch (error) {
+    console.error("Firewall alert failed:", error?.message || error);
+  }
+}
+
+function firewallOutageReason(outage) {
+  if (outage.reason_override)
+    return describeFirewallReason(outage.reason_override, {
+      error: outage.last_error || outage.first_error || null,
+      source: outage.reason_source || null,
+      reboot_at: outage.reboot_at || null,
+      breakdown: [],
+    });
+  const breakdown = Object.entries(outage.reason_probe_counts || {})
+    .filter(([, probes]) => Number(probes) > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([code, probes]) => ({
+      code,
+      title: describeFirewallReason(code).title,
+      probes: Number(probes),
+    }));
+  return describeFirewallReason(
+    breakdown[0]?.code || outage.reason_code || "unrecorded",
+    {
+      error: outage.last_error || outage.first_error || null,
+      source: outage.reason_source || null,
+      breakdown,
+    },
+  );
 }
 
 async function firewallDowntimeSummary(db, profile, days) {
   const now = new Date();
-  const requestedStart = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+  const dayMs = 24 * 60 * 60 * 1000;
+  const requestedStart = new Date(now.getTime() - days * dayMs);
   const health = await db
     .collection("firewall_health")
     .findOne({ firewall_id: profile.id });
@@ -2550,32 +3457,174 @@ async function firewallDowntimeSummary(db, profile, days) {
     started_at: { $lt: now },
     $or: [{ open: true }, { ended_at: { $gt: trackedStart || requestedStart } }],
   };
-  const outages = await db
+  const fetchedOutages = await db
     .collection("firewall_outages")
     .find(outageFilter)
     .sort({ started_at: -1 })
     .limit(1000)
     .toArray();
+  const isMonitoringGap = (outage) =>
+    FIREWALL_MONITORING_REASONS.has(firewallOutageReason(outage).code);
+  const outages = fetchedOutages.filter((outage) => !isMonitoringGap(outage));
+  const monitoringGaps = fetchedOutages.filter(isMonitoringGap);
+  const outageEnd = (outage) =>
+    outage.open || !outage.ended_at
+      ? now.getTime()
+      : new Date(outage.ended_at).getTime();
+  // Downtime of one outage that falls inside [from, to), never before tracking began.
+  const overlapMs = (outage, from, to) => {
+    if (!trackedStart) return 0;
+    const start = Math.max(
+      new Date(outage.started_at).getTime(),
+      from,
+      trackedStart.getTime(),
+    );
+    return Math.max(0, Math.min(outageEnd(outage), to, now.getTime()) - start);
+  };
+  // Time TMS could not check the firewall is neither uptime nor downtime.
+  const gapMsIn = (from, to) =>
+    monitoringGaps.reduce((total, gap) => total + overlapMs(gap, from, to), 0);
+  const monitoringGapMs = gapMsIn(0, now.getTime());
   const periodMs = trackedStart
-    ? Math.max(0, now.getTime() - trackedStart.getTime())
+    ? Math.max(0, now.getTime() - trackedStart.getTime() - monitoringGapMs)
     : 0;
-  const totalDowntimeMs = trackedStart
-    ? outages.reduce((total, outage) => {
-        const startedAt = new Date(outage.started_at).getTime();
-        const endedAt = outage.open || !outage.ended_at
-          ? now.getTime()
-          : new Date(outage.ended_at).getTime();
-        const overlapStart = Math.max(startedAt, trackedStart.getTime());
-        const overlapEnd = Math.min(endedAt, now.getTime());
-        return total + Math.max(0, overlapEnd - overlapStart);
-      }, 0)
-    : 0;
+  const totalDowntimeMs = outages.reduce(
+    (total, outage) => total + overlapMs(outage, 0, now.getTime()),
+    0,
+  );
   const currentOutage = outages.find((outage) => outage.open) || null;
   const lastCompletedOutage =
     outages.find((outage) => !outage.open && outage.ended_at) || null;
   const availabilityPercent = periodMs
     ? Math.max(0, ((periodMs - totalDowntimeMs) / periodMs) * 100)
     : null;
+  const outageView = (outage) => ({
+    id: outage.id,
+    open: Boolean(outage.open),
+    started_at: outage.started_at,
+    ended_at: outage.ended_at || null,
+    recovered_state: outage.recovered_state || null,
+    failed_sections: outage.failed_sections || [],
+    pre_downtime_snapshot: outage.pre_downtime_snapshot || null,
+    firewall_events: outage.firewall_events || [],
+    duration_ms: outage.open
+      ? Math.max(0, now.getTime() - new Date(outage.started_at).getTime())
+      : outage.duration_ms ||
+        Math.max(0, outageEnd(outage) - new Date(outage.started_at).getTime()),
+    reason: firewallOutageReason(outage),
+    note: outage.note || null,
+  });
+
+  const windowStart = (trackedStart || requestedStart).getTime();
+  const portStates = (
+    await db
+      .collection("firewall_port_state")
+      .find({ firewall_id: profile.id })
+      .toArray()
+  ).filter((port) => port.tracked);
+  const portOutages = (
+    await db
+      .collection("firewall_port_outages")
+      .find({ firewall_id: profile.id })
+      .sort({ started_at: -1 })
+      .limit(2000)
+      .toArray()
+  ).filter(
+    (outage) =>
+      new Date(outage.started_at).getTime() < now.getTime() &&
+      outageEnd(outage) > windowStart,
+  );
+  const portOverlapMs = (outage, from, to) =>
+    Math.max(
+      0,
+      Math.min(outageEnd(outage), to, now.getTime()) -
+        Math.max(new Date(outage.started_at).getTime(), from, windowStart),
+    );
+  const portOutageView = (outage) => ({
+    id: outage.id,
+    port: outage.port,
+    alias: outage.alias || "",
+    open: Boolean(outage.open),
+    started_at: outage.started_at,
+    ended_at: outage.ended_at || null,
+    start_observed: outage.start_observed !== false,
+    firewall_events: [
+      ...(outage.firewall_events || []),
+      ...(outage.recovery_events || []),
+    ],
+    duration_ms: Math.max(
+      0,
+      outageEnd(outage) - new Date(outage.started_at).getTime(),
+    ),
+    kind: outage.kind || "port",
+    note: outage.note || null,
+    reason: describeFirewallReason(outage.reason_code || "port_link_down"),
+  });
+  const portDowntimeIn = (from, to) => {
+    const byPort = {};
+    portOutages.forEach((outage) => {
+      const ms = portOverlapMs(outage, from, to);
+      if (!ms) return;
+      const entry = (byPort[outage.port] ||= {
+        port: outage.port,
+        alias: outage.alias || "",
+        downtime_ms: 0,
+        outage_count: 0,
+      });
+      entry.downtime_ms += ms;
+      entry.outage_count += 1;
+    });
+    return Object.values(byPort).sort((a, b) => b.downtime_ms - a.downtime_ms);
+  };
+
+  // One bucket per calendar day in IST (the sites' local time), oldest first,
+  // ending with today so the current day's downtime is always visible.
+  const todayKey = firewallArchiveDate(now);
+  const todayStart = new Date(`${todayKey}T00:00:00.000+05:30`).getTime();
+  const daily = Array.from({ length: days }, (_, index) => {
+    const start = todayStart - (days - 1 - index) * dayMs;
+    const end = Math.min(start + dayMs, now.getTime());
+    const trackedMs = trackedStart
+      ? Math.max(0, end - Math.max(start, trackedStart.getTime()) - gapMsIn(start, end))
+      : 0;
+    const touching = outages.filter(
+      (outage) => overlapMs(outage, start, end) > 0,
+    );
+    const downtimeMs = touching.reduce(
+      (total, outage) => total + overlapMs(outage, start, end),
+      0,
+    );
+    return {
+      date: firewallArchiveDate(start),
+      start: new Date(start),
+      tracked_ms: trackedMs,
+      downtime_ms: downtimeMs,
+      outage_count: touching.length,
+      availability_percent: trackedMs
+        ? Number(
+            Math.max(0, ((trackedMs - downtimeMs) / trackedMs) * 100).toFixed(3),
+          )
+        : null,
+      reason_codes: [
+        ...new Set(touching.map((outage) => firewallOutageReason(outage).code)),
+      ],
+      ports: portDowntimeIn(start, end),
+    };
+  });
+  const today = daily[daily.length - 1];
+  const reasonTotals = {};
+  outages.forEach((outage) => {
+    const reason = firewallOutageReason(outage);
+    const entry = (reasonTotals[reason.code] ||= {
+      code: reason.code,
+      title: reason.title,
+      detail: reason.detail,
+      outage_count: 0,
+      downtime_ms: 0,
+    });
+    entry.outage_count += 1;
+    entry.downtime_ms += overlapMs(outage, 0, now.getTime());
+  });
 
   return {
     firewall: { id: profile.id, label: profile.label },
@@ -2586,6 +3635,12 @@ async function firewallDowntimeSummary(db, profile, days) {
           last_probe_at: health.last_probe_at,
           successful_sections: health.successful_sections || 0,
           failed_sections: health.failed_sections || [],
+          reason:
+            health.current_state && health.current_state !== "online" && health.last_reason_code
+              ? describeFirewallReason(health.last_reason_code, {
+                  error: health.last_error || null,
+                })
+              : null,
         }
       : {
           state: "unknown",
@@ -2593,6 +3648,7 @@ async function firewallDowntimeSummary(db, profile, days) {
           last_probe_at: null,
           successful_sections: 0,
           failed_sections: [],
+          reason: null,
         },
     period: {
       requested_days: days,
@@ -2606,44 +3662,45 @@ async function firewallDowntimeSummary(db, profile, days) {
         availabilityPercent === null ? null : Number(availabilityPercent.toFixed(3)),
       total_downtime_ms: totalDowntimeMs,
       outage_count: outages.length,
+      monitoring_gap_ms: monitoringGapMs,
+      monitoring_gap_count: monitoringGaps.length,
+      longest_outage_ms: outages.reduce(
+        (longest, outage) => Math.max(longest, overlapMs(outage, 0, now.getTime())),
+        0,
+      ),
     },
-    current_outage: currentOutage
-      ? {
-          id: currentOutage.id,
-          started_at: currentOutage.started_at,
-          pre_downtime_snapshot: currentOutage.pre_downtime_snapshot || null,
-          duration_ms: Math.max(
-            0,
-            now.getTime() - new Date(currentOutage.started_at).getTime(),
-          ),
-        }
-      : null,
-    last_outage: lastCompletedOutage
-      ? {
-          id: lastCompletedOutage.id,
-          started_at: lastCompletedOutage.started_at,
-          ended_at: lastCompletedOutage.ended_at,
-          pre_downtime_snapshot:
-            lastCompletedOutage.pre_downtime_snapshot || null,
-          duration_ms:
-            lastCompletedOutage.duration_ms ||
-            Math.max(
-              0,
-              new Date(lastCompletedOutage.ended_at).getTime() -
-                new Date(lastCompletedOutage.started_at).getTime(),
-            ),
-        }
-      : null,
-    recent_outages: outages.slice(0, 10).map((outage) => ({
-      id: outage.id,
-      open: outage.open,
-      started_at: outage.started_at,
-      ended_at: outage.ended_at || null,
-      pre_downtime_snapshot: outage.pre_downtime_snapshot || null,
-      duration_ms: outage.open
-        ? Math.max(0, now.getTime() - new Date(outage.started_at).getTime())
-        : outage.duration_ms || 0,
-    })),
+    today: {
+      ...today,
+      outages: outages
+        .filter((outage) => overlapMs(outage, today.start.getTime(), now.getTime()) > 0)
+        .map(outageView),
+      port_outages: portOutages
+        .filter((outage) => portOverlapMs(outage, today.start.getTime(), now.getTime()) > 0)
+        .map(portOutageView),
+    },
+    ports: {
+      current: portStates
+        .map((port) => ({
+          port: port.port,
+          alias: port.alias || "",
+          ip: port.ip || null,
+          up: Boolean(port.link),
+          state_since: port.state_since || null,
+          first_seen_at: port.first_seen_at || null,
+          last_checked_at: port.last_seen_at || null,
+        }))
+        .sort((a, b) => Number(a.up) - Number(b.up) || a.port.localeCompare(b.port, undefined, { numeric: true })),
+      downtime: portDowntimeIn(0, now.getTime()),
+      outages: portOutages.slice(0, 200).map(portOutageView),
+    },
+    daily,
+    reason_breakdown: Object.values(reasonTotals).sort(
+      (a, b) => b.downtime_ms - a.downtime_ms,
+    ),
+    current_outage: currentOutage ? outageView(currentOutage) : null,
+    last_outage: lastCompletedOutage ? outageView(lastCompletedOutage) : null,
+    recent_outages: outages.slice(0, 100).map(outageView),
+    monitoring_gaps: monitoringGaps.slice(0, 50).map(outageView),
   };
 }
 
@@ -3200,6 +4257,22 @@ function clean(doc) {
 function textValue(value, max = 2000) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
+
+const INCIDENT_STATUSES = ["Resolved", "Monitoring", "Open"];
+// Kept in step with INCIDENT_CATEGORIES in components/app/IncidentReports.js.
+const INCIDENT_CATEGORIES = [
+  "Internet / ISP",
+  "Wi-Fi",
+  "LAN / Network",
+  "Power / UPS",
+  "Hardware / Devices",
+  "Software / Applications",
+  "Security / Firewall",
+  "CCTV / Access Control",
+  "Printer",
+  "Meeting Room / VC",
+  "Other",
+];
 
 const PASSWORD_MIN_LENGTH = 12;
 
@@ -3879,7 +4952,11 @@ async function createLoginSessionResponse(user, remember = false, location) {
     .setJti(uuidv4())
     .sign(jwtSecret());
   const response = json({
-    user: { ...clean(user), location: selectedSite, login_site: selectedSite },
+    user: {
+      ...actingUser(user, user.role),
+      location: selectedSite,
+      login_site: selectedSite,
+    },
   });
   response.cookies.set("tf_token", token, {
     httpOnly: true,
@@ -4124,7 +5201,7 @@ async function approvalEmailContext(database, token) {
   const [user, approval, ticket] = await Promise.all([
     database.collection("users").findOne({
       id: payload.user_id,
-      role: "super_admin",
+      ...roleMemberFilter("super_admin"),
       active: { $ne: false },
     }),
     database.collection("approvals").findOne({
@@ -4230,6 +5307,10 @@ async function decideApprovalFromEmail(database, context, decision, remarks) {
     ticket,
   );
   await supersedePendingApprovalEmails(database, approval.id);
+  await resumeTicketSla(
+    database,
+    await database.collection("tickets").findOne({ id: ticket.id }),
+  );
   await audit(database, user, "approval.email_decision", "ticket", ticket.id, {
     decision,
     approval_id: approval.id,
@@ -4244,17 +5325,23 @@ async function slaEscalationRecipients(db, ticket) {
     .collection("users")
     .find({
       active: { $ne: false },
-      $or: [{ role: "super_admin" }, { role: teamRole }],
+      $or: [
+        ...roleMemberFilter("super_admin").$or,
+        ...roleMemberFilter(teamRole).$or,
+      ],
     })
     .toArray();
   const scopedUsers = users.filter(
     (user) =>
-      user.role === "super_admin" ||
+      hasUserRole(user, "super_admin") ||
       canAccessTicket(
         {
           ...user,
-          is_team_head: Boolean(user.is_team_head),
-          managed_locations: user.managed_locations || [],
+          role: teamRole,
+          // Team-head scope belongs to the member's primary role only.
+          is_team_head: user.role === teamRole && Boolean(user.is_team_head),
+          managed_locations:
+            user.role === teamRole ? user.managed_locations || [] : [],
         },
         ticket,
       ),
@@ -4269,6 +5356,128 @@ async function slaEscalationRecipients(db, ticket) {
     if (assignee) scopedUsers.push(assignee);
   }
   return scopedUsers;
+}
+
+// ---- Configurable SLA rules (Settings → SLA & hours) ----
+// Rules live in app_settings (id "sla"); per-category resolution SLAs live on
+// the category rows. Both are pushed into lib/sla via configureSla().
+const slaAutomation = { pause_on_approval: false, auto_escalate: false };
+async function loadSlaSettings(database) {
+  const saved = (await database.collection("app_settings").findOne({ id: "sla" })) || {};
+  const categories = await database.collection("categories").find({}).toArray();
+  const categoryHours = {};
+  for (const category of categories)
+    if (Number(category.sla_hours) > 0)
+      categoryHours[`${category.department}|${category.name}`] = Number(category.sla_hours);
+  configureSla({ ...saved, category_resolution_hours: categoryHours });
+  slaAutomation.pause_on_approval = saved.pause_on_approval === true;
+  slaAutomation.auto_escalate = saved.auto_escalate === true;
+  return saved;
+}
+
+// Pausing removes sla_resolution_due (so the ticket is neither "overdue" in any
+// view nor picked up by the breach sweep) and remembers the working time that
+// was left; resuming re-issues the deadline from that remainder.
+async function pauseTicketSla(database, ticket, at = new Date()) {
+  if (!ticket || ticket.sla_paused_at || !ticket.sla_resolution_due) return false;
+  if (TERMINAL_TICKET_STATUSES.includes(ticket.status)) return false;
+  const remaining = workingHoursBetween(at, ticket.sla_resolution_due);
+  const result = await database.collection("tickets").updateOne(
+    { id: ticket.id, sla_paused_at: { $exists: false } },
+    {
+      $set: {
+        sla_paused_at: at,
+        sla_paused_remaining_hours: remaining,
+        sla_resolution_due_before_pause: ticket.sla_resolution_due,
+        updated_at: at,
+      },
+      $unset: { sla_resolution_due: "" },
+    },
+  );
+  return Boolean(result.modifiedCount);
+}
+async function resumeTicketSla(database, ticket, at = new Date()) {
+  if (!ticket?.sla_paused_at) return false;
+  const remaining = Number(ticket.sla_paused_remaining_hours || 0);
+  const due =
+    remaining > 0
+      ? addWorkingHours(at, remaining)
+      : new Date(ticket.sla_resolution_due_before_pause || at);
+  await database.collection("tickets").updateOne(
+    { id: ticket.id },
+    {
+      $set: {
+        sla_resolution_due: due,
+        sla_paused_minutes_total:
+          Number(ticket.sla_paused_minutes_total || 0) +
+          workingMinutesBetween(ticket.sla_paused_at, at),
+        updated_at: at,
+      },
+      $unset: {
+        sla_paused_at: "",
+        sla_paused_remaining_hours: "",
+        sla_resolution_due_before_pause: "",
+      },
+    },
+  );
+  return true;
+}
+async function pausedApprovalTicketIds(database) {
+  const approvals = await database.collection("approvals").find({}).toArray();
+  return new Set(
+    approvals
+      .filter((approval) => ["Pending", "On Hold", "Clarification"].includes(approval.status))
+      .map((approval) => approval.ticket_id),
+  );
+}
+async function applyApprovalPausePolicy(database) {
+  const waiting = await pausedApprovalTicketIds(database);
+  const tickets = await database.collection("tickets").find({}).toArray();
+  let paused = 0;
+  let resumed = 0;
+  for (const ticket of tickets) {
+    if (slaAutomation.pause_on_approval && waiting.has(ticket.id)) {
+      if (await pauseTicketSla(database, ticket)) paused += 1;
+    } else if (ticket.sla_paused_at) {
+      if (await resumeTicketSla(database, ticket)) resumed += 1;
+    }
+  }
+  return { paused, resumed };
+}
+
+async function processSlaWarnings(database, now) {
+  if (!slaAutomation.auto_escalate) return 0;
+  const candidates = await database
+    .collection("tickets")
+    .find({
+      sla_resolution_due: { $gte: now },
+      sla_warning_sent_at: { $exists: false },
+    })
+    .limit(1000)
+    .toArray();
+  let warned = 0;
+  for (const ticket of candidates) {
+    if (TERMINAL_TICKET_STATUSES.includes(ticket.status)) continue;
+    const start = ticket.sla_clock_started_at || ticket.raised_at || ticket.created_at;
+    const total = workingHoursBetween(start, ticket.sla_resolution_due);
+    if (!total || workingHoursBetween(start, now) < total * 0.8) continue;
+    const update = await database.collection("tickets").updateOne(
+      { id: ticket.id, sla_warning_sent_at: { $exists: false } },
+      { $set: { sla_warning_sent_at: now } },
+    );
+    if (!update.modifiedCount) continue;
+    const recipients = await slaEscalationRecipients(database, ticket);
+    await notify(
+      database,
+      recipients.map((user) => user.id),
+      `SLA warning: ${ticket.human_id} has used 80% of its resolution time (${ticket.title})`,
+      ticket,
+      "escalation",
+      { email: false },
+    );
+    warned += 1;
+  }
+  return warned;
 }
 
 async function recordSlaBreach(db, ticket, kind, at) {
@@ -4389,8 +5598,9 @@ async function processSlaBreaches(db, force = false) {
         resolutionBreaches++;
       }
     }
+    const warnings = await processSlaWarnings(db, now);
     const email = await deliverQueuedEmails(db);
-    return { response_breaches: responseBreaches, resolution_breaches: resolutionBreaches, email };
+    return { response_breaches: responseBreaches, resolution_breaches: resolutionBreaches, warnings, email };
   })();
   try {
     return await slaSweepPromise;
@@ -4415,8 +5625,10 @@ async function addHistory(db, ticketId, type, actor, note, from, to) {
 
 // Standard ticket statuses. Workflow micro-states (assignment, acknowledgement,
 // approval, waiting-on states) are tracked in dedicated fields/collections —
-// the ticket status itself only ever holds one of these four values.
-const STATUSES = ["Open", "In Progress", "Closed", "Cancelled"];
+// the ticket status itself only ever holds one of these values. "Resolved"
+// is the hand-off state: the team has fixed it and the employee who raised it
+// acknowledges the fix, which closes it (IT/Admin can also close it).
+const STATUSES = ["Open", "In Progress", "Resolved", "Closed", "Cancelled"];
 const TERMINAL_TICKET_STATUSES = ["Closed", "Cancelled"];
 
 const DESIGNATED_IT_MANAGERS = Object.freeze({
@@ -4889,6 +6101,78 @@ async function migrateTicketSlaData(database) {
   }
 }
 
+// One-time re-baseline when the priority SLA targets change (Oct 2026:
+// Critical 2h, High 8h, Medium 24h, Low 3 working days). Every ticket's
+// deadlines are recomputed from when it was raised so dashboards and reports
+// measure all tickets against the same rules. Finished tickets get their
+// met/breached outcome recomputed silently (no notifications for history);
+// live tickets are left for the regular breach sweep to evaluate.
+const SLA_REBASELINE_ID = "sla_rebaseline_2026_10";
+async function rebaselineTicketSlas(database) {
+  const settings = database.collection("app_settings");
+  if (await settings.findOne({ id: SLA_REBASELINE_ID })) return;
+  const tickets = await database.collection("tickets").find({}).toArray();
+  const now = new Date();
+  const writes = [];
+  let breached = 0;
+  for (const ticket of tickets) {
+    if (ticket.sla_paused_at) continue;
+    const raisedAt = new Date(ticket.raised_at || ticket.created_at || now);
+    if (Number.isNaN(raisedAt.getTime())) continue;
+    const sla = slaDates(ticket.department, ticket.priority, raisedAt, ticket.category);
+    if (!sla.sla_response_due || !sla.sla_resolution_due) continue;
+    const set = {
+      sla_response_due: sla.sla_response_due,
+      sla_resolution_due: sla.sla_resolution_due,
+      sla_policy: sla.sla_policy,
+      sla_rebaselined_at: now,
+    };
+    const unset = {};
+    const finished = ["Resolved", "Closed", "Cancelled"].includes(ticket.status);
+    const outcome = (kind, at, due) => {
+      const met = `${kind}_sla_met_at`;
+      const hit = `${kind}_sla_breached_at`;
+      if (at && new Date(at) <= due) {
+        set[met] = new Date(at);
+        unset[hit] = "";
+        set[`sla_breaches.${kind}`] = false;
+      } else if (finished && ticket.status !== "Cancelled" && (at ? new Date(at) > due : now > due)) {
+        set[hit] = due;
+        unset[met] = "";
+        set[`sla_breaches.${kind}`] = true;
+        set[`sla_breach_notifications.${kind}_sent_at`] =
+          ticket.sla_breach_notifications?.[`${kind}_sent_at`] || due;
+        breached += kind === "resolution" ? 1 : 0;
+      } else {
+        // Live or not yet due: clear the old outcome so the sweep re-judges it.
+        unset[met] = "";
+        unset[hit] = "";
+        set[`sla_breaches.${kind}`] = false;
+        if (!finished) unset.sla_warning_sent_at = "";
+      }
+    };
+    outcome("response", ticket.acknowledged_at || ticket.first_response_at, sla.sla_response_due);
+    outcome(
+      "resolution",
+      ticket.resolved_at || ticket.resolution?.resolved_date || (ticket.status === "Closed" ? ticket.closed_at : null),
+      sla.sla_resolution_due,
+    );
+    const update = { $set: set };
+    if (Object.keys(unset).length) update.$unset = unset;
+    writes.push({ updateOne: { filter: { id: ticket.id }, update } });
+  }
+  for (let i = 0; i < writes.length; i += 250)
+    await database.collection("tickets").bulkWrite(writes.slice(i, i + 250), { ordered: false });
+  await settings.insertOne({
+    id: SLA_REBASELINE_ID,
+    tickets: writes.length,
+    finished_breaches: breached,
+    policy: slaConfigSnapshot().policy,
+    created_at: now,
+  });
+  console.log(`SLA re-baseline: ${writes.length} tickets recomputed, ${breached} finished tickets breached resolution SLA`);
+}
+
 // ---------------- LAPTOP ASSET INVENTORY ----------------
 // The vendor laptop sheets are bundled at build time (lib/constants/
 // laptop-assets.js) and mirrored into the laptop_assets collection so ticket
@@ -4989,14 +6273,6 @@ function laptopTicketFields(asset, matchedBy, enteredSerial) {
     asset_matched: true,
   };
 }
-
-const LAPTOP_CATEGORY_RX = /laptop|hardware|device configuration|asset/i;
-// "Procurement Hardware" is a purchase request for new kit, not a fault on an
-// issued machine, so it is excluded from laptop/vendor auto-mapping.
-const PROCUREMENT_CATEGORY_RX = /procurement/i;
-const isLaptopCategory = (category) =>
-  LAPTOP_CATEGORY_RX.test(category || "") &&
-  !PROCUREMENT_CATEGORY_RX.test(category || "");
 
 // ---------------- SEED ----------------
 // Ticket categories are department-specific: an IT member never sees Admin
@@ -5339,10 +6615,52 @@ function kraRunsOnDate(list, date) {
   return day !== 0 && day !== 6;
 }
 
+// Checklist items repeat daily or weekly; weekly items are due on Mondays only.
+function kraIsMonday(date) {
+  return new Date(`${date}T12:00:00+05:30`).getUTCDay() === 1;
+}
+
+function kraItemsDueOn(list, date) {
+  const monday = kraIsMonday(date);
+  return (list.items || []).filter((item) => item.freq !== "weekly" || monday);
+}
+
+// Accepts plain labels (older clients, Super Admin edits) or
+// { label, freq, link } objects. A plain label keeps the repeat and linked
+// ticket category it already had, so a title-only edit never drops them.
+function normalizeKraItems(raw, previous = []) {
+  const previousByLabel = new Map(
+    (previous || []).map((item) => [item.label, item]),
+  );
+  return raw
+    .filter(Boolean)
+    .slice(0, 200)
+    .map((entry) => {
+      const source =
+        entry && typeof entry === "object" && !Array.isArray(entry)
+          ? entry
+          : { label: entry };
+      const label = textValue(source.label ?? source.item, 300);
+      const prior = previousByLabel.get(label);
+      const freqSource = source.freq ?? prior?.freq ?? "daily";
+      const linkSource = source.link !== undefined ? source.link : prior?.link;
+      return {
+        label,
+        freq: String(freqSource).toLowerCase() === "weekly" ? "weekly" : "daily",
+        link: textValue(linkSource, 100) || null,
+      };
+    })
+    .filter((item) => item.label)
+    .map((item, index) => ({ key: `mc_${index}`, ...item }));
+}
+
 function kraSubmissionCompleted(list, submission) {
+  if (!submission) return false;
+  // Newer submissions record completion directly, accounting for items
+  // marked N/A and weekly items not due that day.
+  if (typeof submission.completed === "boolean") return submission.completed;
   return Boolean(
-    submission &&
-      Number(submission.done_count || 0) >= (list.items || []).length &&
+    Number(submission.done_count || 0) >= (list.items || []).length &&
       (list.items || []).length > 0,
   );
 }
@@ -5372,7 +6690,7 @@ async function processKraEscalations(
   );
   const superAdmins = await database
     .collection("users")
-    .find({ role: "super_admin", active: { $ne: false } })
+    .find({ ...roleMemberFilter("super_admin"), active: { $ne: false } })
     .toArray();
   let created = 0;
   for (const list of lists) {
@@ -5403,7 +6721,7 @@ async function processKraEscalations(
       deadline_at: deadline,
       status: submission ? "late_or_incomplete" : "not_submitted",
       done_count: Number(submission?.done_count || 0),
-      total: (list.items || []).length,
+      total: kraItemsDueOn(list, date).length,
       created_at: now,
     };
     try {
@@ -5416,7 +6734,7 @@ async function processKraEscalations(
     await notify(
       database,
       recipients,
-      `KRA escalation: ${list.member_name} missed the 7:00 PM cut-off for ${list.title}`,
+      `Checklist escalation: ${list.member_name} missed the 7:00 PM cut-off for ${list.title}`,
       null,
       "escalation",
     );
@@ -5470,23 +6788,40 @@ function spreadsheetTaskRows(rows) {
   const taskHeader =
     /^(task|tasks|daily work|work item|activity|activities|responsibility|responsibilities|kra|description)$/i;
   const headerIndex = populated[0].findIndex((cell) => taskHeader.test(cell));
+  const freqIndex =
+    headerIndex >= 0
+      ? populated[0].findIndex((cell) => /^(repeats?|frequency)$/i.test(cell))
+      : -1;
+  const linkIndex =
+    headerIndex >= 0
+      ? populated[0].findIndex((cell) =>
+          /^(linked category|category|ticket category|auto-tick( from tickets)?)$/i.test(cell),
+        )
+      : -1;
   const source = headerIndex >= 0 ? populated.slice(1) : populated;
-  const items = source
-    .map((row) =>
-      (headerIndex >= 0 ? row[headerIndex] : row.find(Boolean) || "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 300),
-    )
-    .filter((item) => item && !taskHeader.test(item));
-  return [...new Set(items)].slice(0, 200);
+  const seen = new Set();
+  const tasks = [];
+  for (const row of source) {
+    const label = (headerIndex >= 0 ? row[headerIndex] : row.find(Boolean) || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 300);
+    if (!label || taskHeader.test(label) || seen.has(label)) continue;
+    seen.add(label);
+    tasks.push({
+      label,
+      freq: /^weekly$/i.test(row[freqIndex] || "") ? "weekly" : "daily",
+      link: (linkIndex >= 0 ? row[linkIndex] : "").slice(0, 100) || null,
+    });
+  }
+  return tasks.slice(0, 200);
 }
 
 async function tasksFromSpreadsheet(file) {
   if (!file || typeof file.arrayBuffer !== "function")
     throw requestError("Choose an Excel (.xlsx) or CSV file", 400);
   if (file.size > 4 * 1024 * 1024)
-    throw requestError("The KRA spreadsheet must be 4 MB or smaller", 413);
+    throw requestError("The checklist spreadsheet must be 4 MB or smaller", 413);
   const name = String(file.name || "").toLowerCase();
   let rows;
   let sheetName = "CSV";
@@ -5507,15 +6842,21 @@ async function tasksFromSpreadsheet(file) {
       rows.push(values);
     });
   } else {
-    throw requestError("Use an .xlsx or .csv KRA spreadsheet", 400);
+    throw requestError("Use an .xlsx or .csv checklist spreadsheet", 400);
   }
-  const items = spreadsheetTaskRows(rows);
+  const details = spreadsheetTaskRows(rows);
+  const items = details.map((row) => row.label);
   if (!items.length)
     throw requestError(
       "No daily work rows were found. Add a Task, Daily Work, Activity or Responsibility column.",
       400,
     );
-  return { items, sheet_name: sheetName, rows_imported: items.length };
+  return {
+    items,
+    rows: details,
+    sheet_name: sheetName,
+    rows_imported: items.length,
+  };
 }
 
 async function seedDb(db) {
@@ -5888,7 +7229,7 @@ async function seedDb(db) {
   const memberChecklists = [
     {
       member: byName("Ajeet Kumar"),
-      title: "IT Ops KRA",
+      title: "IT Ops checklist",
       items: [
         "Verify server backups completed",
         "Check network & Wi-Fi uptime",
@@ -5899,7 +7240,7 @@ async function seedDb(db) {
     },
     {
       member: byName("Rajeev Goyal"),
-      title: "Admin Ops KRA",
+      title: "Admin Ops checklist",
       items: [
         "Update expense summary",
         "Check courier & inward register",
@@ -6421,16 +7762,10 @@ async function handleRoute(request, { params }) {
         );
       }
       const managerSite = designatedManagerSite(email);
-      const role = managerSite
-        ? "it"
-        : ["employee", "it", "admin"].includes(b.role)
-          ? b.role
-          : null;
-      if (!role)
-        return json(
-          { error: "Please select a valid role (Employee, IT, or Admin)" },
-          400,
-        );
+      // Every IT and Admin member is already registered, so self-registration
+      // always creates an Employee account; Super Admin changes roles in
+      // Member settings. A requested role in the body is ignored.
+      const role = managerSite ? "it" : "employee";
       const registrationSite = ticketLocationSite(b.location);
       if (!registrationSite)
         return json(
@@ -6577,7 +7912,7 @@ async function handleRoute(request, { params }) {
         });
         const superAdmins = await db
           .collection("users")
-          .find({ role: "super_admin", active: { $ne: false } })
+          .find({ ...roleMemberFilter("super_admin"), active: { $ne: false } })
           .toArray();
         await notify(
           db,
@@ -6626,8 +7961,15 @@ async function handleRoute(request, { params }) {
       )
         return json({ user: null }, 200);
       const selectedSite = loginSite(s.login_site, user);
+      // "Last active" in Settings; written at most every 10 minutes.
+      if (!user.last_seen_at || Date.now() - new Date(user.last_seen_at).getTime() > 10 * 60_000)
+        await db.collection("users").updateOne({ id: user.id }, { $set: { last_seen_at: new Date() } });
       return json({
-        user: { ...clean(user), location: selectedSite, login_site: selectedSite },
+        user: {
+          ...actingUser(user, activeSessionRole(user, s)),
+          location: selectedSite,
+          login_site: selectedSite,
+        },
       });
     }
 
@@ -6707,19 +8049,60 @@ async function handleRoute(request, { params }) {
     if (!sessionVersionMatches(sessionUser, tokenSession))
       return json({ error: "Session expired" }, 401);
     // Authorization always uses current database state, not potentially stale JWT claims.
+    // A switched role only counts while the member still holds it.
+    const acting = actingUser(
+      sessionUser,
+      activeSessionRole(sessionUser, tokenSession),
+    );
     const session = {
       id: sessionUser.id,
       name: sessionUser.name,
       email: sessionUser.email,
-      role: sessionUser.role,
-      department: sessionUser.department,
+      role: acting.role,
+      department: acting.department,
       // Lets the raise-ticket form resolve the raiser's own issued laptop when
       // they are the affected employee.
       employee_id: sessionUser.employee_id || "",
       location: loginSite(tokenSession.login_site, sessionUser),
-      is_team_head: Boolean(sessionUser.is_team_head),
-      managed_locations: sessionUser.managed_locations || [],
+      is_team_head: acting.is_team_head,
+      managed_locations: acting.managed_locations,
     };
+
+    if (route === "/auth/switch-role" && method === "POST") {
+      const b = await request.json().catch(() => ({}));
+      const role = textValue(b.role, 20);
+      if (!hasUserRole(sessionUser, role))
+        return json({ error: "This role is not assigned to you" }, 403);
+      // Keep the original expiry so switching never extends a session.
+      const expiresAt = Number(tokenSession.exp || 0);
+      const maxAge = Math.max(60, expiresAt - Math.floor(Date.now() / 1000));
+      const { iat, exp, jti, ...claims } = tokenSession;
+      const token = await new SignJWT({ ...claims, role, active_role: role })
+        .setProtectedHeader({ alg: "HS256" })
+        .setExpirationTime(expiresAt || "12h")
+        .setIssuedAt()
+        .setJti(uuidv4())
+        .sign(jwtSecret());
+      const res = json({
+        user: {
+          ...actingUser(sessionUser, role),
+          location: session.location,
+          login_site: session.location,
+        },
+      });
+      res.cookies.set("tf_token", token, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: sessionCookieSecure(),
+        path: "/",
+        maxAge,
+      });
+      await audit(db, { ...session, role }, "auth.role_switch", "user", session.id, {
+        from: session.role,
+        to: role,
+      });
+      return res;
+    }
 
     if (route === "/sla/process" && method === "POST") {
       if (session.role !== "super_admin")
@@ -6866,11 +8249,44 @@ async function handleRoute(request, { params }) {
     if (route === "/users" && method === "GET") {
       let filter = {};
       if (session.role === "employee") filter = { id: session.id };
-      else if (session.role === "it") filter = { role: "it", active: { $ne: false } };
-      else if (session.role === "admin") filter = { role: "admin", active: { $ne: false } };
+      else if (session.role === "it")
+        filter = { ...roleMemberFilter("it"), active: { $ne: false } };
+      else if (session.role === "admin")
+        filter = { ...roleMemberFilter("admin"), active: { $ne: false } };
       else if (session.role !== "super_admin")
         return json({ error: "Forbidden" }, 403);
       const users = await db.collection("users").find(filter).toArray();
+      if (session.role === "super_admin" && new URL(request.url).searchParams.get("with_stats") === "1") {
+        const now = Date.now();
+        const [tickets, logs] = await Promise.all([
+          db.collection("tickets").find({}).toArray(),
+          db.collection("audit_logs").find({}).toArray(),
+        ]);
+        const lastAudit = new Map();
+        for (const log of logs) {
+          const at = new Date(log.created_at).getTime();
+          if (at > (lastAudit.get(log.actor_id) || 0)) lastAudit.set(log.actor_id, at);
+        }
+        return json(
+          clean(
+            users.map((user) => {
+              const mine = tickets.filter((ticket) => ticket.assignee_id === user.id);
+              const resolvedAt = (ticket) => ticket.resolved_at || ticket.resolution?.resolved_date || ticket.closed_at;
+              const seen = Math.max(
+                user.last_seen_at ? new Date(user.last_seen_at).getTime() : 0,
+                lastAudit.get(user.id) || 0,
+              );
+              return {
+                ...user,
+                last_active_at: seen ? new Date(seen) : null,
+                tickets_30d: mine.filter((ticket) => now - new Date(ticket.created_at).getTime() <= 30 * 86400000).length,
+                closed_7d: mine.filter((ticket) => ["Resolved", "Closed"].includes(ticket.status) && resolvedAt(ticket) && now - new Date(resolvedAt(ticket)).getTime() <= 7 * 86400000).length,
+                overdue_open: mine.filter((ticket) => !["Resolved", "Closed", "Cancelled"].includes(ticket.status) && ticket.sla_resolution_due && new Date(ticket.sla_resolution_due).getTime() < now).length,
+              };
+            }),
+          ),
+        );
+      }
       return json(clean(users));
     }
     if (seg[0] === "users" && seg[1] && method === "PATCH") {
@@ -6886,6 +8302,12 @@ async function handleRoute(request, { params }) {
         return json({ error: "Invalid member role" }, 400);
       if (b.active !== undefined && typeof b.active !== "boolean")
         return json({ error: "Active status must be true or false" }, 400);
+      if (
+        b.extra_roles !== undefined &&
+        (!Array.isArray(b.extra_roles) ||
+          b.extra_roles.some((role) => !USER_ROLES.includes(role)))
+      )
+        return json({ error: "Invalid additional role" }, 400);
       const removesActiveSuperAdmin =
         user.role === "super_admin" &&
         ((b.role !== undefined && b.role !== "super_admin") || b.active === false);
@@ -6917,6 +8339,16 @@ async function handleRoute(request, { params }) {
       }
       if (typeof b.is_team_head === "boolean")
         set.is_team_head = b.is_team_head;
+      if (b.extra_roles !== undefined || set.role) {
+        // Extra roles never repeat the primary role.
+        const primary = set.role || user.role;
+        set.extra_roles = [
+          ...new Set(
+            (b.extra_roles !== undefined ? b.extra_roles : user.extra_roles || [])
+              .filter((role) => USER_ROLES.includes(role) && role !== primary),
+          ),
+        ];
+      }
       if (b.name !== undefined && typeof b.name !== "string")
         return json({ error: "Name must be text" }, 400);
       if (b.name?.trim()) set.name = textValue(b.name, 150);
@@ -7024,10 +8456,150 @@ async function handleRoute(request, { params }) {
         ),
       );
     }
+    // ---- SETTINGS: SLA rules & access review ----
+    if (route === "/settings/sla" && method === "GET") {
+      const review = await db.collection("app_settings").findOne({ id: "access_review" });
+      return json({
+        ...slaConfigSnapshot(),
+        pause_on_approval: slaAutomation.pause_on_approval,
+        auto_escalate: slaAutomation.auto_escalate,
+        access_review: review
+          ? { reviewed_at: review.reviewed_at, reviewed_by: review.reviewed_by }
+          : null,
+      });
+    }
+    if (route === "/settings/sla" && method === "PUT") {
+      if (session.role !== "super_admin") return json({ error: "Forbidden" }, 403);
+      const b = await request.json();
+      const start = Number(b.business_hours?.start);
+      const end = Number(b.business_hours?.end);
+      const weekdays = Array.isArray(b.business_hours?.weekdays)
+        ? [...new Set(b.business_hours.weekdays.map(Number))].filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)
+        : [];
+      if (!(start >= 0 && start < 24 && end > start && end <= 24))
+        return json({ error: "Working hours must start before they end" }, 400);
+      if (!weekdays.length) return json({ error: "Select at least one working day" }, 400);
+      const policy = {};
+      for (const department of ["IT", "Admin"]) {
+        policy[department] = {};
+        for (const priority of ["Critical", "High", "Medium", "Low"]) {
+          const value = b.policy?.[department]?.[priority];
+          const pair = Array.isArray(value) ? value.map(Number) : null;
+          if (!pair || pair.length !== 2 || !pair.every((v) => Number.isFinite(v) && v > 0 && v <= 2000))
+            return json({ error: `Enter response and resolution hours for ${department} ${priority}` }, 400);
+          if (pair[0] > pair[1])
+            return json({ error: `${department} ${priority}: first response can't be longer than resolution` }, 400);
+          policy[department][priority] = pair;
+        }
+      }
+      const doc = {
+        id: "sla",
+        business_hours: { start, end, weekdays: weekdays.sort() },
+        working_hours_only: b.working_hours_only !== false,
+        policy,
+        pause_on_approval: b.pause_on_approval === true,
+        auto_escalate: b.auto_escalate === true,
+        updated_at: new Date(),
+        updated_by: session.name,
+      };
+      await db.collection("app_settings").updateOne({ id: "sla" }, { $set: doc }, { upsert: true });
+      await loadSlaSettings(db);
+      const pauseResult = await applyApprovalPausePolicy(db);
+      await audit(db, session, "settings.sla.update", "settings", "sla", { ...doc, ...pauseResult });
+      return json({ ok: true, ...pauseResult, ...slaConfigSnapshot(), pause_on_approval: slaAutomation.pause_on_approval, auto_escalate: slaAutomation.auto_escalate });
+    }
+    if (route === "/settings/access-review" && method === "POST") {
+      if (session.role !== "super_admin") return json({ error: "Forbidden" }, 403);
+      const reviewed = { id: "access_review", reviewed_at: new Date(), reviewed_by: session.name };
+      await db.collection("app_settings").updateOne({ id: "access_review" }, { $set: reviewed }, { upsert: true });
+      await audit(db, session, "settings.access_review", "settings", "access_review", {});
+      return json(reviewed);
+    }
+
+    // Category SLA / default priority / visibility.
+    if (seg[0] === "categories" && seg[1] && !seg[2] && method === "PATCH") {
+      const categoryTeamHead = ["it", "admin"].includes(session.role) && sessionUser?.is_team_head;
+      if (session.role !== "super_admin" && !categoryTeamHead) return json({ error: "Forbidden" }, 403);
+      const category = await db.collection("categories").findOne({ id: seg[1] });
+      if (!category) return json({ error: "Category not found" }, 404);
+      if (session.role !== "super_admin" && category.department !== (session.role === "admin" ? "Admin" : "IT"))
+        return json({ error: "You can only manage your own department's categories" }, 403);
+      const b = await request.json();
+      const set = { updated_at: new Date() };
+      if (b.sla_hours !== undefined) {
+        if (b.sla_hours === null || b.sla_hours === "") set.sla_hours = null;
+        else {
+          const hours = Number(b.sla_hours);
+          if (!Number.isFinite(hours) || hours <= 0 || hours > 2000) return json({ error: "Invalid SLA hours" }, 400);
+          set.sla_hours = hours;
+        }
+      }
+      if (b.default_priority !== undefined) {
+        if (b.default_priority && !["Critical", "High", "Medium", "Low"].includes(b.default_priority))
+          return json({ error: "Invalid priority" }, 400);
+        set.default_priority = b.default_priority || null;
+      }
+      if (b.hidden !== undefined) set.hidden = Boolean(b.hidden);
+      await db.collection("categories").updateOne({ id: category.id }, { $set: set });
+      await loadSlaSettings(db);
+      await audit(db, session, "category.update", "category", category.id, { name: category.name, department: category.department, ...set });
+      return json(clean(await db.collection("categories").findOne({ id: category.id })));
+    }
+    if (seg[0] === "categories" && seg[1] && seg[2] === "merge" && method === "POST") {
+      if (session.role !== "super_admin") return json({ error: "Forbidden" }, 403);
+      const b = await request.json();
+      const [source, target] = await Promise.all([
+        db.collection("categories").findOne({ id: seg[1] }),
+        db.collection("categories").findOne({ id: String(b.into_id || "") }),
+      ]);
+      if (!source || !target) return json({ error: "Category not found" }, 404);
+      if (source.id === target.id) return json({ error: "Pick a different category to merge into" }, 400);
+      if (source.department !== target.department) return json({ error: "Categories must be on the same desk" }, 400);
+      const moved = await db.collection("tickets").updateMany(
+        { department: source.department, category: source.name },
+        { $set: { category: target.name, category_merged_from: source.name, updated_at: new Date() } },
+      );
+      // Standard categories are re-seeded on boot, so they are hidden and
+      // marked merged rather than deleted.
+      if (source.custom) await db.collection("categories").deleteOne({ id: source.id });
+      else
+        await db.collection("categories").updateOne(
+          { id: source.id },
+          { $set: { hidden: true, merged_into: target.name, updated_at: new Date() } },
+        );
+      await loadSlaSettings(db);
+      await audit(db, session, "category.merge", "category", source.id, {
+        from: source.name,
+        into: target.name,
+        department: source.department,
+        tickets_moved: moved.modifiedCount,
+      });
+      return json({ ok: true, tickets_moved: moved.modifiedCount, into: target.name });
+    }
+
     if (route === "/categories" && method === "GET") {
-      const dept = new URL(request.url).searchParams.get("department");
+      const params = new URL(request.url).searchParams;
+      const dept = params.get("department");
       const q = dept ? { department: dept } : {};
-      const cats = await db.collection("categories").find(q).toArray();
+      let cats = await db.collection("categories").find(q).toArray();
+      // Hidden categories stay valid on existing tickets but leave dropdowns.
+      if (params.get("include_hidden") !== "1") cats = cats.filter((category) => !category.hidden);
+      if (params.get("with_usage") === "1") {
+        const since = Date.now() - 30 * 86400000;
+        const tickets = await db.collection("tickets").find(dept ? { department: dept } : {}).toArray();
+        const usage = new Map();
+        for (const ticket of tickets) {
+          const key = `${ticket.department}|${ticket.category}`;
+          const entry = usage.get(key) || { total: 0, recent: 0 };
+          entry.total += 1;
+          if (new Date(ticket.created_at).getTime() >= since) entry.recent += 1;
+          usage.set(key, entry);
+        }
+        cats = cats.map((category) => {
+          const entry = usage.get(`${category.department}|${category.name}`) || { total: 0, recent: 0 };
+          return { ...category, tickets_total: entry.total, tickets_30d: entry.recent };
+        });
+      }
       return json(clean(cats));
     }
     // Ticket categories are managed in-app by Super Admin (either department)
@@ -7062,11 +8634,18 @@ async function handleRoute(request, { params }) {
           { error: `"${name}" already exists in ${department}` },
           409,
         );
+      const slaHours = b.sla_hours === undefined || b.sla_hours === null || b.sla_hours === "" ? null : Number(b.sla_hours);
+      if (slaHours !== null && (!Number.isFinite(slaHours) || slaHours <= 0 || slaHours > 2000))
+        return json({ error: "Invalid SLA hours" }, 400);
+      if (b.default_priority && !["Critical", "High", "Medium", "Low"].includes(b.default_priority))
+        return json({ error: "Invalid priority" }, 400);
       const doc = {
         id: uuidv4(),
         department,
         name,
         custom: true,
+        sla_hours: slaHours,
+        default_priority: b.default_priority || null,
         created_by: session.name,
         created_at: new Date(),
       };
@@ -7074,7 +8653,10 @@ async function handleRoute(request, { params }) {
       await audit(db, session, "category.create", "category", doc.id, {
         department,
         name,
+        sla_hours: slaHours,
+        default_priority: doc.default_priority,
       });
+      if (slaHours) await loadSlaSettings(db);
       return json(clean(doc));
     }
 
@@ -7131,6 +8713,50 @@ async function handleRoute(request, { params }) {
     // Used by the raise-ticket forms to map an entered serial number or GRP
     // code to the issued laptop and its vendor. Available to every signed-in
     // role: employees also raise laptop tickets.
+    // GRP code → affected employee's name and email for the raise-ticket form.
+    // Registered employees win; the laptop inventory register is the fallback
+    // directory. Only identity fields are returned — never the serial.
+    if (route === "/employees/lookup" && method === "GET") {
+      if (!["it", "admin", "super_admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      const raw = textValue(
+        new URL(request.url).searchParams.get("code"),
+        50,
+      ).trim();
+      const code = normalizedEmployeeCode(raw);
+      if (code.length < 3) return json({ match: null });
+      const user = await db.collection("users").findOne({
+        role: "employee",
+        active: { $ne: false },
+        employee_id: { $in: [...new Set([raw, raw.toUpperCase(), code])] },
+      });
+      if (user)
+        return json({
+          match: {
+            source: "user",
+            user_id: user.id,
+            name: user.name || "",
+            email: user.email || "",
+            employee_code: user.employee_id || raw,
+          },
+        });
+      await ensureLaptopAssets(db);
+      const asset = await db
+        .collection("laptop_assets")
+        .findOne({ employee_code: code });
+      return json({
+        match: asset
+          ? {
+              source: "directory",
+              user_id: null,
+              name: asset.name || "",
+              email: asset.email || "",
+              employee_code: asset.employee_code,
+            }
+          : null,
+      });
+    }
+
     if (route === "/assets/laptops" && method === "GET") {
       await ensureLaptopAssets(db);
       const url = new URL(request.url);
@@ -7325,8 +8951,28 @@ async function handleRoute(request, { params }) {
       }));
       rows.sort((a, b) => b.tickets_total - a.tickets_total || b.fleet_size - a.fleet_size);
       const mappedTickets = tickets.length - unmatchedTickets;
+      // Ticket-level rows for the vendor review (failure vs service split,
+      // per-brand failure rates, serials shared across users). Kept to the
+      // few fields that view needs.
+      const laptopTickets = tickets
+        .filter((ticket) => String(ticket.asset_serial_number || "").trim())
+        .map((ticket) => ({
+          id: ticket.id,
+          human_id: ticket.human_id,
+          title: ticket.title,
+          category: ticket.category || "",
+          status: ticket.status,
+          created_at: ticket.created_at,
+          resolved_at: ticket.resolved_at || ticket.resolution?.resolved_date || null,
+          sla_resolution_due: ticket.sla_resolution_due || null,
+          serial: String(ticket.asset_serial_number).trim(),
+          brand: ticket.asset_brand || "",
+          vendor: ticket.asset_vendor || null,
+          user: ticket.issue_user_name || ticket.raised_for_name || ticket.raised_by_name || "",
+        }));
       return json({
         vendors: clean(rows),
+        laptop_tickets: laptopTickets,
         totals: {
           fleet_size: assets.length,
           mapped_tickets: mappedTickets,
@@ -7503,11 +9149,15 @@ async function handleRoute(request, { params }) {
           : failedSections.length
             ? "degraded"
             : "online";
+      // The security scope only reads log endpoints, so a failure there says
+      // nothing about whether the firewall is up (it once opened a false outage).
       try {
-        await recordFirewallHealth(db, profile, operationalState, {
-          successfulSections: successfulSectionCount,
-          failedSections,
-        });
+        if (scope !== "security")
+          await recordFirewallHealth(db, profile, operationalState, {
+            successfulSections: successfulSectionCount,
+            failedSections,
+            sectionErrors: { ...errors, ...threat_errors },
+          });
       } catch (error) {
         console.error("Firewall health tracking failed:", error);
       }
@@ -7575,9 +9225,28 @@ async function handleRoute(request, { params }) {
         // monitor and the manual /firewall/archive/sync already persist exactly
         // these rows via syncFirewallArchiveSnapshot, so nothing is lost.
       }
+      let security_summary;
+      if (scope === "security" && sections.events) {
+        security_summary = summarizeFirewallSecurity(sections);
+        const eventRows = firewallRows(sections.events);
+        if (eventRows.length > SECURITY_EVENT_ROWS_SENT) {
+          const newest = [...eventRows]
+            .sort((a, b) => (firewallEventTime(b) || 0) - (firewallEventTime(a) || 0))
+            .slice(0, SECURITY_EVENT_ROWS_SENT);
+          if (Array.isArray(sections.events)) sections.events = newest;
+          else if (Array.isArray(sections.events.results))
+            sections.events = { ...sections.events, results: newest };
+          section_meta.events = {
+            ...(section_meta.events || {}),
+            rows_sent: newest.length,
+            rows_summarised: eventRows.length,
+          };
+        }
+      }
       const payload = {
         configured: true,
         connected: successfulSectionCount > 0,
+        ...(security_summary ? { security_summary } : {}),
         operational_state: operationalState,
         id: profile.id,
         label: profile.label,
@@ -8453,6 +10122,137 @@ async function handleRoute(request, { params }) {
       return json({ ok: true });
     }
 
+    // ---- INCIDENT REPORTS ----
+    // IT members log infrastructure incidents (issue, RCA, impact, action,
+    // TAT, preventive action); Super Admin reviews them on the dashboard.
+    if (seg[0] === "incident-reports") {
+      if (!["it", "super_admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      const collection = db.collection("incident_reports");
+      const locationNames = new Set(
+        (await db.collection("locations").find({}).toArray())
+          .map((row) => row.name)
+          .filter((name) => name && name !== "None"),
+      );
+      const readReport = (b) => {
+        const occurredAt = new Date(b.occurred_at);
+        const minutes = Number(b.resolution_time_minutes);
+        const report = {
+          issue: textValue(b.issue, 300),
+          category: textValue(b.category, 60),
+          location: textValue(b.location, 120),
+          occurred_at: occurredAt,
+          root_cause: textValue(b.root_cause, 4000),
+          impact: textValue(b.impact, 4000),
+          resolution: textValue(b.resolution, 4000),
+          resolution_time_minutes:
+            b.resolution_time_minutes === "" || b.resolution_time_minutes == null
+              ? null
+              : minutes,
+          status: INCIDENT_STATUSES.includes(b.status) ? b.status : "Resolved",
+          key_achievement: textValue(b.key_achievement, 4000),
+          preventive_action: textValue(b.preventive_action, 4000),
+        };
+        if (!report.issue) return { error: "Issue is required" };
+        if (!INCIDENT_CATEGORIES.includes(report.category))
+          return { error: "Select the incident category" };
+        if (!locationNames.has(report.location))
+          return { error: "Select the location / floor where it happened" };
+        if (Number.isNaN(occurredAt.getTime()))
+          return { error: "Enter a valid incident date and time" };
+        if (occurredAt > new Date(Date.now() + 5 * 60000))
+          return { error: "Incident date and time cannot be in the future" };
+        if (!report.root_cause) return { error: "Root cause is required" };
+        if (!report.impact) return { error: "Impact is required" };
+        if (!report.resolution)
+          return { error: "Resolution / action taken is required" };
+        if (
+          report.resolution_time_minutes !== null &&
+          (!Number.isInteger(minutes) || minutes < 0 || minutes > 525600)
+        )
+          return { error: "Resolution time must be a whole number of minutes" };
+        if (report.status === "Resolved" && report.resolution_time_minutes === null)
+          return { error: "Resolution time is required for a resolved incident" };
+        return { report };
+      };
+
+      if (!seg[1] && method === "GET") {
+        const reports = await collection
+          .find({})
+          .sort({ occurred_at: -1 })
+          .toArray();
+        return json({
+          reports: clean(reports),
+          statuses: INCIDENT_STATUSES,
+          categories: INCIDENT_CATEGORIES,
+          locations: [...locationNames].sort(),
+        });
+      }
+      if (!seg[1] && method === "POST") {
+        if (session.role !== "it")
+          return json({ error: "Only IT members can report incidents" }, 403);
+        const { report, error } = readReport(await request.json());
+        if (error) return json({ error }, 400);
+        const now = new Date();
+        const doc = {
+          id: uuidv4(),
+          ...report,
+          reported_by_id: session.id,
+          reported_by: session.name,
+          created_at: now,
+          updated_at: now,
+        };
+        await collection.insertOne(doc);
+        const superAdmins = await db
+          .collection("users")
+          .find({ ...roleMemberFilter("super_admin"), active: { $ne: false } })
+          .toArray();
+        await notify(
+          db,
+          superAdmins.map((admin) => admin.id),
+          `New IT incident report from ${session.name}: ${doc.issue} (${doc.status})`,
+          null,
+          "general",
+        );
+        await audit(db, session, "incident.report", "incident_report", doc.id, {
+          issue: doc.issue,
+          status: doc.status,
+        });
+        return json(clean(doc));
+      }
+      if (seg[1] && method === "PATCH") {
+        const existing = await collection.findOne({ id: seg[1] });
+        if (!existing) return json({ error: "Incident report not found" }, 404);
+        if (session.role !== "super_admin" && existing.reported_by_id !== session.id)
+          return json({ error: "You can only edit incidents you reported" }, 403);
+        const { report, error } = readReport(await request.json());
+        if (error) return json({ error }, 400);
+        const update = {
+          ...report,
+          updated_at: new Date(),
+          updated_by: session.name,
+        };
+        await collection.updateOne({ id: seg[1] }, { $set: update });
+        await audit(db, session, "incident.update", "incident_report", seg[1], {
+          issue: report.issue,
+          status: report.status,
+        });
+        return json(clean({ ...existing, ...update }));
+      }
+      if (seg[1] && method === "DELETE") {
+        if (session.role !== "super_admin")
+          return json({ error: "Only Super Admin can delete incident reports" }, 403);
+        const existing = await collection.findOne({ id: seg[1] });
+        if (!existing) return json({ error: "Incident report not found" }, 404);
+        await collection.deleteOne({ id: seg[1] });
+        await audit(db, session, "incident.delete", "incident_report", seg[1], {
+          issue: existing.issue,
+        });
+        return json({ ok: true });
+      }
+      return json({ error: "Not found" }, 404);
+    }
+
     // ---- APPROVALS: joined request feed ----
     if (route === "/approvals" && method === "GET") {
       if (!["it", "admin", "super_admin"].includes(session.role))
@@ -8742,6 +10542,7 @@ async function handleRoute(request, { params }) {
           member_name: mUser.name,
           email: mUser.email,
           location: mUser.location,
+          is_team_head: Boolean(mUser.is_team_head),
           assigned: mt.length,
           open: openCount,
           resolved: resolvedCount,
@@ -8992,7 +10793,7 @@ async function handleRoute(request, { params }) {
       const id = uuidv4();
       const prefix = department === "Admin" ? "ADM" : "IT";
       const hid = await humanId(db, prefix);
-      const priority = b.priority || "Medium";
+      const priority = b.priority || validCategory.default_priority || "Medium";
       if (!["Critical", "High", "Medium", "Low"].includes(priority))
         return json({ error: "Invalid priority" }, 400);
       const pendingTicketAttachments = await ownedPendingAttachments(
@@ -9004,7 +10805,7 @@ async function handleRoute(request, { params }) {
         session.role !== "employee" && b.assignee_id
           ? await db.collection("users").findOne({
               id: b.assignee_id,
-              role: department === "Admin" ? "admin" : "it",
+              ...roleMemberFilter(department === "Admin" ? "admin" : "it"),
               active: { $ne: false },
             })
           : null;
@@ -9117,17 +10918,16 @@ async function handleRoute(request, { params }) {
         statusTimestamps.assigned = now;
         statusTimestamps.acknowledged = now;
       }
-      // Laptop/vendor mapping: an explicitly entered serial number always maps
-      // the ticket to a laptop; for laptop-related categories the affected
-      // member's GRP code or email resolves the issued laptop automatically.
-      const enteredSerial = textValue(b.asset_serial_number, 100);
+      // Laptop/vendor mapping comes only from a serial number the IT team
+      // enters by hand. The GRP code identifies the affected employee (name
+      // and email) but never auto-fills the serial.
+      const enteredSerial =
+        session.role === "employee" ? "" : textValue(b.asset_serial_number, 100);
       let laptopFields = {};
-      if (enteredSerial || isLaptopCategory(category)) {
+      if (enteredSerial) {
         await ensureLaptopAssets(db);
         const { asset, matchedBy } = await findLaptopAsset(db, {
           serial: enteredSerial,
-          employeeCode: issueEmployeeCode,
-          email: issueUserEmail,
         });
         laptopFields = laptopTicketFields(asset, matchedBy, enteredSerial);
       }
@@ -9157,6 +10957,7 @@ async function handleRoute(request, { params }) {
         issue_user_role: issueUser?.role || null,
         acknowledgement_required: acknowledgementRequired,
         location,
+        seat_number: textValue(b.seat_number, 40),
         routing_site: routingSite,
         routed_team: routingSite ? `${department}:${routingSite}` : department,
         allocation_status: effectiveAssignee ? "allocated" : "unallocated",
@@ -9180,7 +10981,7 @@ async function handleRoute(request, { params }) {
         ...laptopFields,
         approval_required: false,
         legacy_id: null,
-        ...slaDates(department, priority, now),
+        ...slaDates(department, priority, now, category),
         created_at: now,
         updated_at: now,
         resolution: null,
@@ -9283,11 +11084,69 @@ async function handleRoute(request, { params }) {
         detail.history = clean(history);
         detail.comments = clean(comments);
         detail.approval = session.role === "employee" ? null : clean(approval);
+        detail.remarks =
+          session.role === "employee"
+            ? []
+            : clean(
+                await db
+                  .collection("ticket_remarks")
+                  .find({ ticket_id: ticketId })
+                  .sort({ date: -1, created_at: -1 })
+                  .toArray(),
+              );
         return json(detail);
       }
 
       // staff-only mutations
       const isStaff = ["it", "admin", "super_admin"].includes(session.role);
+
+      // Daily remark: one progress note per member per ticket per IST day
+      // (saving again the same day updates it). The latest one is mirrored
+      // onto the ticket so boards can show it without another request.
+      if (seg[2] === "remarks" && method === "POST") {
+        const teamRole = ticket.department === "Admin" ? "admin" : "it";
+        if (session.role !== "super_admin" && session.role !== teamRole)
+          return json({ error: "Only the ticket's team can add daily remarks" }, 403);
+        if (["Closed", "Cancelled"].includes(ticket.status))
+          return json({ error: "Closed tickets cannot take new remarks" }, 409);
+        const b = await request.json();
+        const remark = textValue(b.remark, 2000);
+        if (!remark) return json({ error: "Remark cannot be empty" }, 400);
+        const date = kraDateKey();
+        const now = new Date();
+        const remarks = db.collection("ticket_remarks");
+        const existing = await remarks.findOne({ ticket_id: ticketId, by_id: session.id, date });
+        let saved;
+        if (existing) {
+          await remarks.updateOne({ id: existing.id }, { $set: { remark, updated_at: now } });
+          saved = { ...existing, remark, updated_at: now };
+        } else {
+          saved = {
+            id: uuidv4(),
+            ticket_id: ticketId,
+            ticket_human_id: ticket.human_id,
+            department: ticket.department,
+            date,
+            remark,
+            by_id: session.id,
+            by_name: session.name,
+            created_at: now,
+            updated_at: now,
+          };
+          await remarks.insertOne(saved);
+        }
+        await db.collection("tickets").updateOne(
+          { id: ticketId },
+          {
+            $set: {
+              last_remark: { date, remark, by_id: session.id, by_name: session.name, at: now },
+              remark_count: await remarks.countDocuments({ ticket_id: ticketId }),
+            },
+          },
+        );
+        await addHistory(db, ticketId, "remark", session, remark, null, null);
+        return json(clean(saved));
+      }
 
       // DELETE — remove a mistakenly raised ticket and its trail entirely.
       if (seg.length === 2 && method === "DELETE") {
@@ -9299,6 +11158,7 @@ async function handleRoute(request, { params }) {
         await db.collection("tickets").deleteOne({ id: ticketId });
         await Promise.all([
           db.collection("history").deleteMany({ ticket_id: ticketId }),
+          db.collection("ticket_remarks").deleteMany({ ticket_id: ticketId }),
           db.collection("comments").deleteMany({ ticket_id: ticketId }),
           db.collection("approvals").deleteMany({ ticket_id: ticketId }),
           db.collection("notifications").deleteMany({ ticket_id: ticketId }),
@@ -9388,7 +11248,7 @@ async function handleRoute(request, { params }) {
           const u = b.assignee_id
             ? await db.collection("users").findOne({
                 id: b.assignee_id,
-                role: teamRole,
+                ...roleMemberFilter(teamRole),
                 active: { $ne: false },
               })
             : null;
@@ -9467,9 +11327,17 @@ async function handleRoute(request, { params }) {
           if (!["Critical", "High", "Medium", "Low"].includes(b.priority))
             return json({ error: "Invalid priority" }, 400);
           set.priority = b.priority;
-          const sla = slaDates(ticket.department, b.priority, raisedAt);
+          const sla = slaDates(ticket.department, b.priority, raisedAt, ticket.category);
           set.sla_response_due = sla.sla_response_due;
-          set.sla_resolution_due = sla.sla_resolution_due;
+          if (ticket.sla_paused_at) {
+            // Paused for an approval: re-base the remembered remainder instead
+            // of re-arming the live deadline.
+            set.sla_resolution_due_before_pause = sla.sla_resolution_due;
+            set.sla_paused_remaining_hours = workingHoursBetween(
+              ticket.sla_paused_at,
+              sla.sla_resolution_due,
+            );
+          } else set.sla_resolution_due = sla.sla_resolution_due;
           set.sla_clock_started_at = sla.sla_clock_started_at;
           set.sla_policy = sla.sla_policy;
           await addHistory(
@@ -9556,6 +11424,8 @@ async function handleRoute(request, { params }) {
         if (b.status && b.status !== ticket.status) {
           if (!STATUSES.includes(b.status))
             return json({ error: "Invalid status" }, 400);
+          if (b.status === "Resolved" && !b.resolution)
+            return json({ error: "Add a resolution to mark the ticket resolved" }, 400);
           // block execution before approval
           const executionStatuses = ["In Progress", "Closed"];
           if (
@@ -9611,6 +11481,15 @@ async function handleRoute(request, { params }) {
           if (b.status === "Closed") {
             markResolved();
             markClosed();
+            if (ticket.status === "Resolved")
+              set.confirmation = {
+                ...(ticket.confirmation || {}),
+                required: true,
+                confirmed: false,
+                closed_without_ack: true,
+                at: now,
+                by: session.name,
+              };
           }
           await addHistory(
             db,
@@ -9654,14 +11533,22 @@ async function handleRoute(request, { params }) {
             summary,
             action_taken: textValue(b.resolution.action_taken, 5000),
             root_cause: textValue(b.resolution.root_cause, 5000),
+            impact: textValue(b.resolution.impact, 5000),
+            key_achievement: textValue(b.resolution.key_achievement, 5000),
+            preventive_action: textValue(b.resolution.preventive_action, 5000),
             resolved_by: session.name,
             resolved_date: now,
           };
-          const finalStatus = "Closed";
+          // Employee-raised tickets wait in Resolved for the employee to
+          // acknowledge the fix; internal tickets close straight away.
+          const awaitingAck = acknowledgementRequired && b.status !== "Closed";
+          const finalStatus = awaitingAck ? "Resolved" : "Closed";
           set.status = finalStatus;
           markAcknowledged();
           markResolved();
-          markClosed({ automatic: true });
+          if (awaitingAck) {
+            set.confirmation = { required: true, confirmed: false, requested_at: now };
+          } else markClosed({ automatic: true });
           if (b.status !== "Closed")
             await addHistory(
               db,
@@ -9675,7 +11562,9 @@ async function handleRoute(request, { params }) {
           await notify(
             db,
             requesterId(ticket),
-            `Ticket ${ticket.human_id} resolved and closed`,
+            awaitingAck
+              ? `Ticket ${ticket.human_id} resolved — please acknowledge the resolution to close it`
+              : `Ticket ${ticket.human_id} resolved and closed`,
             ticket,
           );
         }
@@ -9856,8 +11745,9 @@ async function handleRoute(request, { params }) {
         await notify(
           db,
           ticket.assignee_id,
-          `Ticket ${ticket.human_id} confirmed & closed`,
+          `Ticket ${ticket.human_id} resolution acknowledged by ${session.name} — ticket closed${rating ? ` · rated ${rating}/5` : ""}`,
           ticket,
+          "resolution",
         );
         await audit(db, session, "ticket.confirm", "ticket", ticketId, b);
         try {
@@ -9984,9 +11874,15 @@ async function handleRoute(request, { params }) {
           ticket.status,
           "Pending Super Admin Approval",
         );
+        if (slaAutomation.pause_on_approval)
+          await pauseTicketSla(
+            db,
+            await db.collection("tickets").findOne({ id: ticketId }),
+            approvalNow,
+          );
         const supers = await db
           .collection("users")
-          .find({ role: "super_admin", active: { $ne: false } })
+          .find({ ...roleMemberFilter("super_admin"), active: { $ne: false } })
           .toArray();
         await notify(
           db,
@@ -10089,6 +11985,13 @@ async function handleRoute(request, { params }) {
           ticket.status,
           m.ticket,
         );
+        // Final decisions restart the SLA clock; hold/clarify keep waiting.
+        if (["approve", "partial", "reject"].includes(decision))
+          await resumeTicketSla(
+            db,
+            await db.collection("tickets").findOne({ id: ticketId }),
+            decisionNow,
+          );
         await notify(
           db,
           ticket.assignee_id,
@@ -10336,6 +12239,18 @@ async function handleRoute(request, { params }) {
         return json({ error: "Forbidden" }, 403);
       }
       const lists = await db.collection("member_checklists").find(q).toArray();
+      const reasons = lists.length
+        ? await db
+            .collection("kra_escalations")
+            .find({ checklist_id: { $in: lists.map((l) => l.id) } })
+            .toArray()
+        : [];
+      const heads = lists.length
+        ? await db
+            .collection("users")
+            .find({ is_team_head: true, active: { $ne: false } })
+            .toArray()
+        : [];
       // attach today's submission for member view
       const out = [];
       for (const l of lists) {
@@ -10355,6 +12270,19 @@ async function handleRoute(request, { params }) {
           overdue,
           today_status: overdue ? "Issue" : sub?.status || "Not submitted",
           today_submission: sub ? clean(sub) : null,
+          today,
+          due_today: kraRunsOnDate(l, today),
+          due_item_keys: kraItemsDueOn(l, today).map((item) => item.key),
+          reports_to: heads
+            .filter((h) => h.role === l.member_role && h.id !== l.member_id)
+            .map((h) => h.name),
+          missed_reasons: reasons
+            .filter((r) => r.checklist_id === l.id && r.member_reason)
+            .map((r) => ({
+              date: r.date,
+              reason: r.member_reason,
+              at: r.member_reason_at,
+            })),
         });
       }
       return json(out);
@@ -10363,7 +12291,9 @@ async function handleRoute(request, { params }) {
       route === "/member-checklists/import-preview" &&
       method === "POST"
     ) {
-      if (session.role !== "super_admin")
+      // Super Admin imports on behalf of a member; IT/Admin import their own
+      // daily checklist from the "My Checklist" page.
+      if (!["super_admin", "it", "admin"].includes(session.role))
         return json({ error: "Forbidden" }, 403);
       const form = await request.formData();
       return json(await tasksFromSpreadsheet(form.get("file")));
@@ -10372,7 +12302,7 @@ async function handleRoute(request, { params }) {
       if (!["super_admin", "it", "admin"].includes(session.role))
         return json({ error: "Forbidden" }, 403);
       const b = await request.json();
-      // Members define their own daily KRA; only a Super Admin can create
+      // Members define their own daily checklist; only a Super Admin can create
       // one on behalf of somebody else.
       const targetMemberId =
         session.role === "super_admin" ? b.member_id : session.id;
@@ -10381,11 +12311,11 @@ async function handleRoute(request, { params }) {
         .findOne({ id: targetMemberId });
       if (!member) return json({ error: "Member not found" }, 400);
       if (!["it", "admin"].includes(member.role))
-        return json({ error: "KRA can be assigned only to IT or Admin members" }, 400);
-      if (
-        !Array.isArray(b.items) ||
-        !b.items.some((item) => textValue(item, 300))
-      )
+        return json({ error: "Checklist can be assigned only to IT or Admin members" }, 400);
+      const createdItems = Array.isArray(b.items)
+        ? normalizeKraItems(b.items)
+        : [];
+      if (!createdItems.length)
         return json({ error: "Add at least one daily work item" }, 400);
       const doc = {
         id: uuidv4(),
@@ -10401,14 +12331,7 @@ async function handleRoute(request, { params }) {
             : "Daily",
         cutoff: KRA_CUTOFF,
         active: true,
-        items: (b.items || [])
-          .filter(Boolean)
-          .slice(0, 200)
-          .map((label, i) => ({
-            key: `mc_${i}`,
-            label: textValue(label, 300),
-          }))
-          .filter((item) => item.label),
+        items: createdItems,
         created_by: session.name,
         created_at: new Date(),
       };
@@ -10429,10 +12352,400 @@ async function handleRoute(request, { params }) {
       );
       return json(clean(doc));
     }
-    if (route === "/member-checklists/remind-pending" && method === "POST") {
-      if (session.role !== "super_admin")
+    // Team average checklist submission rate for a date range (My Checklist compares a
+    // member against their own team). Working days only count from the day
+    // each checklist was set up; today counts once submitted or past the cut-off.
+    // Checklist report for a date range: one row per member per working day,
+    // plus task-level detail. `scope=team` is for IT/Admin team heads (their
+    // whole team) and Super Admin; `scope=me` is any member's own record.
+    // `format=xlsx` downloads it as an Excel workbook.
+    if (route === "/member-checklists/report" && method === "GET") {
+      const p = new URL(request.url).searchParams;
+      const scope = p.get("scope") === "team" ? "team" : "me";
+      const head = ["it", "admin"].includes(session.role) && sessionUser?.is_team_head;
+      if (scope === "team" && !head && session.role !== "super_admin")
+        return json({ error: "Only team heads can view the team checklist report" }, 403);
+      if (scope === "me" && !["it", "admin"].includes(session.role))
         return json({ error: "Forbidden" }, 403);
-      const today = new Date().toISOString().slice(0, 10);
+      const isDateKey = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || "");
+      const today = kraDateKey();
+      const to = isDateKey(p.get("to")) && p.get("to") < today ? p.get("to") : today;
+      const from = isDateKey(p.get("from")) && p.get("from") <= to ? p.get("from") : `${to.slice(0, 7)}-01`;
+      const dayMs = 86400000;
+      if ((Date.parse(to) - Date.parse(from)) / dayMs > 366)
+        return json({ error: "Choose a range of one year or less" }, 400);
+      const role =
+        session.role === "super_admin"
+          ? ["it", "admin"].includes(p.get("role")) ? p.get("role") : "it"
+          : session.role;
+      const listFilter =
+        scope === "team" ? { active: true, member_role: role } : { member_id: session.id };
+      const lists = (await db.collection("member_checklists").find(listFilter).toArray())
+        .sort((a, b) => String(a.member_name).localeCompare(String(b.member_name)));
+      const listIds = lists.map((list) => list.id);
+      const [submissions, escalations] = listIds.length
+        ? await Promise.all([
+            db
+              .collection("member_checklist_submissions")
+              .find({ checklist_id: { $in: listIds }, date: { $gte: from, $lte: to } })
+              .toArray(),
+            db
+              .collection("kra_escalations")
+              .find({ checklist_id: { $in: listIds }, date: { $gte: from, $lte: to } })
+              .toArray(),
+          ])
+        : [[], []];
+      const subByDay = new Map(submissions.map((s) => [`${s.checklist_id}|${s.date}`, s]));
+      const reasonByDay = new Map(
+        escalations
+          .filter((e) => e.member_reason)
+          .map((e) => [`${e.checklist_id}|${e.date}`, e.member_reason]),
+      );
+      const nextDay = (date) =>
+        new Date(Date.parse(`${date}T00:00:00Z`) + dayMs).toISOString().slice(0, 10);
+      const now = new Date();
+      const days = [];
+      const tasks = [];
+      const summary = new Map();
+      for (const list of lists) {
+        const start = kraDateKey(list.created_at || now);
+        const row = summary.get(list.member_id) || {
+          member_id: list.member_id,
+          member_name: list.member_name,
+          checklists: [],
+          working_days: 0,
+          submitted: 0,
+          completed: 0,
+          partial: 0,
+          late: 0,
+          missed: 0,
+          tasks_done: 0,
+          tasks_total: 0,
+        };
+        row.checklists.push(list.title);
+        summary.set(list.member_id, row);
+        for (let date = start > from ? start : from; date <= to; date = nextDay(date)) {
+          if (!kraRunsOnDate(list, date)) continue;
+          const sub = subByDay.get(`${list.id}|${date}`);
+          const deadline = kraDeadlineAt(date, list.cutoff || KRA_CUTOFF);
+          const pending = !sub && date === today && now <= deadline;
+          const status = sub
+            ? sub.late
+              ? "Late"
+              : kraSubmissionCompleted(list, sub)
+                ? "Completed"
+                : "Partial"
+            : pending
+              ? "Pending"
+              : "Missed";
+          if (!pending) row.working_days += 1;
+          if (sub) {
+            row.submitted += 1;
+            row.tasks_done += Number(sub.done_count || 0);
+            row.tasks_total += Number(sub.total || 0);
+          }
+          if (status === "Completed") row.completed += 1;
+          if (status === "Partial") row.partial += 1;
+          if (status === "Late") row.late += 1;
+          if (status === "Missed") row.missed += 1;
+          days.push({
+            member_id: list.member_id,
+            member_name: list.member_name,
+            checklist: list.title,
+            date,
+            status,
+            tasks_done: sub ? Number(sub.done_count || 0) : null,
+            tasks_total: sub ? Number(sub.total || 0) : kraItemsDueOn(list, date).length,
+            na_count: sub ? Number(sub.na_count || 0) : 0,
+            submitted_at: sub?.submitted_at || null,
+            first_entry_at: sub?.created_at || null,
+            remark: sub?.remark || "",
+            missed_reason: reasonByDay.get(`${list.id}|${date}`) || "",
+          });
+          for (const response of sub?.responses || [])
+            tasks.push({
+              member_name: list.member_name,
+              date,
+              checklist: list.title,
+              item: response.item,
+              result: response.na ? "N/A" : response.done ? "Done" : "Not done",
+              extra: response.extra ? "Yes" : "No",
+              remark: response.remark || "",
+            });
+        }
+      }
+      days.sort((a, b) => b.date.localeCompare(a.date) || a.member_name.localeCompare(b.member_name));
+      const members = [...summary.values()].map((row) => ({
+        ...row,
+        compliance: row.working_days
+          ? Math.round(((row.submitted - row.late) / row.working_days) * 100)
+          : null,
+      }));
+      if (p.get("format") !== "xlsx")
+        return json({ scope, role, from, to, today, members, days });
+
+      const stamp = (value) =>
+        value
+          ? new Intl.DateTimeFormat("en-GB", {
+              timeZone: KRA_TIME_ZONE,
+              day: "2-digit",
+              month: "short",
+              year: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: true,
+            }).format(new Date(value))
+          : "";
+      const workbook = new ExcelJS.Workbook();
+      workbook.creator = "Ethara Service Hub";
+      workbook.created = now;
+      const addSheet = (name, columns, rows) => {
+        const sheet = workbook.addWorksheet(name, { views: [{ state: "frozen", ySplit: 1 }] });
+        sheet.columns = columns.map(([header, key, width]) => ({ header, key, width }));
+        sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+        sheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF17171C" } };
+        rows.forEach((row) => sheet.addRow(row));
+        sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: columns.length } };
+        return sheet;
+      };
+      addSheet(
+        "Summary",
+        [
+          ["Member", "member_name", 26],
+          ["Checklist", "checklists", 30],
+          ["Working days", "working_days", 14],
+          ["Submitted", "submitted", 12],
+          ["Completed on time", "completed", 18],
+          ["Partial", "partial", 10],
+          ["Late", "late", 10],
+          ["Missed", "missed", 10],
+          ["Tasks done", "tasks_done", 12],
+          ["Tasks total", "tasks_total", 12],
+          ["On-time submission %", "compliance", 20],
+        ],
+        members.map((row) => ({
+          ...row,
+          checklists: row.checklists.join(", "),
+          compliance: row.compliance == null ? "—" : `${row.compliance}%`,
+        })),
+      );
+      const statusColor = { Completed: "FFE4F3EC", Partial: "FFFDF3DC", Late: "FFFDE7D2", Missed: "FFFDEAEA" };
+      const daily = addSheet(
+        "Daily log",
+        [
+          ["Date", "date", 12],
+          ["Member", "member_name", 26],
+          ["Checklist", "checklist", 28],
+          ["Status", "status", 12],
+          ["Tasks done", "tasks_done", 12],
+          ["Tasks total", "tasks_total", 12],
+          ["N/A", "na_count", 8],
+          ["First entry (IST)", "first_entry_at", 22],
+          ["Last update (IST)", "submitted_at", 22],
+          ["Remark", "remark", 40],
+          ["Missed-day reason", "missed_reason", 40],
+        ],
+        days.map((row) => ({
+          ...row,
+          tasks_done: row.tasks_done ?? "",
+          first_entry_at: stamp(row.first_entry_at),
+          submitted_at: stamp(row.submitted_at),
+        })),
+      );
+      daily.eachRow((row, index) => {
+        const fill = index > 1 && statusColor[row.getCell(4).value];
+        if (fill) row.getCell(4).fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } };
+      });
+      addSheet(
+        "Task detail",
+        [
+          ["Date", "date", 12],
+          ["Member", "member_name", 26],
+          ["Checklist", "checklist", 28],
+          ["Task", "item", 50],
+          ["Result", "result", 10],
+          ["Added that day", "extra", 14],
+          ["Remark", "remark", 40],
+        ],
+        tasks.sort((a, b) => b.date.localeCompare(a.date) || a.member_name.localeCompare(b.member_name)),
+      );
+      const buffer = await workbook.xlsx.writeBuffer();
+      const who = scope === "team" ? `${role === "admin" ? "admin" : "it"}-team` : "my";
+      return new NextResponse(buffer, {
+        status: 200,
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "Content-Disposition": `attachment; filename="${who}-checklist-report-${from}-to-${to}.xlsx"`,
+        },
+      });
+    }
+    if (route === "/member-checklists/team-compliance" && method === "GET") {
+      if (!["super_admin", "it", "admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      const p = new URL(request.url).searchParams;
+      const isDateKey = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || "");
+      const today = kraDateKey();
+      const from = isDateKey(p.get("from")) ? p.get("from") : `${today.slice(0, 7)}-01`;
+      const requestedTo = isDateKey(p.get("to")) ? p.get("to") : today;
+      const to = requestedTo > today ? today : requestedTo;
+      const role =
+        session.role === "super_admin"
+          ? ["it", "admin"].includes(p.get("role")) ? p.get("role") : "it"
+          : session.role;
+      const lists = await db
+        .collection("member_checklists")
+        .find({ active: true, member_role: role })
+        .toArray();
+      const submissions = lists.length
+        ? await db
+            .collection("member_checklist_submissions")
+            .find({
+              checklist_id: { $in: lists.map((list) => list.id) },
+              date: { $gte: from, $lte: to },
+            })
+            .toArray()
+        : [];
+      const submitted = new Set(
+        submissions.map((item) => `${item.checklist_id}|${item.date}`),
+      );
+      const now = new Date();
+      const nextDay = (date) => {
+        const [y, m, d] = date.split("-").map(Number);
+        return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+      };
+      let eligible = 0;
+      let done = 0;
+      const members = new Set();
+      for (const list of lists) {
+        const start = kraDateKey(list.created_at || now);
+        for (let date = start > from ? start : from; date <= to; date = nextDay(date)) {
+          if (!kraRunsOnDate(list, date)) continue;
+          const wasSubmitted = submitted.has(`${list.id}|${date}`);
+          if (date === today && !wasSubmitted && now <= kraDeadlineAt(date)) continue;
+          eligible += 1;
+          if (wasSubmitted) done += 1;
+          members.add(list.member_id);
+        }
+      }
+      return json({
+        role,
+        from,
+        to,
+        members: members.size,
+        eligible_days: eligible,
+        submitted_days: done,
+        rate: eligible ? Math.round((done / eligible) * 100) : null,
+      });
+    }
+    // A member explains a missed working day. Stored on the day's checklist
+    // escalation (created here if the cut-off sweep never ran for that day)
+    // and sent to the Super Admins and the member's team head.
+    if (
+      seg[0] === "member-checklists" &&
+      seg[1] &&
+      seg[2] === "missed-reason" &&
+      method === "POST"
+    ) {
+      if (!["it", "admin"].includes(session.role))
+        return json({ error: "Forbidden" }, 403);
+      const list = await db
+        .collection("member_checklists")
+        .findOne({ id: seg[1] });
+      if (!list) return json({ error: "Not found" }, 404);
+      if (list.member_id !== session.id)
+        return json({ error: "Forbidden" }, 403);
+      const b = await request.json();
+      const date = String(b.date || "");
+      const reason = textValue(b.reason, 1000);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
+        return json({ error: "Choose a valid day" }, 400);
+      if (!reason) return json({ error: "Add a short reason" }, 400);
+      const today = kraDateKey();
+      const deadline = kraDeadlineAt(date, list.cutoff || KRA_CUTOFF);
+      if (date > today || (date === today && new Date() <= deadline))
+        return json({ error: "This day hasn't been missed" }, 400);
+      if (date < kraDateKey(list.created_at || new Date()) || !kraRunsOnDate(list, date))
+        return json({ error: "No checklist was due on this day" }, 400);
+      const submission = await db
+        .collection("member_checklist_submissions")
+        .findOne({ checklist_id: list.id, date });
+      if (submission)
+        return json({ error: "This day already has a submission" }, 400);
+      const now = new Date();
+      const existing = await db
+        .collection("kra_escalations")
+        .findOne({ checklist_id: list.id, date });
+      if (existing) {
+        await db.collection("kra_escalations").updateOne(
+          { id: existing.id },
+          { $set: { member_reason: reason, member_reason_at: now } },
+        );
+      } else {
+        await db.collection("kra_escalations").insertOne({
+          id: `kra_${createHash("sha256").update(`${list.id}:${date}`).digest("hex")}`,
+          checklist_id: list.id,
+          checklist_title: list.title,
+          member_id: list.member_id,
+          member_name: list.member_name,
+          member_role: list.member_role,
+          date,
+          cutoff: KRA_CUTOFF,
+          deadline_at: deadline,
+          status: "not_submitted",
+          done_count: 0,
+          total: kraItemsDueOn(list, date).length,
+          member_reason: reason,
+          member_reason_at: now,
+          created_at: now,
+        });
+      }
+      const reviewers = await db
+        .collection("users")
+        .find({ active: { $ne: false } })
+        .toArray();
+      const recipients = reviewers
+        .filter(
+          (user) =>
+            user.id !== session.id &&
+            (user.role === "super_admin" ||
+              (user.role === list.member_role && user.is_team_head)),
+        )
+        .map((user) => user.id);
+      if (recipients.length)
+        await notify(
+          db,
+          recipients,
+          `${list.member_name} explained a missed checklist day (${date}): ${reason}`,
+          null,
+        );
+      await audit(
+        db,
+        session,
+        "member_checklist.missed_reason",
+        "member_checklist",
+        list.id,
+        { date },
+      );
+      return json({ ok: true, date, reason, at: now });
+    }
+    if (route === "/member-checklists/remind-pending" && method === "POST") {
+      // Team heads may remind their own team; Super Admin reminds anyone.
+      const remindingHead =
+        ["it", "admin"].includes(session.role) && sessionUser?.is_team_head;
+      if (session.role !== "super_admin" && !remindingHead)
+        return json({ error: "Forbidden" }, 403);
+      // Checklist days are IST calendar days (the same key the members submit
+      // against); a UTC key reminded the wrong day before 05:30 IST.
+      const today = kraDateKey();
+      let onlyMembers = null;
+      try {
+        const body = await request.json();
+        if (Array.isArray(body?.member_ids) && body.member_ids.length)
+          onlyMembers = new Set(body.member_ids.map(String));
+      } catch {
+        // No body: remind everyone pending.
+      }
       const lists = await db
         .collection("member_checklists")
         .find({ active: true })
@@ -10446,6 +12759,9 @@ async function handleRoute(request, { params }) {
       );
       const pendingByMember = new Map();
       for (const list of lists) {
+        if (onlyMembers && !onlyMembers.has(String(list.member_id))) continue;
+        if (remindingHead && list.member_role !== session.role) continue;
+        if (!kraRunsOnDate(list, today)) continue;
         if (!submittedIds.has(list.id))
           pendingByMember.set(
             list.member_id,
@@ -10456,7 +12772,7 @@ async function handleRoute(request, { params }) {
         await notify(
           db,
           memberId,
-          `Reminder: ${count} daily KRA checklist${count === 1 ? "" : "s"} pending for today`,
+          `Reminder: ${count} daily checklist${count === 1 ? "" : "s"} pending for today`,
           null,
         );
       }
@@ -10487,19 +12803,24 @@ async function handleRoute(request, { params }) {
       const b = await request.json();
       const date = kraDateKey();
       if (b.date && b.date !== date)
-        return json({ error: "KRA can only be submitted for today" }, 400);
+        return json({ error: "Checklist can only be submitted for today" }, 400);
       if (!Array.isArray(b.responses))
-        return json({ error: "KRA responses must be a list" }, 400);
-      const expectedItems = Array.isArray(list.items) ? list.items : [];
+        return json({ error: "Checklist responses must be a list" }, 400);
+      // Weekly items are only due on Mondays; anything else sent for them is
+      // ignored rather than rejected.
+      const allItems = Array.isArray(list.items) ? list.items : [];
+      const expectedItems = kraItemsDueOn(list, date);
       const submittedByItem = new Map();
       const extraFromResponses = [];
       for (const response of b.responses.slice(0, 200)) {
         if (!response || typeof response !== "object" || Array.isArray(response))
-          return json({ error: "Invalid KRA response" }, 400);
+          return json({ error: "Invalid checklist response" }, 400);
         const item = textValue(response.item, 300);
-        const matched = expectedItems.find(
+        const matchedAny = allItems.find(
           (expected) => expected.key === response.key || expected.label === item,
         );
+        if (matchedAny && !expectedItems.includes(matchedAny)) continue;
+        const matched = matchedAny;
         if (!matched) {
           // Ad-hoc work the member added for today rides along with the
           // standard responses; anything else unmatched is rejected.
@@ -10514,14 +12835,16 @@ async function handleRoute(request, { params }) {
             });
             continue;
           }
-          return json({ error: "A KRA response does not match this checklist" }, 400);
+          return json({ error: "A checklist response does not match this checklist" }, 400);
         }
         if (submittedByItem.has(matched.key))
-          return json({ error: "Duplicate KRA response" }, 400);
+          return json({ error: "Duplicate checklist response" }, 400);
+        const notApplicable = response.na === true;
         submittedByItem.set(matched.key, {
           key: matched.key,
           item: matched.label,
-          done: response.done === true,
+          done: !notApplicable && response.done === true,
+          na: notApplicable,
           remark: textValue(response.remark, 1000),
         });
       }
@@ -10534,7 +12857,7 @@ async function handleRoute(request, { params }) {
             remark: "",
           },
       );
-      // Additional ad-hoc work done today, beyond the constant daily KRA.
+      // Additional ad-hoc work done today, beyond the constant daily checklist.
       // Extras count toward the day's totals but never block completion.
       const extras = [
         ...extraFromResponses,
@@ -10550,17 +12873,29 @@ async function handleRoute(request, { params }) {
           self_added: true,
         }))
         .filter((entry) => entry.item);
+      const applicable = responses.filter((r) => !r.na);
+      if (!applicable.length && !extras.length)
+        return json({ error: "Nothing applicable to submit today" }, 400);
       const allResponses = [...responses, ...extras];
       const doneCount = allResponses.filter((r) => r.done).length;
+      const applicableDone = applicable.filter((r) => r.done).length;
       const now = new Date();
       const deadline = kraDeadlineAt(date, list.cutoff || KRA_CUTOFF);
       const late = Boolean(deadline && now > deadline);
+      // Items marked N/A today don't count against completion.
       const completed =
-        responses.length > 0 && responses.every((r) => r.done)
+        applicable.length > 0 && applicableDone === applicable.length;
       const status = late ? "Late" : completed ? "Completed" : "Partial";
       const existing = await db
         .collection("member_checklist_submissions")
         .findOne({ checklist_id: list.id, date });
+      // An on-time submission can be edited until the cut-off; after it the
+      // recorded day is final.
+      if (existing && late)
+        return json(
+          { error: "Today's checklist can no longer be changed after the 7:00 PM cut-off" },
+          400,
+        );
       const payload = {
         checklist_id: list.id,
         checklist_title: list.title,
@@ -10569,7 +12904,12 @@ async function handleRoute(request, { params }) {
         date,
         responses: allResponses,
         done_count: doneCount,
-        total: allResponses.length,
+        total: applicable.length + extras.length,
+        applicable_total: applicable.length,
+        applicable_done: applicableDone,
+        na_count: responses.length - applicable.length,
+        completed,
+        remark: textValue(b.remark, 1000),
         extra_count: extras.length,
         status,
         cutoff: KRA_CUTOFF,
@@ -10598,20 +12938,32 @@ async function handleRoute(request, { params }) {
         ok: true,
         status,
         done_count: doneCount,
-        total: allResponses.length,
+        total: applicable.length + extras.length,
+        applicable_total: applicable.length,
+        applicable_done: applicableDone,
         late,
+        submitted_at: now,
       });
     }
-    // Super Admin edits an existing member KRA: title, schedule, location and
-    // the task list itself. Mirrors the create route's validation.
+    // Super Admin edits an existing member checklist: title, schedule, location and
+    // the task list itself. Mirrors the create route's validation. IT/Admin
+    // members may update the title and task list of their own checklist (e.g. from
+    // an Excel/CSV upload on "My Checklist"); schedule, location and active state
+    // stay Super Admin-only.
     if (seg[0] === "member-checklists" && seg[1] && method === "PATCH") {
-      if (session.role !== "super_admin")
+      const isOwnerEdit = ["it", "admin"].includes(session.role);
+      if (session.role !== "super_admin" && !isOwnerEdit)
         return json({ error: "Forbidden" }, 403);
       const existing = await db
         .collection("member_checklists")
         .findOne({ id: seg[1] });
       if (!existing) return json({ error: "Checklist not found" }, 404);
-      const b = await request.json();
+      if (isOwnerEdit && existing.member_id !== session.id)
+        return json({ error: "Forbidden" }, 403);
+      const raw = await request.json();
+      const b = isOwnerEdit
+        ? { title: raw.title, items: raw.items }
+        : raw;
       const set = { updated_at: new Date(), updated_by: session.name };
 
       if (b.title !== undefined) {
@@ -10622,11 +12974,7 @@ async function handleRoute(request, { params }) {
       if (b.items !== undefined) {
         if (!Array.isArray(b.items))
           return json({ error: "Add at least one daily work item" }, 400);
-        const items = b.items
-          .filter(Boolean)
-          .slice(0, 200)
-          .map((label, i) => ({ key: `mc_${i}`, label: textValue(label, 300) }))
-          .filter((item) => item.label);
+        const items = normalizeKraItems(b.items, existing.items);
         if (!items.length)
           return json({ error: "Add at least one daily work item" }, 400);
         set.items = items;
@@ -10652,14 +13000,20 @@ async function handleRoute(request, { params }) {
         "member_checklist.update",
         "member_checklist",
         seg[1],
-        { member: existing.member_name, title: updated.title },
+        {
+          member: existing.member_name,
+          title: updated.title,
+          items: updated.items?.length || 0,
+          self_service: isOwnerEdit,
+        },
       );
-      await notify(
-        db,
-        existing.member_id,
-        `Your daily checklist was updated: ${updated.title}`,
-        null,
-      );
+      if (!isOwnerEdit)
+        await notify(
+          db,
+          existing.member_id,
+          `Your daily checklist was updated: ${updated.title}`,
+          null,
+        );
       return json(clean(updated));
     }
 
@@ -10674,24 +13028,57 @@ async function handleRoute(request, { params }) {
       const q = {};
       if (session.role === "super_admin") {
         if (p.get("member_id")) q.member_id = p.get("member_id");
+      } else if (
+        ["it", "admin"].includes(session.role) &&
+        sessionUser?.is_team_head &&
+        p.get("team") === "1"
+      ) {
+        // Team heads review their own team's checklist records.
+        const teamUsers = await db
+          .collection("users")
+          .find({ role: session.role })
+          .toArray();
+        q.member_id = { $in: teamUsers.map((user) => user.id) };
       } else if (["it", "admin"].includes(session.role)) {
         q.member_id = session.id; // members see only their own records
       } else {
         return json({ error: "Forbidden" }, 403);
       }
       if (p.get("date")) q.date = p.get("date");
+      // Optional inclusive date range. The Super Admin dashboard reports checklist
+      // activity across its selected period, which a single exact date cannot
+      // serve. `date` is stored as a YYYY-MM-DD key, so lexical comparison is
+      // also chronological.
+      const rangeFrom = p.get("from");
+      const rangeTo = p.get("to");
+      const isDateKey = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || "");
+      if (!q.date && (isDateKey(rangeFrom) || isDateKey(rangeTo))) {
+        q.date = {
+          ...(isDateKey(rangeFrom) ? { $gte: rangeFrom } : {}),
+          ...(isDateKey(rangeTo) ? { $lte: rangeTo } : {}),
+        };
+      }
+      // Callers that need more than a single day's listing (the Super Admin
+      // dashboard reports checklist activity across its whole period) ask for a
+      // larger page explicitly. The default stays at 200 for existing callers.
+      const parsedLimit = Number.parseInt(p.get("limit") || "", 10);
+      const limit = Number.isFinite(parsedLimit)
+        ? Math.min(5000, Math.max(1, parsedLimit))
+        : 200;
       const items = await db
         .collection("member_checklist_submissions")
         .find(q)
         .sort({ date: -1, submitted_at: -1 })
-        .limit(200)
+        .limit(limit)
         .toArray();
       return json(clean(items));
     }
 
-    // ---- DAILY KRA COMPLIANCE (Super Admin dashboard) ----
+    // ---- DAILY checklist COMPLIANCE (Super Admin dashboard) ----
     if (route === "/reports/daily-kra" && method === "GET") {
-      if (session.role !== "super_admin")
+      const reportingHead =
+        ["it", "admin"].includes(session.role) && sessionUser?.is_team_head;
+      if (session.role !== "super_admin" && !reportingHead)
         return json({ error: "Forbidden" }, 403);
       const requestedDate = new URL(request.url).searchParams.get("date");
       const date = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate || "")
@@ -10713,6 +13100,7 @@ async function handleRoute(request, { params }) {
       );
       const byMember = {};
       for (const l of lists) {
+        if (reportingHead && l.member_role !== session.role) continue;
         if (!kraRunsOnDate(l, date)) continue;
         const m = (byMember[l.member_id] = byMember[l.member_id] || {
           member_id: l.member_id,
@@ -10725,11 +13113,15 @@ async function handleRoute(request, { params }) {
           issue_lists: 0,
         });
         m.total_lists += 1;
-        m.total_items += (l.items || []).length;
         const submission = byChecklist.get(l.id);
+        m.total_items += Number(
+          submission?.applicable_total ?? kraItemsDueOn(l, date).length,
+        );
         if (submission) {
           m.submitted_lists += 1;
-          m.done_items += Number(submission.done_count || 0);
+          m.done_items += Number(
+            submission.applicable_done ?? submission.done_count ?? 0,
+          );
         }
         const deadline = kraDeadlineAt(date, l.cutoff || KRA_CUTOFF);
         const completedOnTime =
@@ -10829,8 +13221,9 @@ async function handleRoute(request, { params }) {
         ];
       }
       const parsedLimit = Number.parseInt(p.get("limit") || "300", 10);
+      // The Audit logs view reports on a whole period (up to 30 days).
       const limit = Number.isFinite(parsedLimit)
-        ? Math.min(1000, Math.max(1, parsedLimit))
+        ? Math.min(5000, Math.max(1, parsedLimit))
         : 300;
       const items = await db
         .collection("audit_logs")

@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Checkbox } from '@/components/ui/checkbox'
 import { toast } from 'sonner'
-import { ClipboardCheck, CheckCircle2, Loader2, Plus, X } from 'lucide-react'
+import { ClipboardCheck, CheckCircle2, Loader2, Plus, X, FileSpreadsheet } from 'lucide-react'
 
 const isExtra = (response) =>
   response?.extra === true || String(response?.key || '').startsWith('extra_')
@@ -87,17 +87,49 @@ function ChecklistCard({ list, onSubmitted }) {
 
 function CreateOwnKra({ onCreated, collapsible = false }) {
   const [openForm, setOpenForm] = useState(!collapsible)
-  const [title, setTitle] = useState('My Daily KRA')
+  const [title, setTitle] = useState('My Daily Checklist')
   const [items, setItems] = useState('')
   const [busy, setBusy] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [importedFile, setImportedFile] = useState('')
+
+  const importSpreadsheet = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    const data = new FormData()
+    data.append('file', file)
+    setImporting(true)
+    try {
+      const result = await api('/member-checklists/import-preview', { method: 'POST', body: data, timeout: 30000 })
+      // Merge with anything already typed, dropping blank/duplicate lines.
+      setItems((current) => {
+        const existing = current.split('\n').map((l) => l.trim()).filter(Boolean)
+        const merged = [...new Set([...existing, ...(result.items || [])])]
+        return merged.join('\n')
+      })
+      if (!title.trim() || title === 'My Daily Checklist') {
+        const derived = file.name.replace(/\.(xlsx|csv)$/i, '').replace(/[_-]+/g, ' ').trim()
+        if (derived) setTitle(derived)
+      }
+      setImportedFile(file.name)
+      toast.success(`${result.rows_imported} daily work items imported`)
+    } catch (e) {
+      toast.error(e.message)
+    } finally {
+      setImporting(false)
+    }
+  }
+
   const submit = async () => {
     const list = items.split('\n').map((line) => line.trim()).filter(Boolean)
     if (!list.length) return toast.error('Add at least one daily work item (one per line)')
     setBusy(true)
     try {
       await api('/member-checklists', { method: 'POST', body: { title, items: list } })
-      toast.success('Daily KRA created')
+      toast.success('Daily checklist created')
       setItems('')
+      setImportedFile('')
       if (collapsible) setOpenForm(false)
       onCreated?.()
     } catch (e) { toast.error(e.message) } finally { setBusy(false) }
@@ -105,22 +137,51 @@ function CreateOwnKra({ onCreated, collapsible = false }) {
   if (!openForm)
     return (
       <div className="flex justify-end">
-        <Button variant="outline" size="sm" onClick={() => setOpenForm(true)}><Plus className="h-4 w-4 mr-1" />Add my own KRA</Button>
+        <Button variant="outline" size="sm" onClick={() => setOpenForm(true)}><Plus className="h-4 w-4 mr-1" />Add my own checklist</Button>
       </div>
     )
   return (
     <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base">Set up my daily KRA</CardTitle>
+          <CardTitle className="text-base">Set up my daily checklist</CardTitle>
           {collapsible && <button onClick={() => setOpenForm(false)} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>}
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm text-muted-foreground">Define the work you do every day. These items stay constant each day; you can also log additional work on any day when submitting.</p>
         <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" />
+        <div className="rounded-xl border border-dashed border-[#CFC8F8] bg-[#FAF9FF] p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <span className="grid h-10 w-10 place-items-center rounded-lg bg-[#ECE9FF] text-[#6C5CE7]">
+              <FileSpreadsheet className="h-5 w-5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold">Import daily tasks from Excel or CSV</p>
+              <p className="text-xs text-muted-foreground">
+                Upload .xlsx or .csv with a Task, Daily Work, Activity or Responsibility column. Rows are added to the list below.
+              </p>
+              {importedFile && (
+                <p className="mt-1 truncate text-xs font-medium text-[#6C5CE7]">
+                  {importedFile} · imported into the list below
+                </p>
+              )}
+            </div>
+            <label className="inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-md border bg-white px-3 text-xs font-semibold shadow-sm hover:bg-[#F7F7FA]">
+              {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
+              {importing ? 'Reading…' : 'Choose file'}
+              <input
+                type="file"
+                className="sr-only"
+                accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+                disabled={importing}
+                onChange={importSpreadsheet}
+              />
+            </label>
+          </div>
+        </div>
         <Textarea rows={6} value={items} onChange={(e) => setItems(e.target.value)} placeholder={'One daily work item per line, e.g.\nCheck backup job status\nReview firewall alerts\nClear pending tickets'} />
-        <div className="flex justify-end"><Button size="sm" onClick={submit} disabled={busy}>{busy && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}Create daily KRA</Button></div>
+        <div className="flex justify-end"><Button size="sm" onClick={submit} disabled={busy || importing}>{busy && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}Create daily checklist</Button></div>
       </CardContent>
     </Card>
   )
@@ -135,7 +196,7 @@ export default function MyChecklist() {
   if (loading) return <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">Complete and submit your daily KRA. Submissions are recorded and tracked by the Super Admin, and any additional work you add counts for that day.</p>
+      <p className="text-sm text-muted-foreground">Complete and submit your daily checklist. Submissions are recorded and tracked by the Super Admin, and any additional work you add counts for that day.</p>
       {lists.map((l) => <ChecklistCard key={l.id} list={l} onSubmitted={load} />)}
       <CreateOwnKra onCreated={load} collapsible={lists.length > 0} />
     </div>

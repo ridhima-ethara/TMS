@@ -32,18 +32,65 @@ cleanup_smoke() {
     wait "$SMOKE_PID" 2>/dev/null || true
   fi
 }
-trap cleanup_smoke EXIT
+cleanup() { cleanup_smoke; rm -f "$DEPLOY_LOCK"; }
+trap cleanup EXIT
+
+# Resource fence. This host has 2 vCPUs and ~3.7 GB RAM shared with the live
+# server; an unfenced `next build` once exhausted memory and froze the whole
+# instance (2026-09-28). The build runs in its own cgroup capped at one core
+# and BUILD_MEM_MAX, at the lowest CPU/IO priority, so the live site always
+# keeps a core and its memory. tms-guard.service throttles or kills the build
+# if the host still gets tight.
+BUILD_CPU_QUOTA="${BUILD_CPU_QUOTA:-100%}"
+BUILD_MEM_HIGH="${BUILD_MEM_HIGH:-1600M}"
+BUILD_MEM_MAX="${BUILD_MEM_MAX:-2200M}"
+MIN_FREE_MB="${MIN_FREE_MB:-900}"
+DEPLOY_LOCK="/tmp/tms-deploy.lock"
+
+fenced() {
+  # Args: the full command to run (including any leading VAR=value env
+  # assignments understood by `env`). Runs it in a transient systemd scope
+  # capped at one core / BUILD_MEM_MAX at the lowest CPU+IO priority so the
+  # live server always keeps a core and its memory.
+  #
+  # NOTE: the command MUST be passed as ordinary positional arguments. A bash
+  # array-assignment command prefix (FOO=(a b) fenced ...) does not create a
+  # usable array inside the callee on bash 5.x -- it arrives as the single
+  # literal token "(a b)", which then fails to exec. That was the 2026-09-28
+  # deploy breakage; do not reintroduce it.
+  sudo systemd-run --quiet --scope --unit="tms-build-$$-$RANDOM" \
+    -p CPUQuota="$BUILD_CPU_QUOTA" -p CPUWeight=20 \
+    -p MemoryHigh="$BUILD_MEM_HIGH" -p MemoryMax="$BUILD_MEM_MAX" \
+    --uid="$(id -u)" --gid="$(id -g)" \
+    nice -n 19 ionice -c 3 \
+    env HOME="$HOME" PATH="$PATH" NODE_OPTIONS="--max-old-space-size=1536" "$@"
+}
+
+mem_avail_mb() { awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo; }
+
+if [[ -e "$DEPLOY_LOCK" ]] && kill -0 "$(cat "$DEPLOY_LOCK")" 2>/dev/null; then
+  echo "Another deploy (pid $(cat "$DEPLOY_LOCK")) is running. Aborting." >&2; exit 1
+fi
+echo $$ > "$DEPLOY_LOCK"
+
+say "0/5 Pre-flight: waiting for ${MIN_FREE_MB}MB free memory"
+for i in $(seq 1 60); do
+  (( $(mem_avail_mb) >= MIN_FREE_MB )) && break
+  (( i == 60 )) && { echo "Only $(mem_avail_mb)MB available after 5 min -- not building now. Live site untouched." >&2; exit 1; }
+  sleep 5
+done
+echo "Memory available: $(mem_avail_mb)MB, load: $(cut -d' ' -f1-3 /proc/loadavg)"
 
 say "1/5 Building into $STAGE (live site untouched)"
 rm -rf "$STAGE"
-NEXT_DIST_DIR="$STAGE" npx next build
-NEXT_DIST_DIR="$STAGE" node scripts/prepare-standalone.mjs
+fenced NEXT_DIST_DIR="$STAGE" NEXT_TELEMETRY_DISABLED=1 node node_modules/next/dist/bin/next build
+NEXT_DIST_DIR="$STAGE" nice -n 19 node scripts/prepare-standalone.mjs
 
 say "2/5 Smoke-testing the new build on port $SMOKE_PORT"
 # The standalone server chdir()s to its own directory and resolves distDir
 # relative to that, so the staged tree runs as-is from where it was built.
 HOSTNAME=127.0.0.1 PORT="$SMOKE_PORT" \
-  node --env-file="$APP_DIR/.env.local" "$STAGE/standalone/server.js" \
+  nice -n 19 node --max-old-space-size=512 --env-file="$APP_DIR/.env.local" "$STAGE/standalone/server.js" \
   >/tmp/tms-smoke.log 2>&1 &
 SMOKE_PID=$!
 

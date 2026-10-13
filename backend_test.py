@@ -69,7 +69,7 @@ print("="*80)
 # ============================================================================
 print("\n[1] SEEDING DATA...")
 try:
-    resp = requests.post(f"{BASE_URL}/seed")
+    resp = requests.post(f"{BASE_URL}/seed", timeout=30)
     if resp.status_code == 200:
         data = resp.json()
         if data.get("seeded") == True or data.get("seeded") == False:

@@ -22,6 +22,13 @@ const nextConfig = {
     ],
   },
   serverExternalPackages: ['pg', 'nodemailer'],
+  experimental: {
+    // This host has 2 vCPUs / 3.7 GB shared with the live server; one build
+    // worker and webpack's memory optimisations keep a production build from
+    // starving it (see scripts/deploy.sh and scripts/tms-guard.sh).
+    cpus: 1,
+    webpackMemoryOptimizations: true,
+  },
   webpack(config, { dev }) {
     if (dev) {
       // Reduce CPU/memory from file watching

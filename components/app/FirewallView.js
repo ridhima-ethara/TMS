@@ -24,6 +24,23 @@ import {
   Wifi,
 } from "lucide-react";
 import { toast } from "sonner";
+import { RaiseTicket } from "@/components/app/TicketsView";
+import { AppSelect } from "@/components/ui/select";
+import { DateField } from "@/components/ui/date-field";
+import {
+  buildFirewallModel,
+  FwActions,
+  FwAppComposition,
+  FwArchiveCalendar,
+  FwChartsAndPanels,
+  FwDeviceCoverage,
+  FwIncident,
+  FwInsights,
+  FwKpis,
+  FwSiteDown,
+  FwSiteHeader,
+  FwTabBar,
+} from "@/components/app/FirewallDesign";
 import {
   Bar,
   BarChart,
@@ -813,15 +830,13 @@ function ConnectedDevicesPanel({
               {bandwidthRangeLabel(bandwidthRange)}
             </p>
           </div>
-          <select
+          <AppSelect
             value={bandwidthRange}
-            onChange={(event) => setBandwidthRange(event.target.value)}
-            className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
-          >
-            {BANDWIDTH_RANGES.map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
+            onValueChange={setBandwidthRange}
+            options={BANDWIDTH_RANGES}
+            aria-label="Bandwidth range"
+            className="w-full border-[#DDE2EA] sm:w-auto"
+          />
           {bandwidthLoading && (
             <RefreshCw className="h-4 w-4 animate-spin text-[#4F6EF7]" />
           )}
@@ -1080,18 +1095,13 @@ function ConnectedDevicesPanel({
           placeholder="Search device, IP, MAC or OS…"
           className="h-10 w-full rounded-lg border border-[#DDE2EA] px-3 text-sm outline-none focus:border-[#4F6EF7] sm:min-w-64 sm:max-w-md sm:flex-1"
         />
-        <select
+        <AppSelect
           value={interfaceFilter}
-          onChange={(event) => setInterfaceFilter(event.target.value)}
-          className="h-10 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
-        >
-          <option value="all">All interfaces</option>
-          {interfaces.map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
-        </select>
+          onValueChange={setInterfaceFilter}
+          options={[["all", "All interfaces"], ...interfaces.map((name) => [name, name])]}
+          aria-label="Interface"
+          className="h-10 w-full border-[#DDE2EA] sm:w-auto"
+        />
         <div className="flex flex-wrap gap-1.5">
           {[["all", `All · ${rows.length}`], ["unmapped", `Unmapped · ${unmappedDevices.length}`], ["mapped", `Mapped · ${rows.length - unmappedDevices.length}`]].map(([key, label]) => (
             <button key={key} type="button" onClick={() => setMappingFilter(key)} className={`rounded-full px-2.5 py-1.5 text-[11px] font-semibold ${mappingFilter === key ? key === "unmapped" ? "bg-[#FCE9ED] text-[#C41E3D] ring-1 ring-[#F5CBD5]" : key === "mapped" ? "bg-[#E8F6EE] text-[#15803D] ring-1 ring-emerald-200" : "bg-[#EDF0FE] text-[#4A5FE8] ring-1 ring-[#D8DEFB]" : "bg-[#F0F1F7] text-[#5B6178]"}`}>{label}</button>
@@ -2831,27 +2841,24 @@ function SecurityEventsPanel({ value, sourceMeta = {} }) {
               Per-day view and consolidated firewall retention window
             </p>
           </div>
-          <select
+          <AppSelect
             value={periodFilter}
-            onChange={(event) => {
-              setPeriodFilter(event.target.value);
+            onValueChange={(value) => {
+              setPeriodFilter(value);
               setSeverityFilter("all");
               setExpandedGroup(null);
             }}
-            className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
-          >
-            <option value="today">Today</option>
-            <option value="7d">Last 7 days</option>
-            <option value="day">Select a day</option>
-            <option value="retained">All retained events</option>
-          </select>
+            options={[["today", "Today"], ["7d", "Last 7 days"], ["day", "Select a day"], ["retained", "All retained events"]]}
+            aria-label="Period"
+            className="w-full border-[#DDE2EA] sm:w-auto"
+          />
           {periodFilter === "day" && (
-            <input
-              type="date"
+            <DateField
               value={selectedDate}
               max={today}
-              onChange={(event) => setSelectedDate(event.target.value)}
-              className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
+              onChange={setSelectedDate}
+              aria-label="Select a day"
+              className="h-9 w-full rounded-lg px-3 text-sm sm:w-auto"
             />
           )}
         </div>
@@ -3340,15 +3347,13 @@ function InterfacePeriodUsage({ firewall }) {
               Timestamped traffic logs grouped by source interface · {firewall.toUpperCase()}
             </p>
           </div>
-          <select
+          <AppSelect
             value={range}
-            onChange={(event) => setRange(event.target.value)}
-            className="h-9 w-full rounded-lg border border-[#DDE2EA] bg-white px-3 text-sm sm:w-auto"
-          >
-            {BANDWIDTH_RANGES.map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
+            onValueChange={setRange}
+            options={BANDWIDTH_RANGES}
+            aria-label="Range"
+            className="w-full border-[#DDE2EA] sm:w-auto"
+          />
           {loading && <RefreshCw className="h-4 w-4 animate-spin text-[#4A5FE8]" />}
         </div>
         <div
@@ -4097,7 +4102,7 @@ const FW_PILL_TONES = {
 function FwPill({ tone = "gray", children, className = "" }) {
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] font-semibold ${FW_PILL_TONES[tone] || FW_PILL_TONES.gray} ${className}`}
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-[11.5px] font-semibold ${FW_PILL_TONES[tone] || FW_PILL_TONES.gray} ${className}`}
     >
       {children}
     </span>
@@ -4156,6 +4161,66 @@ function firewallArchiveInputDate(value) {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
+const DOWNTIME_DAY_MS = 24 * 60 * 60 * 1000;
+
+function formatDowntimeDay(value, withWeekday = false) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString("en-GB", {
+    timeZone: "Asia/Kolkata",
+    ...(withWeekday ? { weekday: "short" } : {}),
+    day: "2-digit",
+    month: "short",
+  });
+}
+
+function downtimeDayTone(day) {
+  if (!day?.tracked_ms) return "bg-[#E7E9F2]";
+  if (day.downtime_ms)
+    return day.downtime_ms >= day.tracked_ms * 0.95 ? "bg-[#C41E3D]" : "bg-[#E2A33A]";
+  return day.ports?.length ? "bg-[#7C5CE0]" : "bg-[#22A06B]";
+}
+
+function portLabel(item) {
+  if (String(item.port).startsWith("isp:")) return item.alias || item.port.slice(4);
+  return item.alias ? `${item.port} · ${item.alias}` : item.port;
+}
+
+function portDowntimeText(ports = []) {
+  return ports
+    .map((item) =>
+      `${String(item.port).startsWith("isp:") ? `${item.alias || item.port.slice(4)} line` : item.port} ${formatDowntimeDuration(item.downtime_ms)}`,
+    )
+    .join(", ");
+}
+
+function DowntimeReason({ reason, compact = false }) {
+  if (!reason) return null;
+  const unknown = ["unrecorded", "unknown"].includes(reason.code);
+  return (
+    <div className={compact ? "" : "mt-1.5"}>
+      <p className={`text-[11.5px] font-semibold ${unknown ? "text-[#98A0B5]" : "text-[#181C2E]"}`}>
+        {reason.title}
+      </p>
+      {!compact && (
+        <p className="mt-0.5 text-[11px] leading-relaxed text-[#5B6178]">{reason.detail}</p>
+      )}
+      {reason.breakdown?.length > 1 && (
+        <p className="mt-1 text-[10.5px] text-[#5B6178]">
+          Also seen: {reason.breakdown
+            .slice(1)
+            .map((item) => `${item.title} (${item.probes} check${item.probes === 1 ? "" : "s"})`)
+            .join(", ")}
+        </p>
+      )}
+      {reason.error && (
+        <p className="mt-1 break-all font-mono text-[10.5px] text-[#98A0B5]">{reason.error}</p>
+      )}
+    </div>
+  );
+}
+
 function FirewallDowntimeSection({
   values,
   days,
@@ -4164,6 +4229,9 @@ function FirewallDowntimeSection({
   activeFirewall,
   onSelect,
 }) {
+  // Selected calendar day per firewall; null means today.
+  const [selectedDay, setSelectedDay] = useState({ hq: null, hq2: null });
+  const [showAll, setShowAll] = useState({ hq: false, hq2: false });
   const stateDetails = {
     online: { label: "Online", tone: "green", dot: "bg-[#15803D]" },
     degraded: { label: "Degraded", tone: "amber", dot: "bg-[#B45309]" },
@@ -4183,7 +4251,7 @@ function FirewallDowntimeSection({
             </h3>
           </div>
           <p className="mt-1 text-xs text-[#98A0B5]">
-            Persisted availability checks; partial endpoint failures are shown as degraded.
+            Checked every minute. Days are in IST; today is the last block. Click a day to see its outages and reasons.
           </p>
         </div>
         <div className="flex items-center rounded-[10px] border border-[#E7E9F2] bg-[#F7F8FB] p-1">
@@ -4203,24 +4271,46 @@ function FirewallDowntimeSection({
           ))}
         </div>
       </div>
-      <div className="grid gap-3 p-3 sm:p-[18px] lg:grid-cols-2">
+      <div className="grid gap-3 p-3 sm:p-[18px] xl:grid-cols-2">
         {["hq", "hq2"].map((id) => {
           const availability = values[id];
           const currentState = availability?.current?.state || "unknown";
           const state = stateDetails[currentState] || stateDetails.unknown;
           const currentOutage = availability?.current_outage;
-          const lastOutage = availability?.last_outage;
-          const availabilityPercent =
-            availability?.summary?.availability_percent;
+          const availabilityPercent = availability?.summary?.availability_percent;
+          const daily = availability?.daily || [];
+          const today = availability?.today;
+          const day =
+            daily.find((item) => item.date === selectedDay[id]) ||
+            daily[daily.length - 1] ||
+            null;
+          const isToday = !day || day.date === today?.date;
+          const dayStart = day ? new Date(day.start).getTime() : 0;
+          const byStartDesc = (a, b) => new Date(b.started_at) - new Date(a.started_at);
+          const inDay = (outage) => {
+            const start = new Date(outage.started_at).getTime();
+            const end = outage.ended_at ? new Date(outage.ended_at).getTime() : Date.now();
+            return start < dayStart + DOWNTIME_DAY_MS && end > dayStart;
+          };
+          const portOutages = availability?.ports?.outages || [];
+          const dayOutages = (
+            isToday
+              ? [...(today?.outages || []), ...(today?.port_outages || [])]
+              : [...(availability?.recent_outages || []), ...portOutages].filter(inDay)
+          ).sort(byStartDesc);
+          const allOutages = [...(availability?.recent_outages || []), ...portOutages].sort(byStartDesc);
+          const portsNow = availability?.ports?.current || [];
+          const portsDown = portsNow.filter((item) => !item.up);
+          const listed = showAll[id] ? allOutages : dayOutages;
+          const reasons = availability?.reason_breakdown || [];
+          const maxReasonMs = Math.max(1, ...reasons.map((item) => item.downtime_ms));
           return (
-            <button
+            <div
               key={id}
-              type="button"
-              onClick={() => onSelect(id)}
-              className={`rounded-[14px] border p-4 text-left transition sm:p-[18px] ${
+              className={`min-w-0 rounded-[14px] border p-4 transition sm:p-[18px] ${
                 activeFirewall === id
                   ? "border-[#AEB9FA] bg-[#FAFAFF] shadow-[0_0_0_2px_rgba(74,95,232,0.08)]"
-                  : "border-[#E7E9F2] bg-white hover:border-[#CDD3E2]"
+                  : "border-[#E7E9F2] bg-white"
               }`}
             >
               <div className="flex items-start justify-between gap-3">
@@ -4235,94 +4325,411 @@ function FirewallDowntimeSection({
                           Number(availabilityPercent) >= 99.995 ? 3 : 2,
                         )}%`}
                   </p>
-                  <p className="text-[11.5px] text-[#5B6178]">availability</p>
+                  <p className="text-[11.5px] text-[#5B6178]">
+                    availability · last {days} days
+                  </p>
+                  {availability?.summary?.monitoring_gap_ms > 0 && (
+                    <p className="mt-0.5 max-w-[340px] text-[10.5px] leading-snug text-[#98A0B5]">
+                      Leaves out {formatDowntimeDuration(availability.summary.monitoring_gap_ms)} when TMS could not check the firewall (e.g. certificate changed). That is a monitoring gap, not network downtime.
+                    </p>
+                  )}
                 </div>
-                <FwPill tone={state.tone}>
-                  <i className={`h-1.5 w-1.5 rounded-full ${state.dot}`} />
-                  {state.label}
-                </FwPill>
+                <div className="flex shrink-0 flex-col items-end gap-2">
+                  <FwPill tone={state.tone}>
+                    <i className={`h-1.5 w-1.5 rounded-full ${state.dot}`} />
+                    {state.label}
+                  </FwPill>
+                  {activeFirewall !== id && (
+                    <button
+                      type="button"
+                      onClick={() => onSelect(id)}
+                      className="text-[11px] font-semibold text-[#4A5FE8] hover:underline"
+                    >
+                      View {id.toUpperCase()} →
+                    </button>
+                  )}
+                </div>
               </div>
 
               {loading && !availability ? (
                 <div className="mt-4 h-24 animate-pulse rounded-xl bg-[#F0F1F7]" />
               ) : (
                 <>
-                  <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
-                    <div className="rounded-[10px] bg-white p-3">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-[#98A0B5]">
-                        Downtime
-                      </p>
-                      <p className="mt-1 text-sm font-bold tabular-nums">
-                        {formatDowntimeDuration(
-                          availability?.summary?.total_downtime_ms,
-                        )}
-                      </p>
-                    </div>
-                    <div className="rounded-[10px] bg-white p-3">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-[#98A0B5]">
-                        Outages
-                      </p>
-                      <p className="mt-1 text-sm font-bold tabular-nums">
-                        {availability?.summary?.outage_count ?? 0}
-                      </p>
-                    </div>
-                    <div className="col-span-2 rounded-[10px] bg-white p-3 sm:col-span-1">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-[#98A0B5]">
-                        Last probe
-                      </p>
-                      <p className="mt-1 truncate text-xs font-semibold">
-                        {formatDowntimeTimestamp(
-                          availability?.current?.last_probe_at,
-                        )}
-                      </p>
-                    </div>
-                  </div>
-                  {currentOutage ? (
+                  {(currentOutage || availability?.current?.reason) && (
                     <div className="mt-3 rounded-[11px] border border-[#F5CBD5] bg-[#FFF6F7] p-3">
-                      <p className="text-[11.5px] font-bold text-[#C41E3D]">
-                        Current outage · {formatDowntimeDuration(currentOutage.duration_ms)}
+                      <p className="flex items-center gap-1.5 text-[11.5px] font-bold text-[#C41E3D]">
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                        {currentOutage
+                          ? `Down now · ${formatDowntimeDuration(currentOutage.duration_ms)} (since ${formatDowntimeTimestamp(currentOutage.started_at)})`
+                          : `${state.label} now`}
                       </p>
-                      <p className="mt-1 text-[11px] text-[#5B6178]">
-                        Detected {formatDowntimeTimestamp(currentOutage.started_at)}
-                      </p>
-                      {currentOutage.pre_downtime_snapshot && (
+                      <DowntimeReason
+                        reason={availability?.current?.reason || currentOutage?.reason}
+                      />
+                      {currentOutage?.pre_downtime_snapshot && (
                         <p className="mt-1.5 text-[10.5px] font-semibold text-[#4A5FE8]">
                           Pre-downtime report saved · {Number(
                             currentOutage.pre_downtime_snapshot.stored_records || 0,
-                          ).toLocaleString()} records · {formatDowntimeTimestamp(
-                            currentOutage.pre_downtime_snapshot.captured_at,
-                          )}
-                        </p>
-                      )}
-                    </div>
-                  ) : lastOutage ? (
-                    <div className="mt-3 rounded-[11px] border border-[#E7E9F2] bg-white p-3">
-                      <p className="text-[11.5px] font-semibold text-[#5B6178]">
-                        Last downtime · {formatDowntimeDuration(lastOutage.duration_ms)}
-                      </p>
-                      <p className="mt-1 text-[11px] text-[#98A0B5]">
-                        {formatDowntimeTimestamp(lastOutage.started_at)} →{" "}
-                        {formatDowntimeTimestamp(lastOutage.ended_at)}
-                      </p>
-                      {lastOutage.pre_downtime_snapshot && (
-                        <p className="mt-1.5 text-[10.5px] font-semibold text-[#4A5FE8]">
-                          Pre-downtime report saved · {Number(
-                            lastOutage.pre_downtime_snapshot.stored_records || 0,
                           ).toLocaleString()} records
                         </p>
                       )}
                     </div>
-                  ) : (
-                    <div className="mt-3 rounded-[11px] border border-[#D9EBDD] bg-[#F7FBF8] p-3 text-[11.5px] font-semibold text-[#15803D]">
-                      No downtime recorded in this tracking window.
+                  )}
+
+                  <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <div
+                      className={`rounded-[10px] border p-3 ${
+                        today?.downtime_ms
+                          ? "border-[#F5CBD5] bg-[#FFF6F7]"
+                          : "border-[#D9EBDD] bg-[#F7FBF8]"
+                      }`}
+                    >
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-[#98A0B5]">
+                        Today · {formatDowntimeDay(today?.start)}
+                      </p>
+                      <p
+                        className={`mt-1 text-sm font-bold tabular-nums ${
+                          today?.downtime_ms ? "text-[#C41E3D]" : "text-[#15803D]"
+                        }`}
+                      >
+                        {today?.downtime_ms ? formatDowntimeDuration(today.downtime_ms) : "No downtime"}
+                      </p>
+                      <p className="text-[10.5px] text-[#5B6178]">
+                        {today?.outage_count || 0} outage{today?.outage_count === 1 ? "" : "s"}
+                      </p>
+                      {today?.ports?.length > 0 && (
+                        <p className="mt-0.5 text-[10.5px] font-semibold text-[#7C5CE0]">
+                          Ports: {portDowntimeText(today.ports)}
+                        </p>
+                      )}
+                    </div>
+                    <div className="rounded-[10px] border border-[#F0F1F7] bg-white p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-[#98A0B5]">
+                        Downtime · {days}d
+                      </p>
+                      <p className="mt-1 text-sm font-bold tabular-nums">
+                        {formatDowntimeDuration(availability?.summary?.total_downtime_ms)}
+                      </p>
+                      <p className="text-[10.5px] text-[#5B6178]">
+                        {availability?.summary?.outage_count ?? 0} outage{availability?.summary?.outage_count === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                    <div className="rounded-[10px] border border-[#F0F1F7] bg-white p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-[#98A0B5]">
+                        Longest
+                      </p>
+                      <p className="mt-1 text-sm font-bold tabular-nums">
+                        {availability?.summary?.longest_outage_ms
+                          ? formatDowntimeDuration(availability.summary.longest_outage_ms)
+                          : "—"}
+                      </p>
+                      <p className="text-[10.5px] text-[#5B6178]">in this window</p>
+                    </div>
+                    <div className="rounded-[10px] border border-[#F0F1F7] bg-white p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-[#98A0B5]">
+                        Last check
+                      </p>
+                      <p className="mt-1 truncate text-xs font-semibold">
+                        {formatDowntimeTimestamp(availability?.current?.last_probe_at)}
+                      </p>
+                      <p className="text-[10.5px] text-[#5B6178]">
+                        {availability?.current?.successful_sections ?? 0}/3 checks passed
+                      </p>
+                    </div>
+                  </div>
+
+                  {portsNow.length > 0 && (
+                    <div className="mt-3 rounded-[11px] border border-[#E7E9F2] bg-white p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="flex items-center gap-1.5 text-[11.5px] font-bold text-[#181C2E]">
+                          <Cable className="h-3.5 w-3.5 text-[#7C5CE0]" />
+                          Ports · {portsNow.length - portsDown.length}/{portsNow.length} up
+                        </p>
+                        <span className="text-[10.5px] text-[#98A0B5]">named or previously used ports</span>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {portsNow.map((item) => (
+                          <span
+                            key={item.port}
+                            title={`${portLabel(item)}${item.ip ? ` · ${item.ip}` : ""} · ${item.up ? "up" : "down"} since ${formatDowntimeTimestamp(item.state_since)}`}
+                            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${
+                              item.up ? "bg-[#E8F6EE] text-[#15803D]" : "bg-[#FCE9ED] text-[#C41E3D]"
+                            }`}
+                          >
+                            <i className={`h-1.5 w-1.5 rounded-full ${item.up ? "bg-[#15803D]" : "bg-[#C41E3D]"}`} />
+                            {portLabel(item)}
+                            {!item.up && (
+                              <span className="font-normal">
+                                · {formatDowntimeDuration(Date.now() - new Date(item.state_since))}
+                              </span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   )}
+
+                  {daily.length > 0 && (
+                    <div className="mt-4">
+                      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[10.5px] text-[#98A0B5]">
+                        <span className="whitespace-nowrap">{formatDowntimeDay(daily[0].start)}</span>
+                        <span className="order-last flex w-full flex-wrap items-center gap-x-2.5 gap-y-1 sm:order-none sm:w-auto">
+                          {[
+                            ["bg-[#22A06B]", "Up"],
+                            ["bg-[#E2A33A]", "Partial"],
+                            ["bg-[#C41E3D]", "Down"],
+                            ["bg-[#7C5CE0]", "Port down"],
+                            ["bg-[#E7E9F2]", "No data"],
+                          ].map(([tone, label]) => (
+                            <span key={label} className="flex items-center gap-1 whitespace-nowrap">
+                              <i className={`h-2 w-2 rounded-sm ${tone}`} />
+                              {label}
+                            </span>
+                          ))}
+                        </span>
+                        <span className="whitespace-nowrap font-semibold text-[#181C2E]">Today</span>
+                      </div>
+                      <div className="mt-1.5 flex h-8 items-stretch gap-[2px]">
+                        {daily.map((item) => {
+                          const selected = day?.date === item.date;
+                          return (
+                            <button
+                              key={item.date}
+                              type="button"
+                              onClick={() => {
+                                setSelectedDay((prev) => ({ ...prev, [id]: item.date }));
+                                setShowAll((prev) => ({ ...prev, [id]: false }));
+                              }}
+                              title={`${formatDowntimeDay(item.start, true)} · ${
+                                item.tracked_ms
+                                  ? item.downtime_ms
+                                    ? `${formatDowntimeDuration(item.downtime_ms)} down (${item.outage_count} outage${item.outage_count === 1 ? "" : "s"})`
+                                    : "firewall up"
+                                  : "not tracked"
+                              }${item.ports?.length ? ` · ports: ${portDowntimeText(item.ports)}` : ""}`}
+                              aria-label={`Show downtime for ${formatDowntimeDay(item.start)}`}
+                              className={`min-w-0 flex-1 rounded-[3px] ${downtimeDayTone(item)} transition hover:opacity-80 ${
+                                selected ? "ring-2 ring-[#181C2E] ring-offset-1" : ""
+                              }`}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="mt-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11.5px] font-bold text-[#181C2E]">
+                        {showAll[id]
+                          ? `All outages · last ${days} days`
+                          : `${isToday ? "Today" : formatDowntimeDay(day?.start, true)}${
+                              day?.downtime_ms
+                                ? ` · firewall ${formatDowntimeDuration(day.downtime_ms)} down`
+                                : ""
+                            }${day?.ports?.length ? ` · ports ${portDowntimeText(day.ports)}` : ""}`}
+                      </p>
+                      {allOutages.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowAll((prev) => ({ ...prev, [id]: !prev[id] }))}
+                          className="text-[11px] font-semibold text-[#4A5FE8] hover:underline"
+                        >
+                          {showAll[id] ? "Show selected day" : `Show all ${allOutages.length}`}
+                        </button>
+                      )}
+                    </div>
+                    {listed.length ? (
+                      <ul className="mt-2 max-h-[340px] space-y-2 overflow-y-auto pr-1">
+                        {listed.map((outage) => (
+                          <li
+                            key={outage.id}
+                            className={`rounded-[11px] border p-3 ${
+                              outage.open ? "border-[#F5CBD5] bg-[#FFF6F7]" : "border-[#E7E9F2] bg-white"
+                            }`}
+                          >
+                            {outage.kind === "port" && (
+                              <p className="mb-1 flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-wide text-[#7C5CE0]">
+                                <Cable className="h-3 w-3" />
+                                Port {portLabel(outage)}
+                              </p>
+                            )}
+                            {outage.kind === "isp" && (
+                              <p className="mb-1 flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-wide text-[#B45309]">
+                                <Cable className="h-3 w-3" />
+                                Internet line · {portLabel(outage)}
+                              </p>
+                            )}
+                            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                              <p className="text-[11px] text-[#5B6178]">
+                                <Clock3 className="mr-1 inline h-3 w-3 align-[-2px]" />
+                                {formatDowntimeTimestamp(outage.started_at)} →{" "}
+                                {outage.open ? "ongoing" : formatDowntimeTimestamp(outage.ended_at)}
+                              </p>
+                              <span
+                                className={`text-[11.5px] font-bold tabular-nums ${
+                                  outage.open ? "text-[#C41E3D]" : "text-[#181C2E]"
+                                }`}
+                              >
+                                {formatDowntimeDuration(outage.duration_ms)}
+                              </span>
+                            </div>
+                            <details className="group mt-1">
+                              <summary className="flex cursor-pointer list-none items-center gap-1">
+                                <DowntimeReason reason={outage.reason} compact />
+                                <span className="ml-auto flex shrink-0 items-center gap-0.5 text-[10.5px] font-semibold text-[#4A5FE8]">
+                                  Why?
+                                  <ChevronDown className="h-3.5 w-3.5 transition group-open:rotate-180" />
+                                </span>
+                              </summary>
+                              <p className="mt-1 text-[11px] leading-relaxed text-[#5B6178]">
+                                {outage.reason?.detail}
+                              </p>
+                              <div className="mt-2 rounded-[9px] border border-[#E7E9F2] bg-[#F7F8FB] p-2">
+                                <p className="text-[10px] font-semibold uppercase tracking-wide text-[#98A0B5]">
+                                  From the firewall's event log
+                                </p>
+                                {outage.firewall_events?.length ? (
+                                  <ul className="mt-1 space-y-1">
+                                    {outage.firewall_events.map((event, index) => (
+                                      <li key={`${event.at}-${index}`} className="text-[10.5px] leading-snug text-[#5B6178]">
+                                        <span className="font-mono text-[#98A0B5]">{event.at}</span>{" "}
+                                        <span className="font-semibold text-[#181C2E]">{event.title}</span>
+                                        {event.message ? ` — ${event.message}` : ""}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p className="mt-1 text-[10.5px] text-[#98A0B5]">
+                                    {outage.open
+                                      ? "Checked when the outage ends."
+                                      : "No matching firewall log entries were captured for this outage (the firewall keeps only the last few minutes of logs)."}
+                                  </p>
+                                )}
+                              </div>
+                              {["port", "isp"].includes(outage.kind) && !outage.start_observed && (
+                                <p className="mt-1 text-[10.5px] text-[#B45309]">
+                                  Already down when monitoring first saw it — the real start is earlier.
+                                </p>
+                              )}
+                              {outage.reason?.reboot_at && (
+                                <p className="mt-1 text-[10.5px] text-[#5B6178]">
+                                  The firewall reports its last restart at {formatDowntimeTimestamp(outage.reason.reboot_at)}.
+                                </p>
+                              )}
+                              {outage.note && (
+                                <p className="mt-1 text-[10.5px] text-[#5B6178]">{outage.note}</p>
+                              )}
+                              {outage.failed_sections?.length > 0 && (
+                                <p className="mt-1 text-[10.5px] text-[#98A0B5]">
+                                  Failed checks: {outage.failed_sections.join(", ")}
+                                </p>
+                              )}
+                              {outage.pre_downtime_snapshot && (
+                                <p className="mt-1 text-[10.5px] font-semibold text-[#4A5FE8]">
+                                  Pre-downtime report saved · {Number(
+                                    outage.pre_downtime_snapshot.stored_records || 0,
+                                  ).toLocaleString()} records
+                                </p>
+                              )}
+                            </details>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="mt-2 rounded-[11px] border border-[#D9EBDD] bg-[#F7FBF8] p-3 text-[11.5px] font-semibold text-[#15803D]">
+                        {day && !day.tracked_ms
+                          ? "Not tracked on this day."
+                          : `No downtime ${isToday ? "today" : "on this day"}.`}
+                      </div>
+                    )}
+                  </div>
+
+                  {daily.length > 0 && (
+                    <div className="mt-4">
+                      <p className="text-[11.5px] font-bold text-[#181C2E]">Day-wise downtime (IST)</p>
+                      <div className="mt-2 max-h-[260px] overflow-auto rounded-[10px] border border-[#F0F1F7]">
+                        <table className="w-full min-w-[420px] text-left text-[11px]">
+                          <thead className="sticky top-0 whitespace-nowrap bg-[#F7F8FB] text-[10px] uppercase tracking-wide text-[#98A0B5]">
+                            <tr>
+                              <th className="px-2.5 py-1.5 font-semibold">Day</th>
+                              <th className="px-2.5 py-1.5 font-semibold">Firewall down</th>
+                              <th className="px-2.5 py-1.5 font-semibold">Uptime</th>
+                              <th className="px-2.5 py-1.5 font-semibold">Ports down</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {[...daily].reverse().map((item) => (
+                              <tr
+                                key={item.date}
+                                onClick={() => {
+                                  setSelectedDay((prev) => ({ ...prev, [id]: item.date }));
+                                  setShowAll((prev) => ({ ...prev, [id]: false }));
+                                }}
+                                className={`cursor-pointer border-t border-[#F0F1F7] hover:bg-[#FAFAFF] ${
+                                  day?.date === item.date ? "bg-[#F3F4FF]" : ""
+                                }`}
+                              >
+                                <td className="whitespace-nowrap px-2.5 py-1.5 font-semibold">
+                                  {item.date === today?.date ? "Today" : formatDowntimeDay(item.start, true)}
+                                </td>
+                                <td className={`whitespace-nowrap px-2.5 py-1.5 tabular-nums ${item.downtime_ms ? "font-semibold text-[#C41E3D]" : "text-[#98A0B5]"}`}>
+                                  {!item.tracked_ms ? "—" : item.downtime_ms ? formatDowntimeDuration(item.downtime_ms) : "0m"}
+                                </td>
+                                <td className="whitespace-nowrap px-2.5 py-1.5 tabular-nums text-[#5B6178]">
+                                  {item.availability_percent == null ? "—" : `${Number(item.availability_percent).toFixed(item.availability_percent >= 99.95 || item.availability_percent === 0 ? 0 : 1)}%`}
+                                </td>
+                                <td className={`px-2.5 py-1.5 ${item.ports?.length ? "font-semibold text-[#7C5CE0]" : "text-[#98A0B5]"}`}>
+                                  {item.ports?.length ? portDowntimeText(item.ports) : "—"}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {reasons.length > 0 && (
+                    <div className="mt-4">
+                      <p className="text-[11.5px] font-bold text-[#181C2E]">
+                        Downtime by reason · last {days} days
+                      </p>
+                      <div className="mt-2 space-y-2">
+                        {reasons.map((item) => (
+                          <div key={item.code} title={item.detail}>
+                            <div className="flex items-baseline justify-between gap-2 text-[11px]">
+                              <span className="truncate font-semibold text-[#181C2E]">{item.title}</span>
+                              <span className="shrink-0 tabular-nums text-[#5B6178]">
+                                {formatDowntimeDuration(item.downtime_ms)} · {item.outage_count}×
+                              </span>
+                            </div>
+                            <div className="mt-1 h-1.5 rounded-full bg-[#F0F1F7]">
+                              <div
+                                className="h-1.5 rounded-full bg-[#C41E3D]/70"
+                                style={{ width: `${Math.max(2, (item.downtime_ms / maxReasonMs) * 100)}%` }}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   <p className="mt-3 text-[10.5px] text-[#98A0B5]">
                     Tracking from {formatDowntimeTimestamp(availability?.period?.tracked_start)}
+                    {portsNow.length > 0 &&
+                      ` · ports monitored since ${formatDowntimeTimestamp(
+                        portsNow.reduce(
+                          (first, item) =>
+                            !first || new Date(item.first_seen_at) < new Date(first) ? item.first_seen_at : first,
+                          null,
+                        ),
+                      )}`}
                   </p>
                 </>
               )}
-            </button>
+            </div>
           );
         })}
       </div>
@@ -4516,7 +4923,7 @@ function InventoryCoverage({ devices, firewall }) {
   );
 }
 
-function FirewallArchivePanel({ firewall, configured }) {
+function FirewallArchivePanel({ firewall, configured, onLoaded }) {
   const [archives, setArchives] = useState([]);
   const [captureStatus, setCaptureStatus] = useState(null);
   const [selected, setSelected] = useState(null);
@@ -4544,6 +4951,7 @@ function FirewallArchivePanel({ firewall, configured }) {
         { timeout: 30_000 },
       );
       setArchives(result.archives || []);
+      onLoaded?.(result.archives || []);
       setCaptureStatus(result.capture_status || null);
       setPage(1);
     } catch (error) {
@@ -4735,20 +5143,22 @@ function FirewallArchivePanel({ firewall, configured }) {
           </div>
           <label className="w-full text-[11px] font-semibold text-[#69738B] sm:w-auto">
             From
-            <input
-              type="date"
+            <DateField
               value={from}
-              onChange={(event) => setFrom(event.target.value)}
-              className="mt-1 h-9 w-full rounded-lg border px-2 text-xs sm:ml-2 sm:mt-0 sm:w-auto"
+              max={to || undefined}
+              onChange={setFrom}
+              clearable
+              className="mt-1 h-9 w-full rounded-lg px-2 text-xs sm:ml-2 sm:mt-0 sm:w-auto"
             />
           </label>
           <label className="w-full text-[11px] font-semibold text-[#69738B] sm:w-auto">
             To
-            <input
-              type="date"
+            <DateField
               value={to}
-              onChange={(event) => setTo(event.target.value)}
-              className="mt-1 h-9 w-full rounded-lg border px-2 text-xs sm:ml-2 sm:mt-0 sm:w-auto"
+              min={from || undefined}
+              onChange={setTo}
+              clearable
+              className="mt-1 h-9 w-full rounded-lg px-2 text-xs sm:ml-2 sm:mt-0 sm:w-auto"
             />
           </label>
           <Button className="w-full sm:w-auto" variant="outline" onClick={() => exportRange("summary")}>
@@ -4959,7 +5369,18 @@ function FirewallArchivePanel({ firewall, configured }) {
   );
 }
 
-export default function FirewallView() {
+export default function FirewallView({ user }) {
+  const [archives, setArchives] = useState(null);
+  const [showStale, setShowStale] = useState(false);
+  const checklistKey = `firewall-incident-checklist:${new Date().toISOString().slice(0, 10)}`;
+  const [checklist, setChecklist] = useState({});
+  useEffect(() => {
+    try {
+      setChecklist(JSON.parse(window.localStorage.getItem(checklistKey) || "{}"));
+    } catch {
+      setChecklist({});
+    }
+  }, [checklistKey]);
   const [data, setData] = useState(null);
   const [comparison, setComparison] = useState({ hq: null, hq2: null });
   const [trafficReport, setTrafficReport] = useState(null);
@@ -5133,6 +5554,8 @@ export default function FirewallView() {
   useEffect(() => {
     setData(null);
     setTab("overview");
+    setArchives(null);
+    setShowStale(false);
     load();
   }, [firewall]);
   useEffect(() => {
@@ -5449,473 +5872,268 @@ export default function FirewallView() {
       badgeTone: "gray",
     });
 
+  const siteDowntime = downtime[firewall];
+  const siteDown =
+    status === "down" ||
+    (siteDowntime?.current?.state && siteDowntime.current.state !== "online");
+  const siteState = (id) => {
+    const state = downtime[id]?.current?.state || (comparison[id]?.connected ? "online" : comparison[id] ? "down" : null);
+    return state === "online" ? "#12795a" : state ? "#b42318" : "#9a9aa3";
+  };
+  const model = useMemo(
+    () =>
+      buildFirewallModel({
+        firewall,
+        data,
+        report: trafficReport,
+        security: data?.security_summary || null,
+        downtime,
+        deviceList,
+        interfaceRows,
+        policyRows,
+        activeAcceptPolicies,
+        applicationControlPolicies,
+        cpu: cpuUsage,
+        memory: memoryUsage,
+        sessions: sessionCount,
+        sessionHistory,
+        eventCount,
+        archives,
+        systemTypeFrom,
+        mapped: identifiedDevices,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [firewall, data, trafficReport, downtime, archives],
+  );
+  const current = model.tabs[tab] || model.tabs.overview;
+  const incidentSteps = current.incident
+    ? [
+        "Restrict admin access to trusted hosts (office + VPN only)",
+        current.incident.subnets.length
+          ? `Block ${current.incident.subnets.join(" and ")} at WAN`
+          : "Block the top source IPs at WAN",
+        current.incident.countries.length
+          ? `Geo-block the admin port for ${current.incident.countries.join(", ")}`
+          : "Geo-block the admin port for attacking countries",
+        "Enforce 2FA for all firewall admins",
+      ].map((t, i) => ({ t, done: Boolean(checklist[i]) }))
+    : [];
+  const toggleStep = (index) => {
+    const next = { ...checklist, [index]: !checklist[index] };
+    setChecklist(next);
+    try {
+      window.localStorage.setItem(checklistKey, JSON.stringify(next));
+    } catch {}
+  };
+  const goTo = (target) => {
+    if (target?.startsWith("site:")) {
+      setFirewall(target.slice(5));
+      return;
+    }
+    setTab(target);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const tabList = [
+    ["overview", "Overview"],
+    ["devices", "Devices"],
+    ["applications", "Applications"],
+    ["interfaces", "Traffic"],
+    ["events", "Security"],
+    ["archive", "Archive"],
+  ].map(([key, label]) => ({
+    key,
+    label,
+    badge: key === "applications" && liveDetailsLoading && !trafficReport ? "…" : key === "events" && liveDetailsLoading && !data?.security_summary ? "…" : model.badge[key]?.[0],
+    tone: model.badge[key]?.[1] || "m",
+  }));
+  const headerSub = [
+    firewall.toUpperCase(),
+    [system.model_name || system.model, system.model_number].filter(Boolean).join("-"),
+    sections.status?.version,
+    data?.last_updated
+      ? `refreshed ${new Date(data.last_updated).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const downSince = siteDowntime?.current?.state_since;
+
   if (loading && !data)
     return <div className="h-96 animate-pulse rounded-xl bg-[#EDF0F4]" />;
   return (
-    <div className="mx-auto max-w-[1240px] space-y-[18px] rounded-2xl bg-[#F5F6FA] p-3 text-[#181C2E] sm:p-4 md:px-7 md:pb-10">
-      <div className="flex flex-wrap items-center gap-4 py-1">
-        <span className="grid h-[38px] w-[38px] shrink-0 place-items-center rounded-[11px] bg-gradient-to-br from-[#4A5FE8] to-[#3346C9] text-white">
-          <Shield className="h-[18px] w-[18px]" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-[16.5px] font-bold tracking-tight">
-              {headerName} — {firewall.toUpperCase()} firewall
-            </h2>
-            <FwPill tone={statusPresentation.tone}>
-              <i className={`h-1.5 w-1.5 rounded-full ${statusPresentation.dot}`} />
-              {statusPresentation.label}
-            </FwPill>
-          </div>
-          <p className="mt-0.5 truncate text-xs text-[#98A0B5]">
-            {headerMeta || "Live security, network and utilization visibility"} · last refreshed {data?.last_updated ? new Date(data.last_updated).toLocaleString("en-GB") : "—"}
-          </p>
-        </div>
-        <div className="flex w-full overflow-x-auto rounded-[11px] border border-[#E7E9F2] bg-white p-[3px] sm:w-auto">
-          {[["hq", hqSnapshot.devices], ["hq2", hq2Snapshot.devices]].map(([id, count]) => (
-            <button key={id} type="button" onClick={() => setFirewall(id)} aria-pressed={firewall === id} className={`flex min-w-max flex-1 items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-[12.5px] font-semibold transition ${firewall === id ? "bg-[#4A5FE8] text-white" : "text-[#5B6178] hover:bg-[#F5F6FA]"}`}>
-              {id.toUpperCase()} <span className="text-[11.5px] font-medium opacity-75">{Number(count || 0).toLocaleString()} devices</span>
-            </button>
-          ))}
-        </div>
-        <Button variant="outline" className="w-full rounded-[10px] border-[#E7E9F2] bg-white text-[12.5px] sm:w-auto" onClick={refreshAll} disabled={loading || comparisonLoading || liveDetailsLoading}>
-          <RefreshCw className={`h-4 w-4 ${loading || liveDetailsLoading ? "animate-spin" : ""}`} />
-          Refresh
-        </Button>
-        <Button
-          className="w-full rounded-[10px] bg-[#4A5FE8] text-[12.5px] text-white hover:bg-[#3346C9] sm:w-auto"
-          onClick={exportSevenDayReport}
-          disabled={reportLoading || !data?.configured}
-        >
-          <Download
-            className={`h-4 w-4 ${reportLoading ? "animate-bounce" : ""}`}
-          />
-          7-day report
-        </Button>
-      </div>
-      {liveDetailsLoading && data && (
-        <div
-          role="status"
-          className="flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-800"
-        >
-          <RefreshCw className="h-4 w-4 shrink-0 animate-spin" />
-          <span>
-            <b>Live overview ready.</b> Retained traffic and security details
-            are loading in the background; the page remains available while
-            they sync.
-          </span>
-        </div>
-      )}
-      {data?.configured && Object.keys(data.errors || {}).length > 0 && (
-        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <div>
-            <b>Some firewall endpoints could not be loaded.</b>
-            <p className="mt-1 text-xs">
-              {Object.entries(data.errors)
-                .map(([name, error]) => `${name}: ${error}`)
-                .join(" · ")}
-            </p>
-          </div>
-        </div>
-      )}
-      {duplicateAppliance && (
-        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <div>
-            <b>HQ and HQ2 currently resolve to the same firewall appliance.</b>
-            <p className="mt-1 text-xs">
-              Both profiles returned serial {hqSerial}. Values are shown exactly
-              as returned, but they cannot be treated as two independent locations
-              until the second firewall API URL or token points to its own appliance.
-            </p>
-          </div>
-        </div>
-      )}
-      {trafficReportError && (
-        <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <div>
-            <b>Today&apos;s traffic report could not be verified.</b>
-            <p className="mt-1 text-xs">{trafficReportError}</p>
-          </div>
-        </div>
-      )}
-      {trafficReport && (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-[#DDE2EA] bg-white px-4 py-3 text-xs text-[#5B6178]">
-          <Shield className="h-4 w-4 text-[#4A5FE8]" />
-          <b className="text-[#374151]">
-            {trafficReport.summary?.archive_fallback
-              ? "Verified saved traffic period"
-              : "Verified traffic period"}
-          </b>
-          <span>
-            {formatUsageRangeTimestamp(trafficPeriod?.start)} →{" "}
-            {formatUsageRangeTimestamp(trafficPeriod?.end)} IST
-          </span>
-          <span>{Number(trafficReport.summary?.records || 0).toLocaleString()} unique records</span>
-          <span>
-            {Number(trafficReport.summary?.api_rows_fetched || trafficReport.summary?.api_rows_returned || 0).toLocaleString()}
-            /{Number(trafficReport.summary?.api_rows_available || 0).toLocaleString()}
-            {" "}retained API rows fetched
-          </span>
-          <span>
-            {Number(trafficReport.summary?.api_pages_fetched || 1)} firewall page(s)
-          </span>
-          {Number(trafficReport.summary?.unverified_archive_rows_excluded || 0) >
-            0 && (
-            <span className="font-semibold text-[#B45309]">
-              {Number(
-                trafficReport.summary.unverified_archive_rows_excluded,
-              ).toLocaleString()} legacy archive rows excluded because appliance
-              identity was not recorded
-            </span>
-          )}
-          <FwPill
-            tone={trafficReport.summary?.source_complete ? "green" : "amber"}
-          >
-            {trafficReport.summary?.archive_fallback
-              ? "Saved archive fallback"
-              : trafficReport.summary?.source_complete
-                ? "Complete retained source"
-                : "Partial source"}
-          </FwPill>
-          <span className="basis-full text-[11px] text-[#7B8498]">
-            {trafficReport.summary?.archive_records_included
-              ? trafficReport.summary?.archive_fallback
-                ? "The live current-period feed was empty or unavailable, so this view uses the latest appliance-verified saved report."
-                : "Period totals combine the firewall's retained memory logs with appliance-verified daily archive records."
-              : "This current-period view uses the selected firewall's retained memory logs directly; daily archives are maintained independently."}
-          </span>
-        </div>
-      )}
-      {incompleteSections.length > 0 && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
-          <b>Partial firewall section data:</b>{" "}
-          {incompleteSections
-            .map(
-              ([name, metadata]) =>
-                `${name} (${metadata.records_returned}/${metadata.records_available})`,
-            )
-            .join(" · ")}
-        </div>
-      )}
-      {topAlertGroup && topAlertGroup.count >= 5 && (
-        <div className="flex flex-wrap items-center gap-4 rounded-[13px] border border-[#F5CBD5] bg-[#FFF6F7] px-4 py-3">
-          <span className="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-[10px] bg-[#FCE9ED] text-lg font-extrabold text-[#C41E3D]">
-            !
-          </span>
-          <div className="min-w-0">
-            <h4 className="text-[13.5px] font-bold text-[#C41E3D]">
-              {topAlertGroup.title} — {topAlertGroup.count} events in the current
-              window
-            </h4>
-            <p className="mt-0.5 text-[12.5px] text-[#5B6178]">
-              {topAlertSource ? (
-                <>
-                  Highest volume from{" "}
-                  <b className="font-mono text-[#C41E3D]">{topAlertSource}</b>.{" "}
-                </>
-              ) : null}
-              This {topAlertGroup.severity} is the most frequent event right now
-              — treat it as one incident, not {topAlertGroup.count} problems.
-            </p>
-          </div>
-          <button
-            onClick={() => openDetail("events", "Security events")}
-            className="ml-auto shrink-0 rounded-[10px] border border-[#E7E9F2] bg-white px-3.5 py-2 text-[12.5px] font-semibold hover:bg-[#F7F8FB]"
-          >
-            View events →
-          </button>
-        </div>
-      )}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-        <button
-          type="button"
-          onClick={() => openDetail("overview", "Active sessions")}
-          className="text-left"
-        >
-          <FwKpi label="Active sessions" value={sessionCount.toLocaleString()}>
-            concurrent connections
-          </FwKpi>
-        </button>
-        <button
-          type="button"
-          onClick={() => openDetail("devices", "Connected devices")}
-          className="text-left"
-        >
-          <FwKpi label="Connected devices" value={deviceCount.toLocaleString()}>
-            {unmappedDevices ? (
-              <span className="font-semibold text-[#C41E3D]">
-                {unmappedDevices.toLocaleString()} unidentified
-              </span>
-            ) : (
-              <span className="font-semibold text-[#15803D]">
-                all identified
-              </span>
-            )}
-          </FwKpi>
-        </button>
-        <button
-          type="button"
-          onClick={() => openDetail("events", "Security events")}
-          className="text-left"
-        >
-          <FwKpi
-            label="Security events"
-            value={eventCount.toLocaleString()}
-            valueClass={alertEvents ? "text-[#C41E3D]" : ""}
-          >
-            {alertEvents ? (
-              <>
-                <b className="font-semibold text-[#C41E3D]">
-                  {alertEvents} alerts
-                </b>{" "}
-                · {infoEvents} info · {noticeEvents} notice
-              </>
-            ) : (
-              `${infoEvents} info · ${noticeEvents} notice`
-            )}
-          </FwKpi>
-        </button>
-        <FwKpi
-          label="CPU · Memory"
-          value={
-            <>
-              {cpuUsage}% <span className="text-[#98A0B5]">·</span> {memoryUsage}%
-            </>
-          }
-        >
-          {cpuUsage < 70 && memoryUsage < 85 ? (
-            <span className="font-semibold text-[#15803D]">Healthy headroom</span>
-          ) : (
-            <span className="font-semibold text-[#B45309]">Elevated</span>
-          )}
-        </FwKpi>
-        <button
-          type="button"
-          onClick={() => openDetail("applications", "App traffic")}
-          className="text-left"
-        >
-          <FwKpi label="App traffic" value={formatBytes(applicationTraffic)}>
-            {applicationTraffic ? (
-              unclassifiedPct >= 80 ? (
-                <span className="font-semibold text-[#B45309]">
-                  {unclassifiedPct}% unscanned
-                </span>
-              ) : (
-                `${100 - unclassifiedPct}% classified`
-              )
-            ) : (
-              "no traffic logged"
-            )}
-          </FwKpi>
-        </button>
-        <button
-          type="button"
-          onClick={() => openDetail("interfaces", "Interfaces")}
-          className="text-left"
-        >
-          <FwKpi
-            label="Interfaces"
-            value={
-              <>
-                {interfacesUp}{" "}
-                <span className="text-[13px] font-semibold text-[#98A0B5]">
-                  up
-                </span>
-              </>
-            }
-          >
-            {interfacesDown} down — unused ports
-          </FwKpi>
-        </button>
-      </div>
-      <FirewallDowntimeSection
-        values={downtime}
-        days={downtimeDays}
-        onDaysChange={setDowntimeDays}
-        loading={downtimeLoading}
-        activeFirewall={firewall}
-        onSelect={setFirewall}
+    <div className="mx-auto flex max-w-[1440px] flex-col gap-3.5 text-[13px] text-[#17171c]">
+      <FwSiteHeader
+        title="Firewall"
+        statusLabel={siteDown ? `Offline${downSince ? ` ${formatDowntimeDuration(Date.now() - new Date(downSince))}` : ""}` : statusPresentation.label}
+        statusTone={siteDown ? "red" : statusPresentation.tone}
+        sub={siteDown && downSince ? `${firewall.toUpperCase()} · last contact ${new Date(downSince).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` : headerSub}
+        sites={[
+          { id: "hq", label: "HQ", dot: siteState("hq") },
+          { id: "hq2", label: "HQ2", dot: siteState("hq2") },
+        ]}
+        active={firewall}
+        onSite={setFirewall}
+        onRefresh={refreshAll}
+        refreshing={loading || liveDetailsLoading}
+        onReport={exportSevenDayReport}
+        reporting={reportLoading || !data?.configured}
       />
-      <div
-        ref={detailRef}
-        className="scroll-mt-4 flex gap-1 overflow-x-auto rounded-xl border border-[#E7E9F2] bg-white p-1 shadow-[0_1px_2px_rgba(24,28,46,0.05),0_4px_14px_rgba(24,28,46,0.05)]"
-      >
-        {TABS.map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => {
-              setTab(key);
-              setActiveMetric(null);
-            }}
-            className={`flex min-w-max flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-4 py-2.5 text-[13px] font-semibold transition ${tab === key ? "bg-[#4A5FE8] text-white shadow-sm" : "text-[#5B6178] hover:bg-[#F5F6FA]"}`}
-          >
-            {label}
-            {key === "devices" && <span className={`rounded-full px-2 py-0.5 text-[10.5px] ${tab === key ? "bg-white/20" : "bg-[#F0F1F7]"}`}>{deviceCount.toLocaleString()}</span>}
-            {key === "applications" && (
-              <span className={`rounded-full px-2 py-0.5 text-[10.5px] ${tab === key ? "bg-white/20" : "bg-[#F0F1F7]"}`}>
-                {liveDetailsLoading && !trafficReport
-                  ? "…"
-                  : applicationCount
-                    ? `${applicationCount.toLocaleString()} apps`
-                    : networkServiceCount
-                      ? `${networkServiceCount.toLocaleString()} services`
-                      : "0"}
-              </span>
-            )}
-            {key === "interfaces" && <span className={`rounded-full px-2 py-0.5 text-[10.5px] ${tab === key ? "bg-white/20" : "bg-[#F0F1F7]"}`}>{interfacesUp} up</span>}
-            {key === "events" && <span className={`rounded-full px-2 py-0.5 text-[10.5px] ${tab === key ? "bg-white/20" : eventCount ? "bg-[#FCE9ED] text-[#C41E3D]" : "bg-[#F0F1F7]"}`}>{eventCount.toLocaleString()}</span>}
-          </button>
-        ))}
-      </div>
-      <div>
-        {tab === "overview" &&
-          (data?.configured ? (
-            <div className="space-y-5">
-              <div className="grid gap-4 xl:grid-cols-[1.55fr_1fr]">
-                <div className={FW_CARD}>
-                  <div className="flex items-start justify-between gap-3 px-[18px] pb-0 pt-4">
-                    <div>
-                      <div className="text-sm font-bold tracking-tight">
-                        Sessions &amp; utilization — last hour
-                      </div>
-                      <div className="mt-0.5 text-xs text-[#98A0B5]">
-                        Sessions, CPU and memory in one combined view
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-3 text-[11.5px] text-[#5B6178]">
-                      <span className="flex items-center gap-1.5">
-                        <i className="h-2 w-2 rounded-[3px] bg-[#0E7490]" />
-                        Sessions
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <i className="h-2 w-2 rounded-[3px] bg-[#7C3AED]" />
-                        Memory
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <i className="h-2 w-2 rounded-[3px] bg-[#E8833A]" />
-                        CPU
-                      </span>
-                    </div>
-                  </div>
-                  <CombinedUtilization
-                    resource={resourceHistory}
-                    sessions={sessionHistory}
-                  />
-                </div>
-                <div className={FW_CARD}>
-                  <div className="px-[18px] pb-0 pt-4">
-                    <div className="text-sm font-bold tracking-tight">
-                      Needs attention
-                    </div>
-                    <div className="mt-0.5 text-xs text-[#98A0B5]">
-                      Ranked by risk — everything else is healthy
-                    </div>
-                  </div>
-                  <div className="space-y-2.5 p-[18px] pt-3.5">
-                    {attention.length ? (
-                      attention.map((item) => (
-                        <FwInsight key={item.title} {...item} />
-                      ))
-                    ) : (
-                      <div className="flex items-center gap-3 rounded-xl border border-[#E7E9F2] bg-[#F7FBF8] p-4 text-sm text-[#15803D]">
-                        <span className="grid h-7 w-7 place-items-center rounded-lg bg-[#E8F6EE] font-bold">
-                          ✓
-                        </span>
-                        No outstanding issues detected in the current window.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <div className="grid gap-3.5 lg:grid-cols-2">
-                <TopApplicationsOverview
-                  value={trafficLogs}
-                  aggregates={trafficReport?.aggregates}
-                  onOpen={() => openDetail("applications", "Throughput")}
-                />
-                <FirewallEstateComparison values={comparison} onSelect={setFirewall} />
-              </div>
-              <details className="group overflow-hidden rounded-2xl border border-[#E7E9F2] bg-white">
-                <summary className="flex cursor-pointer list-none items-center gap-2 px-[18px] py-3.5 text-[13px] font-semibold text-[#5B6178]">
-                  <Server className="h-4 w-4" />
-                  System information &amp; admin configuration
-                  <ChevronDown className="ml-auto h-4 w-4 transition group-open:rotate-180" />
-                </summary>
-                <div className="border-t border-[#F0F1F7] p-3">
-                  <SystemInformationPanel
-                    configuration={sections.configuration}
-                    status={sections.status}
-                    throughput={throughput}
-                  />
-                </div>
-              </details>
-              {firewall === "hq2" && (
-                <>
-                  <HQ2FloorUsage logs={trafficLogs} />
-                  <HQ2FloorPolicies value={sections.policies} />
-                </>
-              )}
+
+      {siteDown && !showStale ? (
+        <FwSiteDown
+          site={firewall.toUpperCase()}
+          downtime={siteDowntime}
+          raiseTicket={
+            user ? (
+              <RaiseTicket
+                user={user}
+                onCreated={() => toast.success("Ticket raised")}
+                trigger={
+                  <button className="rounded-lg bg-[#17171c] px-3.5 py-[9px] text-[12.5px] text-white">
+                    Raise IT ticket for {firewall.toUpperCase()}
+                  </button>
+                }
+              />
+            ) : null
+          }
+          onBack={() => setShowStale(true)}
+        />
+      ) : (
+        <>
+          <FwTabBar tabs={tabList} active={tab} onSelect={goTo} />
+          {liveDetailsLoading && data && (
+            <div role="status" className="flex items-center gap-3 rounded-xl border border-[#e8e7e3] bg-white px-4 py-3 text-xs text-[#55555e]">
+              <RefreshCw className="h-4 w-4 shrink-0 animate-spin" />
+              <span>Live overview ready. Traffic and security details are syncing in the background.</span>
             </div>
-          ) : (
-            <EmptyPanel title="Overview" configured={false} />
-          ))}
-        {tab === "devices" && (
-          <div className="space-y-4">
-            <InventoryCoverage
-              devices={sections.devices}
-              firewall={firewall}
+          )}
+          {data?.configured && Object.keys(data.errors || {}).length > 0 && (
+            <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <b>Some firewall endpoints could not be loaded.</b>
+                <p className="mt-1 text-xs">{Object.entries(data.errors).map(([name, error]) => `${name}: ${error}`).join(" · ")}</p>
+              </div>
+            </div>
+          )}
+          {duplicateAppliance && (
+            <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div><b>HQ and HQ2 currently resolve to the same firewall appliance</b> (serial {hqSerial}). Treat the two views as one location until the second API URL points to its own appliance.</div>
+            </div>
+          )}
+          {trafficReportError && (
+            <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div><b>Today&apos;s traffic report could not be verified.</b><p className="mt-1 text-xs">{trafficReportError}</p></div>
+            </div>
+          )}
+
+          {current.kpis.length > 0 && <FwKpis kpis={current.kpis} />}
+          {current.insights.length > 0 && <FwInsights items={current.insights} />}
+
+          {tab === "overview" && (
+            <FwActions actions={current.actions || []} sub={current.actionSub} onGo={goTo} />
+          )}
+          {tab === "devices" && current.coverage && (
+            <FwDeviceCoverage
+              coverage={current.coverage}
+              funnel={current.funnel}
+              note="Hostnames like “Ethara-GRP1048” already contain the employee code. Once the asset register is readable by the server, owners are matched automatically by MAC — see the device table below."
             />
-            <ConnectedDevicesPanel
-              value={sections.devices}
-              logs={sections.logs}
-              threats={threatSections}
-              threatErrors={data?.threat_errors}
-              source={sections.device_source}
-              firewall={firewall}
-            />
+          )}
+          {tab === "applications" && (
+            <FwAppComposition title={current.compTitle} comp={current.comp || []} />
+          )}
+          {tab === "events" && current.incident && (
+            <FwIncident incident={current.incident} steps={incidentSteps} onToggle={toggleStep} />
+          )}
+          {tab === "archive" && current.cal && (
+            <FwArchiveCalendar title={current.calTitle} cells={current.cal} />
+          )}
+
+          <FwChartsAndPanels charts={current.charts} panels={current.panels} />
+
+          <div ref={detailRef} className="scroll-mt-24">
+            {tab === "overview" &&
+              (data?.configured ? (
+                <div className="space-y-4">
+                  <FirewallDowntimeSection
+                    values={downtime}
+                    days={downtimeDays}
+                    onDaysChange={setDowntimeDays}
+                    loading={downtimeLoading}
+                    activeFirewall={firewall}
+                    onSelect={setFirewall}
+                  />
+                  <details className="group overflow-hidden rounded-xl border border-[#e8e7e3] bg-white">
+                    <summary className="flex cursor-pointer list-none items-center gap-2 px-[18px] py-3.5 text-[13px] font-semibold text-[#55555e]">
+                      <Server className="h-4 w-4" />
+                      System information &amp; admin configuration
+                      <ChevronDown className="ml-auto h-4 w-4 transition group-open:rotate-180" />
+                    </summary>
+                    <div className="border-t border-[#f1f0ec] p-3">
+                      <SystemInformationPanel configuration={sections.configuration} status={sections.status} throughput={throughput} />
+                    </div>
+                  </details>
+                  {firewall === "hq2" && (
+                    <>
+                      <HQ2FloorUsage logs={trafficLogs} />
+                      <HQ2FloorPolicies value={sections.policies} />
+                    </>
+                  )}
+                </div>
+              ) : (
+                <EmptyPanel title="Overview" configured={false} />
+              ))}
+            {tab === "devices" && (
+              <div className="space-y-4">
+                <InventoryCoverage devices={sections.devices} firewall={firewall} />
+                <ConnectedDevicesPanel
+                  value={sections.devices}
+                  logs={sections.logs}
+                  threats={threatSections}
+                  threatErrors={data?.threat_errors}
+                  source={sections.device_source}
+                  firewall={firewall}
+                />
+              </div>
+            )}
+            {tab === "applications" && (
+              <ApplicationUsagePanel
+                value={trafficLogs}
+                aggregates={trafficReport?.aggregates}
+                devices={sections.devices}
+                firewall={firewall}
+                inspection={trafficReport?.summary?.application_control}
+                loading={liveDetailsLoading && !trafficReport}
+                policyCoverage={{
+                  active: activeAcceptPolicies.length,
+                  configured: applicationControlPolicies.length,
+                }}
+                reportSummary={trafficReport?.summary}
+                reportPeriod={trafficReport?.period}
+              />
+            )}
+            {tab === "interfaces" && (
+              <InterfacesPanel value={sections.interfaces} firewall={firewall} lastUpdated={data?.last_updated} />
+            )}
+            {tab === "events" && (
+              <div className="space-y-2">
+                {data?.section_meta?.events?.rows_sent && (
+                  <p className="text-xs text-[#6b6b76]">
+                    The event table shows the newest {Number(data.section_meta.events.rows_sent).toLocaleString()} of {Number(data.section_meta.events.rows_summarised).toLocaleString()} retained events; the figures above cover all of them.
+                  </p>
+                )}
+                <SecurityEventsPanel value={securityRows} sourceMeta={securitySourceMeta} />
+              </div>
+            )}
+            {tab === "archive" && (
+              <FirewallArchivePanel firewall={firewall} configured={Boolean(data?.configured)} onLoaded={setArchives} />
+            )}
           </div>
-        )}
-        {tab === "applications" && (
-          <div className="space-y-4">
-            <ApplicationUsagePanel
-              value={trafficLogs}
-              aggregates={trafficReport?.aggregates}
-              devices={sections.devices}
-              firewall={firewall}
-              inspection={trafficReport?.summary?.application_control}
-              loading={liveDetailsLoading && !trafficReport}
-              policyCoverage={{
-                active: activeAcceptPolicies.length,
-                configured: applicationControlPolicies.length,
-              }}
-              reportSummary={trafficReport?.summary}
-              reportPeriod={trafficReport?.period}
-            />
-          </div>
-        )}
-        {tab === "interfaces" && (
-          <InterfacesPanel
-            value={sections.interfaces}
-            firewall={firewall}
-            lastUpdated={data?.last_updated}
-          />
-        )}
-        {tab === "events" && (
-          <SecurityEventsPanel
-            value={securityRows}
-            sourceMeta={securitySourceMeta}
-          />
-        )}
-        {tab === "archive" && (
-          <FirewallArchivePanel
-            firewall={firewall}
-            configured={Boolean(data?.configured)}
-          />
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }

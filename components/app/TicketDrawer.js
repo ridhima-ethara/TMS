@@ -37,6 +37,9 @@ import AttachmentUpload, {
   AttachmentList,
 } from "@/components/app/AttachmentUpload";
 import { toast } from "sonner";
+import { DateField } from "@/components/ui/date-field";
+import { formatIncidentDate, formatTat } from "@/components/app/IncidentReports";
+import { workingMinutesBetween } from "@/lib/sla";
 import {
   Loader2,
   Lock,
@@ -75,8 +78,9 @@ export default function TicketDrawer({
   const [categoryOptions, setCategoryOptions] = useState([]);
   const isStaff = ["it", "admin", "super_admin"].includes(user.role);
   const isTerminal = ["Resolved", "Closed", "Cancelled"].includes(t?.status);
-  const deptUsers = users.filter((u) =>
-    t?.department === "Admin" ? u.role === "admin" : u.role === "it",
+  const deptRole = t?.department === "Admin" ? "admin" : "it";
+  const deptUsers = users.filter(
+    (u) => u.role === deptRole || (u.extra_roles || []).includes(deptRole),
   );
   const ticketSite = locationSite(t?.routing_site || t?.location);
   const managedSites = (user.managed_locations || [])
@@ -228,6 +232,7 @@ export default function TicketDrawer({
               <p className="text-sm text-muted-foreground text-left">
                 {t.category}
                 {t.subcategory ? ` › ${t.subcategory}` : ""} · {t.location}
+                {t.seat_number ? ` · Seat ${t.seat_number}` : ""}
               </p>
             </SheetHeader>
 
@@ -252,6 +257,7 @@ export default function TicketDrawer({
 
               {/* DETAILS */}
               <TabsContent value="details" className="space-y-4 pt-4">
+                {isStaff && <TicketReport t={t} />}
                 <p className="text-sm whitespace-pre-wrap">
                   {t.description || "No description."}
                 </p>
@@ -458,7 +464,7 @@ export default function TicketDrawer({
                     </p>
                   </div>
                 )}
-                {t.confirmation && (
+                {t.confirmation?.confirmed && !t.confirmation?.auto_closed && (
                   <div className="rounded-md border p-3 text-sm">
                     {t.confirmation.confirmed ? (
                       <p className="text-green-700 font-medium flex items-center gap-1">
@@ -481,7 +487,32 @@ export default function TicketDrawer({
                   </div>
                 )}
 
-                {isTerminal && (
+                {t.status === "Resolved" && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-teal-200 bg-teal-50 p-3 text-sm text-teal-900">
+                    <div>
+                      <p className="font-medium">Awaiting employee acknowledgement</p>
+                      <p className="mt-0.5 text-xs text-teal-800/80">
+                        {t.issue_user_name || t.raised_for_name || "The employee"} has been asked to confirm the fix. The ticket closes when they acknowledge it.
+                      </p>
+                    </div>
+                    {isStaff && canControlTicket && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => {
+                          if (window.confirm(`Close ${t.human_id} without the employee's acknowledgement? Closing is final.`))
+                            patch({ status: "Closed", note: "Closed without employee acknowledgement" }, "Ticket closed");
+                        }}
+                      >
+                        Close without acknowledgement
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {isStaff && <DailyRemarks t={t} user={user} onSaved={load} />}
+
+                {["Closed", "Cancelled"].includes(t.status) && (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
                     <p className="font-medium">Final ticket</p>
                     <p className="mt-0.5 text-xs text-slate-500">
@@ -621,7 +652,7 @@ export default function TicketDrawer({
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {ALL_STATUSES.map((s) => (
+                            {ALL_STATUSES.filter((s) => s !== "Resolved").map((s) => (
                               <SelectItem key={s} value={s}>
                                 {s}
                               </SelectItem>
@@ -855,9 +886,14 @@ function ResolutionSlaText({ due, resolvedAt, createdAt, status }) {
 
 function ResolveForm({ onSubmit, disabled }) {
   const [open, setOpen] = useState(false);
-  const [summary, setSummary] = useState("");
-  const [action, setAction] = useState("");
-  const [root, setRoot] = useState("");
+  const [form, setForm] = useState({
+    root_cause: "",
+    impact: "",
+    action_taken: "",
+    preventive_action: "",
+    key_achievement: "",
+  });
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
   if (!open)
     return (
       <Button
@@ -871,32 +907,29 @@ function ResolveForm({ onSubmit, disabled }) {
       </Button>
     );
   return (
-    <div className="rounded-md border p-3 space-y-2 bg-green-50/50">
-      <Label className="text-xs">Resolution summary</Label>
-      <Textarea
-        value={summary}
-        onChange={(e) => setSummary(e.target.value)}
-        rows={2}
-        placeholder="What was done"
-      />
-      <div className="grid gap-2 sm:grid-cols-2">
-        <Input
-          value={action}
-          onChange={(e) => setAction(e.target.value)}
-          placeholder="Action taken"
-        />
-        <Input
-          value={root}
-          onChange={(e) => setRoot(e.target.value)}
-          placeholder="Root cause"
-        />
-      </div>
+    <div className="rounded-md border p-3 space-y-2.5 bg-green-50/50">
+      <p className="text-xs text-muted-foreground">
+        These details make up the ticket&apos;s incident report. Tickets raised by
+        an employee wait for their acknowledgement before closing.
+      </p>
+      {[
+        ["root_cause", "Root cause (RCA)", "e.g. The LAN cable of one access point was unplugged"],
+        ["impact", "Impact", "Who and what was affected, and what stayed unaffected"],
+        ["action_taken", "Resolution / action taken *", "What was done to fix it"],
+        ["preventive_action", "Preventive action / key learning", "How to stop it happening again"],
+        ["key_achievement", "Key achievement", "Optional — e.g. restored within 15 minutes"],
+      ].map(([key, label, ph]) => (
+        <div key={key} className="space-y-1">
+          <Label className="text-xs">{label}</Label>
+          <Textarea value={form[key]} onChange={set(key)} rows={2} placeholder={ph} />
+        </div>
+      ))}
       <div className="flex gap-2">
         <Button
           size="sm"
-          disabled={disabled || !summary}
+          disabled={disabled || !form.action_taken.trim()}
           onClick={() =>
-            onSubmit({ summary, action_taken: action, root_cause: root })
+            onSubmit({ ...form, summary: form.action_taken.trim() })
           }
         >
           Submit resolution
@@ -905,6 +938,125 @@ function ResolveForm({ onSubmit, disabled }) {
           Cancel
         </Button>
       </div>
+    </div>
+  );
+}
+
+// The ticket presented in the incident report format used across the IT team.
+function TicketReport({ t }) {
+  const raisedAt = t.raised_at || t.created_at;
+  const resolvedAt = t.resolved_at || t.resolution?.resolved_date;
+  const r = t.resolution || {};
+  const targetHours = t.sla_policy?.resolution_hours;
+  const met = resolvedAt && t.sla_resolution_due
+    ? new Date(resolvedAt) <= new Date(t.sla_resolution_due)
+    : null;
+  const tat = resolvedAt
+    ? `${formatTat(workingMinutesBetween(raisedAt, resolvedAt))} (business time)${targetHours ? ` · SLA ${targetHours}h · ${met ? "Met" : "Breached"}` : ""}`
+    : t.sla_resolution_due
+      ? `In progress · due ${formatIncidentDate(t.sla_resolution_due)}${targetHours ? ` (SLA ${targetHours}h)` : ""}`
+      : "—";
+  const status =
+    t.status === "Resolved"
+      ? "Resolved · awaiting employee acknowledgement"
+      : t.status === "Closed" && t.confirmation?.confirmed && !t.confirmation?.auto_closed
+        ? "Closed · acknowledged by employee"
+        : t.status === "Closed" && t.confirmation?.closed_without_ack
+          ? "Closed · without employee acknowledgement"
+          : t.status;
+  const achievement =
+    r.key_achievement ||
+    (met && targetHours ? `Resolved within the ${targetHours}h SLA` : "");
+  const rows = [
+    ["Issue", t.title],
+    ["Date & Time", formatIncidentDate(raisedAt)],
+    ["Location", `${t.location || "—"}${t.seat_number ? ` · Seat ${t.seat_number}` : ""}`],
+    ["Root Cause (RCA)", r.root_cause],
+    ["Impact", r.impact],
+    ["Resolution / Action Taken", r.action_taken || r.summary],
+    ["Resolution Time (TAT)", tat],
+    ["Current Status", status],
+    ["Key Achievement", achievement],
+    ["Preventive Action / Key Learning", r.preventive_action],
+  ];
+  return (
+    <div className="overflow-hidden rounded-lg border">
+      <div className="flex items-center justify-between border-b bg-muted/40 px-3 py-2">
+        <p className="text-sm font-semibold">Ticket report</p>
+        <span className="text-[11px] text-muted-foreground">Incident report format</span>
+      </div>
+      <table className="w-full text-left text-sm">
+        <tbody>
+          {rows.map(([label, value]) => (
+            <tr key={label} className="border-t first:border-t-0">
+              <th className="w-[38%] bg-muted/30 px-3 py-2 align-top text-xs font-semibold sm:w-52 sm:text-[13px]">
+                {label}
+              </th>
+              <td className="whitespace-pre-wrap break-words px-3 py-2 align-top">
+                {value || <span className="text-muted-foreground">—</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DailyRemarks({ t, user, onSaved }) {
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const remarks = t.remarks || [];
+  const mine = remarks.find((r) => r.by_id === user.id && r.date === today);
+  const [text, setText] = useState(mine?.remark || "");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setText(mine?.remark || ""), [mine?.id, mine?.remark]);
+  const canAdd = !["Closed", "Cancelled"].includes(t.status);
+  const save = async () => {
+    if (!text.trim()) return toast.error("Write a remark first");
+    setBusy(true);
+    try {
+      await api(`/tickets/${t.id}/remarks`, { method: "POST", body: { remark: text } });
+      toast.success("Daily remark saved");
+      onSaved?.();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const day = (key) =>
+    key === today
+      ? "Today"
+      : new Date(`${key}T12:00:00+05:30`).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
+  if (!canAdd && !remarks.length) return null;
+  return (
+    <div className="space-y-2 rounded-lg border p-3">
+      <p className="text-sm font-medium">Daily remarks{remarks.length ? ` · ${remarks.length}` : ""}</p>
+      {canAdd && (
+        <div className="space-y-1.5">
+          <Textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={2}
+            maxLength={2000}
+            placeholder="Today's update on this ticket — progress, blockers, next step…"
+          />
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-muted-foreground">
+              {mine ? "You added a remark today — saving updates it." : "One remark per person per day."}
+            </span>
+            <Button size="sm" disabled={busy} onClick={save}>
+              {busy ? "Saving…" : mine ? "Update remark" : "Add remark"}
+            </Button>
+          </div>
+        </div>
+      )}
+      {remarks.map((r) => (
+        <div key={r.id} className="rounded-md bg-muted/40 px-2.5 py-2">
+          <p className="whitespace-pre-wrap text-sm">{r.remark}</p>
+          <p className="text-[11px] text-muted-foreground">{r.by_name} · {day(r.date)}</p>
+        </div>
+      ))}
     </div>
   );
 }
@@ -1127,12 +1279,12 @@ function ApprovalSection({ t, user, onChanged }) {
               value={form.quotation}
               onChange={(e) => setForm({ ...form, quotation: e.target.value })}
             />
-            <Input
-              type="date"
+            <DateField
+              className="w-full"
               value={form.required_by}
-              onChange={(e) =>
-                setForm({ ...form, required_by: e.target.value })
-              }
+              placeholder="Required by"
+              clearable
+              onChange={(value) => setForm({ ...form, required_by: value })}
             />
           </div>
           <Input

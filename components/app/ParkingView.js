@@ -279,7 +279,7 @@ export default function ParkingView() {
     }
   };
   return (
-    <div className="space-y-5 text-[#111827]">
+    <div className="mx-auto max-w-[1440px] space-y-5 text-[#111827]">
       <div className="flex flex-wrap items-center gap-3">
         <div>
           <h2 className="text-lg font-bold">Tulip parking allocation</h2>
@@ -287,7 +287,7 @@ export default function ParkingView() {
             Manage vehicle spaces for members at Tulip.
           </p>
         </div>
-        <div className="w-full sm:w-auto">
+        <div className="w-full sm:order-last sm:w-auto">
           <AllocateParking
             members={members}
             allocations={data.allocations}
@@ -304,7 +304,7 @@ export default function ParkingView() {
           />
         </div>
       </div>
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-3 gap-2 sm:gap-4">
         {[
           [
             "Total capacity",
@@ -325,12 +325,12 @@ export default function ParkingView() {
             "text-[#2E7CD6]",
           ],
         ].map(([label, value, hint, tone]) => (
-          <Card key={label} className="border-[#E5E9EF] p-5 shadow-none">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
+          <Card key={label} className="min-w-0 border-[#E5E9EF] p-3 shadow-none sm:p-5">
+            <p className="truncate text-[10px] font-semibold uppercase tracking-wider text-[#9CA3AF] sm:text-[11px]">
               {label}
             </p>
-            <p className={`mt-1 text-2xl font-bold ${tone}`}>{value}</p>
-            <p className="text-xs text-[#9CA3AF]">{hint}</p>
+            <p className={`mt-1 text-xl font-bold sm:text-2xl ${tone}`}>{value}</p>
+            <p className="hidden text-xs text-[#9CA3AF] sm:block">{hint}</p>
           </Card>
         ))}
       </div>
@@ -456,14 +456,14 @@ export default function ParkingView() {
           <h3 className="font-bold">Vehicle allocations</h3>
         </div>
         <div className="overflow-x-auto">
-          <Table className="min-w-[760px]">
+          <Table className="sm:min-w-[760px]">
             <TableHeader>
               <TableRow>
                 <TableHead>Slot</TableHead>
                 <TableHead>Member</TableHead>
-                <TableHead>Vehicle</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Allocated by</TableHead>
+                <TableHead className="hidden sm:table-cell">Vehicle</TableHead>
+                <TableHead className="hidden md:table-cell">Type</TableHead>
+                <TableHead className="hidden md:table-cell">Allocated by</TableHead>
                 <TableHead />
               </TableRow>
             </TableHeader>
@@ -477,15 +477,18 @@ export default function ParkingView() {
                     </TableCell>
                     <TableCell>
                       <p className="font-semibold">{row.member_name}</p>
-                      <p className="text-xs text-[#9CA3AF]">
+                      <p className="break-all text-xs text-[#9CA3AF]">
                         {row.member_email}
                       </p>
+                      <p className="text-xs font-medium text-[#111827] sm:hidden">
+                        {row.vehicle_number}
+                      </p>
                     </TableCell>
-                    <TableCell className="font-medium">
+                    <TableCell className="hidden font-medium sm:table-cell">
                       {row.vehicle_number}
                     </TableCell>
-                    <TableCell>{item.label}</TableCell>
-                    <TableCell>{row.allocated_by}</TableCell>
+                    <TableCell className="hidden md:table-cell">{item.label}</TableCell>
+                    <TableCell className="hidden md:table-cell">{row.allocated_by}</TableCell>
                     <TableCell>
                       <Button
                         variant="ghost"
